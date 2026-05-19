@@ -780,9 +780,22 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
         except Exception as _e:
             logging.debug(f"Selection-Log fehlgeschlagen (unkritisch): {_e}")
 
-        # ── Schritt 4: Aufnahme starten (F12) ────────────────────────────
-        _send_key(_VK_F12)
-        logging.info("Record gestartet (F12).")
+        # ── Schritt 4: Transport-Arm EIN + Aufnahme starten (PTSL) ─────────
+        # toggle_record_enable (Rec-Arm) + toggle_play_state (Play) = Record+Play
+        # Komplett via PTSL – kein F12 / CGEvent nötig, funktioniert unabhängig von Fokus.
+        _transport_pre_armed = False
+        ok_arm_chk, _pre_arm_state = _ptsl_call(
+            engine.transport_armed, label="TransportArmedPre", timeout=5.0)
+        if ok_arm_chk:
+            _transport_pre_armed = bool(_pre_arm_state)
+        if not _transport_pre_armed:
+            _ptsl_call(engine.toggle_record_enable, label="RecordArm", timeout=5.0)
+            logging.info("Transport Record-Arm: EIN gesetzt (PTSL).")
+        else:
+            logging.info("Transport war bereits record-armed.")
+        time.sleep(0.1)
+        _ptsl_call(engine.toggle_play_state, label="RecordStart", timeout=5.0)
+        logging.info("Record gestartet (PTSL: record_arm + play).")
 
         # ── Schritt 5: Warten bis Transport läuft (max 5s) ──────────────
         _transport_started = False
@@ -832,8 +845,7 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
                     # PT schreibt Aufnahme auf NEXIS – PTSL-Last jetzt drastisch reduzieren.
                     # 80ms-Polling würde ~12 Anfragen/s erzeugen genau wenn PT die Dateien
                     # finalisiert, was zu Beachball/Crash führen kann.
-                    # 1.5s = noch 18× langsamer als 80ms – sicherer Puffer.
-                    time.sleep(1.5)
+                    time.sleep(3.0)
                 else:
                     time.sleep(0.08)
             else:
@@ -865,6 +877,14 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
                     time.sleep(0.5 * (attempt + 1))
 
             time.sleep(0.2)  # CHANGE: Settling vor Pre-Roll/Monitor-Änderung
+
+            # ── Schritt 7b: Transport-Arm AUS (nur wenn wir ihn aktiviert haben) ──
+            if not _transport_pre_armed:
+                ok_arm2, still_armed = _ptsl_call(
+                    engine.transport_armed, label="TransportArmedPost", timeout=5.0)
+                if ok_arm2 and still_armed:
+                    _ptsl_call(engine.toggle_record_enable, label="RecordDisarm", timeout=5.0)
+                    logging.info("Transport Record-Arm: AUS gesetzt.")
 
             # ── Schritt 8: Pre-Roll AUS ──────────────────────────────────
             restore_preroll(engine)
@@ -3485,7 +3505,7 @@ class PunchBuddyApp(rumps.App):
         NSBezelStyleRounded = AppKit.NSBezelStyleRounded
 
         WIN_W = 680
-        WIN_H = 650
+        WIN_H = 820
         PAD = 20
         BUTTON_H = 50
 
