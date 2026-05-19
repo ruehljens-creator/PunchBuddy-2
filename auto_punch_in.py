@@ -1231,7 +1231,7 @@ def _read_pt_export_result(timeout=12, settings=None):
                     return title, text, None   # Fenster gefunden, Ergebnis unklar
         except Exception:
             pass
-        time.sleep(0.5)
+        time.sleep(0.1)
     return "", "", None   # Kein Fenster gefunden
 
 
@@ -1921,7 +1921,14 @@ def _rename_sequence_in_interplay(settings):
 
     # ── Schritt 1: aktuellen Namen lesen ────────────────────────────
     _activate_app("interplayAccess")
-    time.sleep(0.4)
+    try:
+        _run_applescript(
+            'tell application "System Events" to '
+            'set frontmost of (first process whose name contains "Interplay") to true'
+        )
+    except Exception:
+        pass
+    time.sleep(0.5)
     _send_key_to_app(_VK_F2, "interplayAccess")            # Rename-Dialog öffnen
     time.sleep(0.4)
     _send_key_to_app(_VK_A, "interplayAccess", cmd=True)   # Alles selektieren
@@ -1968,7 +1975,14 @@ def _rename_sequence_in_interplay(settings):
         return
 
     _activate_app("interplayAccess")
-    time.sleep(0.3)
+    try:
+        _run_applescript(
+            'tell application "System Events" to '
+            'set frontmost of (first process whose name contains "Interplay") to true'
+        )
+    except Exception:
+        pass
+    time.sleep(0.4)
     _send_key_to_app(_VK_F2, "interplayAccess")            # Rename-Dialog öffnen
     time.sleep(0.4)
     _send_key_to_app(_VK_A, "interplayAccess", cmd=True)   # Alles selektieren
