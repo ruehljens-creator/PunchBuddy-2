@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
+
+# Distributables (too large for git)
+*.dmg
+
+# Compiled app bundles
+*.app
+
+# Old / archived versions
+auto_punch_in_alamo.py
+auto_punch_in_alamo2.py
+auto_punch_in_frankfurt_2.py
+build_dmg_frankfurt_2.sh
+watchdog_frankfurt_2.py

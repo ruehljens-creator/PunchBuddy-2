@@ -1,0 +1,4855 @@
+#!/usr/bin/env python3
+"""
+PunchBuddy – Pro Tools Punch-In Automation
+==========================================
+
+Ablauf START (Hotkey):
+  1. Ziel-Spuren in der Session finden
+  2. Spuren Record-Enable AN
+  3. Input Monitor AUS  (PTSL)
+  4. Pre-Roll        EIN (CGEvent, non-blocking)
+  5. Record starten  (PTSL toggle_play_state)
+
+Ablauf STOP (Space oder Punch-Out):
+  6. Warten bis Transport wirklich gestoppt (inkl. Post-Roll)
+  7a. Pre-Roll   AUS  (CGEvent, non-blocking, Hintergrund-Thread)
+  7b. Input Monitor EIN  (PTSL, parallel zu 7a)
+"""
+
+import ptsl
+import time
+import threading
+import logging
+import json
+import os
+import subprocess
+import sys
+import atexit
+import gc
+import shutil
+import glob
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dock-Name + Prozessname SOFORT setzen (VOR import rumps / AppKit)
+# rumps importiert intern AppKit und cached den Bundle-Namen.
+# Deshalb muss CFBundleName VORHER überschrieben werden.
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from Foundation import NSBundle, NSProcessInfo
+    _bundle = NSBundle.mainBundle()
+    _info = _bundle.infoDictionary()
+    if _info is not None:
+        _info['CFBundleName'] = 'PunchBuddy'
+        _info['CFBundleDisplayName'] = 'PunchBuddy'
+    NSProcessInfo.processInfo().setProcessName_('PunchBuddy')
+except Exception:
+    pass
+
+try:
+    import ctypes, ctypes.util
+    _libc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('c'))
+    _libc.setprogname(b'PunchBuddy')
+except Exception:
+    pass
+
+import rumps
+import http.server
+import socketserver
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pyobjc (für AppleScript Pre-Roll-Erkennung)
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from Foundation import NSAppleScript, NSAutoreleasePool
+    APPLESCRIPT_OK = True
+except ImportError:
+    NSAppleScript = NSAutoreleasePool = None
+    APPLESCRIPT_OK = False
+
+try:
+    import AppKit
+    import objc
+    APPKIT_OK = True
+except ImportError:
+    APPKIT_OK = False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────────────────────────
+def _setup_log_dir():
+    """Erstellt das Log-Verzeichnis, robust gegen TCC und alte Dateien."""
+    candidates = [
+        os.path.expanduser("~/.punchbuddy"),
+        os.path.expanduser("~/Library/Logs/PunchBuddy"),
+        "/tmp/PunchBuddy",
+    ]
+    for d in candidates:
+        try:
+            # os.path.exists() kann unter TCC selbst EPERM werfen
+            try:
+                exists = os.path.exists(d)
+                is_dir = os.path.isdir(d) if exists else False
+            except OSError:
+                continue  # TCC blockiert Zugriff – nächster Kandidat
+
+            if exists and not is_dir:
+                continue  # Existiert als Datei/Symlink – überspringen
+
+            os.makedirs(d, exist_ok=True)
+            # Schreibtest
+            test = os.path.join(d, ".writetest")
+            with open(test, "w") as f:
+                f.write("ok")
+            os.remove(test)
+            return d
+        except (OSError, PermissionError):
+            continue
+    return "/tmp"
+
+_LOG_DIR = _setup_log_dir()
+LOG_PATH = os.path.join(_LOG_DIR, "PunchBuddy.log")
+
+def _trim_log(max_age_hours=24):
+    """Entfernt Log-Einträge die älter als max_age_hours sind."""
+    if not os.path.exists(LOG_PATH):
+        return
+    try:
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        today = datetime.now().date()
+        kept = []
+        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                # Log-Format: "HH:MM:SS ..." – kein Datum, also heute annehmen
+                # Wenn die Datei über Mitternacht geht, werden ältere Zeilen
+                # anhand des Dateiänderungsdatums beurteilt
+                try:
+                    ts_str = line[:8]  # "HH:MM:SS"
+                    h, m, s = int(ts_str[0:2]), int(ts_str[3:5]), int(ts_str[6:8])
+                    line_time = datetime.combine(today, datetime.min.time().replace(hour=h, minute=m, second=s))
+                    # Falls Zeitstempel > jetzt → war gestern
+                    if line_time > datetime.now():
+                        line_time -= timedelta(days=1)
+                    if line_time >= cutoff:
+                        kept.append(line)
+                except (ValueError, IndexError):
+                    # Zeile ohne gültigen Timestamp (Traceback etc.) → behalten
+                    kept.append(line)
+        # Nur schreiben wenn tatsächlich Zeilen entfernt wurden
+        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+            original_count = sum(1 for _ in f)
+        if len(kept) < original_count:
+            with open(LOG_PATH, "w", encoding="utf-8") as f:
+                f.writelines(kept)
+    except Exception:
+        pass  # Log-Trimming darf niemals das Script blockieren
+
+_trim_log(24)
+
+# Expliziter Logger-Setup (basicConfig wird ignoriert wenn grpc/rumps
+# bereits logging initialisiert haben)
+_log_formatter = logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
+
+_file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+_file_handler.setFormatter(_log_formatter)
+_file_handler.setLevel(logging.INFO)
+
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_log_formatter)
+_console_handler.setLevel(logging.INFO)
+
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+# Alte Handler entfernen (falls basicConfig doch schon lief)
+_root_logger.handlers.clear()
+_root_logger.addHandler(_file_handler)
+_root_logger.addHandler(_console_handler)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Einstellungen
+# ─────────────────────────────────────────────────────────────────────────────
+SETTINGS_PATH = os.path.join(_LOG_DIR, "settings.json")
+DEFAULT_SETTINGS = {
+    "tracks":          ["ST", "A  IT", "OGA", "Mus", "Spr", "Spr 2"],
+    "monitor_tracks":  ["ST", "A  IT", "OGA", "Mus", "Spr"],
+    "tracks_b":        [],
+    "monitor_tracks_b": [],
+    "play_monitor_tracks": [],
+    "export_tracks":   ["ST", "A  IT", "OGA", "Mus", "Spr"],
+    "video_track":     "Video 1",
+    "export_start_tc":     "10:00:00:00",
+    "loudness_enabled":    True,
+    "loudness_tracks":     ["ST"],
+    "target_lufs":         -23.0,
+    "max_truepeak":        -3.0,
+    "extend_count":        7,
+    "wav_export_enabled":  False,
+    "aaf_export_enabled":  False,
+    "interplay_enabled":   False,
+    "interplay_workspace": "001-aktuelles [fad-nexis]",
+    "interplay_workspace_steps": 17,
+    "export_error_keywords":   "error,fail,fehler,unsuccessful,could not,unable,problem,warning,aborted,abgebrochen",
+    "export_success_keywords": "success,complete,finished,done,exported,erfolgreich,abgeschlossen,fertig",
+    "interplay_rename_enabled": False,
+    "interplay_rename_trim_start": 0,
+    "interplay_rename_trim_end": 0,
+    "interplay_rename_prefix": "",
+    "interplay_rename_suffix": "",
+    "track_presets": [
+        {"name": f"Preset {i+1}", "rec_a": [], "mon_a": [], "rec_b": [], "mon_b": [], "export": []}
+        for i in range(8)
+    ],
+    "import_close_session": True,
+    "http_port": 8899,
+}
+
+# ── Migration: ~/.autopunchin → ~/.punchbuddy ─────────────────────────────
+_OLD_SETTINGS_DIR = os.path.expanduser("~/.autopunchin")
+_NEW_SETTINGS_DIR = os.path.dirname(SETTINGS_PATH)
+
+def _migrate_settings():
+    """Migriert alte Einstellungen von ~/.autopunchin nach ~/.punchbuddy."""
+    if os.path.isdir(_OLD_SETTINGS_DIR) and not os.path.isdir(_NEW_SETTINGS_DIR):
+        try:
+            shutil.copytree(_OLD_SETTINGS_DIR, _NEW_SETTINGS_DIR)
+            logging.info(f"Settings migriert: {_OLD_SETTINGS_DIR} → {_NEW_SETTINGS_DIR}")
+        except Exception as e:
+            logging.warning(f"Settings-Migration fehlgeschlagen: {e}")
+
+_migrate_settings()
+
+def load_settings():
+    if os.path.exists(SETTINGS_PATH):
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            merged = DEFAULT_SETTINGS.copy()
+            merged.update(data)
+            return merged
+        except Exception as e:
+            logging.error(f"Settings laden: {e}")
+    return DEFAULT_SETTINGS.copy()
+
+def save_settings(s):
+    os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(s, f, indent=2, ensure_ascii=False)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CGEvent – Tastendruck direkt an Pro Tools (non-blocking)
+# ─────────────────────────────────────────────────────────────────────────────
+# macOS Virtual Key Codes
+_VK_K     = 40   # 'k'
+_VK_F12   = 111  # F12
+_VK_SPACE = 49   # Space
+_VK_R     = 15   # 'r'
+_VK_A     = 0    # 'a'
+_VK_F2    = 120  # F2
+_VK_C     = 8    # 'c'
+_VK_ESC   = 53   # Escape
+_VK_P     = 35   # 'p'
+_VK_V     = 9    # 'v'
+
+_cached_pid = None
+
+def _pt_pid():
+    """Pro Tools Prozess-ID ermitteln (mit Caching)."""
+    global _cached_pid
+    if _cached_pid:
+        return _cached_pid
+        
+    try:
+        out = subprocess.run(
+            ["pgrep", "-x", "Pro Tools"],
+            capture_output=True, text=True, timeout=2
+        ).stdout.strip()
+        if out:
+            _cached_pid = int(out)
+            return _cached_pid
+        return None
+    except Exception:
+        return None
+
+def _send_key(vk: int, cmd: bool = False) -> bool:
+    """
+    Sendet Tastendruck direkt an Pro Tools via CGEventPostToPid.
+    Non-blocking: kehrt sofort zurück, kein Warten auf PT's Main-Thread.
+    Fallback auf AppleScript wenn Quartz nicht verfügbar.
+    """
+    try:
+        import Quartz
+        pid = _pt_pid()
+        if not pid:
+            logging.warning("send_key: Pro Tools PID nicht gefunden.")
+            return False
+        src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+        ev_dn = Quartz.CGEventCreateKeyboardEvent(src, vk, True)
+        ev_up = Quartz.CGEventCreateKeyboardEvent(src, vk, False)
+        if cmd:
+            flags = Quartz.kCGEventFlagMaskCommand
+            Quartz.CGEventSetFlags(ev_dn, flags)
+            Quartz.CGEventSetFlags(ev_up, flags)
+        Quartz.CGEventPostToPid(pid, ev_dn)
+        Quartz.CGEventPostToPid(pid, ev_up)
+        return True
+    except ImportError:
+        logging.debug("Quartz nicht verfügbar – AppleScript Fallback")
+        if APPLESCRIPT_OK:
+            char = {_VK_K: "k", _VK_F12: "", _VK_SPACE: " "}.get(vk, "")
+            if char:
+                mod = "{command down}" if cmd else ""
+                script = (
+                    f'tell application "System Events" to tell process "Pro Tools" to '
+                    f'keystroke "{char}"' + (f" using {mod}" if mod else "")
+                )
+                s = NSAppleScript.alloc().initWithSource_(script)
+                s.executeAndReturnError_(None)
+        return False
+    except Exception as e:
+        logging.error(f"send_key vk={vk} cmd={cmd}: {e}")
+        return False
+
+def _app_pid(app_name: str):
+    """Ermittelt die PID einer App anhand ihres Prozessnamens.
+    Nutzt NSWorkspace (leerzeichentolerant) als primäre Methode, pgrep als Fallback.
+    """
+    # NSWorkspace: normalisiert Leerzeichen, damit "interplayAccess" == "Interplay Access"
+    try:
+        from AppKit import NSWorkspace
+        ws = NSWorkspace.sharedWorkspace()
+        name_norm = app_name.lower().replace(" ", "")
+        for app in ws.runningApplications():
+            ln = app.localizedName() or ""
+            if name_norm in ln.lower().replace(" ", ""):
+                return app.processIdentifier()
+    except Exception:
+        pass
+    # Fallback: pgrep exakt, dann ohne -x
+    try:
+        out = subprocess.run(
+            ["pgrep", "-xi", app_name],
+            capture_output=True, text=True, timeout=2
+        ).stdout.strip()
+        if out:
+            return int(out.split("\n")[0])
+        out = subprocess.run(
+            ["pgrep", "-i", app_name],
+            capture_output=True, text=True, timeout=2
+        ).stdout.strip()
+        if out:
+            return int(out.split("\n")[0])
+    except Exception:
+        pass
+    return None
+
+def _send_key_to_app(vk: int, app_name: str, cmd: bool = False,
+                      shift: bool = False, ctrl: bool = False) -> bool:
+    """
+    Sendet Tastendruck an eine beliebige App via CGEventPostToPid.
+    Umgeht die osascript Accessibility-Einschränkung.
+    """
+    try:
+        import Quartz
+        pid = _app_pid(app_name)
+        if not pid:
+            logging.warning(f"send_key_to_app: '{app_name}' PID nicht gefunden.")
+            return False
+        src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+        ev_dn = Quartz.CGEventCreateKeyboardEvent(src, vk, True)
+        ev_up = Quartz.CGEventCreateKeyboardEvent(src, vk, False)
+        flags = 0
+        if cmd:
+            flags |= Quartz.kCGEventFlagMaskCommand
+        if shift:
+            flags |= Quartz.kCGEventFlagMaskShift
+        if ctrl:
+            flags |= Quartz.kCGEventFlagMaskControl
+        if flags:
+            Quartz.CGEventSetFlags(ev_dn, flags)
+            Quartz.CGEventSetFlags(ev_up, flags)
+        Quartz.CGEventPostToPid(pid, ev_dn)
+        Quartz.CGEventPostToPid(pid, ev_up)
+        return True
+    except Exception as e:
+        logging.error(f"send_key_to_app vk={vk} app={app_name}: {e}")
+        return False
+
+def _activate_app(app_name: str) -> bool:
+    """Aktiviert eine App (bringt sie in den Vordergrund) via NSWorkspace.
+    Normalisiert Leerzeichen im Namen, damit z.B. "interplayAccess" == "Interplay Access".
+    """
+    try:
+        from AppKit import NSWorkspace
+        ws = NSWorkspace.sharedWorkspace()
+        apps = ws.runningApplications()
+        name_norm = app_name.lower().replace(" ", "")
+        for app in apps:
+            ln = app.localizedName() or ""
+            if name_norm in ln.lower().replace(" ", ""):
+                app.activateWithOptions_(0x01)  # NSApplicationActivateIgnoringOtherApps
+                return True
+        # Fallback: via open command
+        subprocess.run(["open", "-a", app_name], timeout=5, capture_output=True)
+        return True
+    except Exception as e:
+        logging.warning(f"activate_app '{app_name}': {e}")
+        return False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pre-Roll Management (via PTSL – get/set_timeline_selection)
+# ─────────────────────────────────────────────────────────────────────────────
+# Pro Tools PTSL liefert pre_roll_enabled als Feld in GetTimelineSelection.
+# Setzen erfolgt über set_timeline_selection(pre_roll_enabled=TB_True/TB_False).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_preroll_status(engine):
+    """Liest den Pre-Roll-Status direkt aus Pro Tools via PTSL.
+    Gibt (ok, enabled) zurück. ok=False bei Kommunikationsfehler."""
+    try:
+        import ptsl.ops as ops
+        import ptsl.PTSL_pb2 as pt
+        op = ops.CId_GetTimelineSelection(
+            location_type=pt.TLType_TimeCode)
+        ok, _ = _ptsl_call(
+            lambda: engine.client.run(op) or True,
+            label="GetPreRoll", timeout=8.0
+        )
+        if ok:
+            return True, bool(op.response.pre_roll_enabled)
+        return False, None
+    except Exception as e:
+        logging.warning(f"[GetPreRoll] Exception: {e}")
+        return False, None
+
+def _set_preroll_state(engine, enabled: bool):
+    """Setzt Pre-Roll ein/aus via PTSL.
+    Liest zuerst die aktuelle Timeline-Selection, damit in_time/out_time
+    beim Setzen erhalten bleiben (sonst springt der Cursor zum Anfang).
+    Gibt True bei Erfolg zurück."""
+    try:
+        import ptsl.ops as ops
+        import ptsl.PTSL_pb2 as pt
+        tb_val = pt.TB_True if enabled else pt.TB_False
+
+        # 1. Aktuelle Timeline-Selection lesen (in_time benötigt!)
+        get_op = ops.CId_GetTimelineSelection(location_type=pt.TLType_TimeCode)
+        ok_get, _ = _ptsl_call(
+            lambda: engine.client.run(get_op) or True,
+            label="GetTimeline", timeout=8.0
+        )
+        if ok_get and get_op.response.in_time:
+            # in_time zurückgeben damit Cursor-Position erhalten bleibt
+            ok, _ = _ptsl_call(
+                lambda: engine.set_timeline_selection(
+                    in_time=get_op.response.in_time,
+                    pre_roll_enabled=tb_val
+                ),
+                label=f"SetPreRoll({'EIN' if enabled else 'AUS'})",
+                timeout=8.0
+            )
+        else:
+            # Fallback: ohne in_time (nur pre_roll_enabled)
+            set_op = ops.CId_SetTimelineSelection(pre_roll_enabled=tb_val)
+            ok, _ = _ptsl_call(
+                lambda: engine.client.run(set_op),
+                label=f"SetPreRoll({'EIN' if enabled else 'AUS'})",
+                timeout=8.0
+            )
+        return ok
+    except Exception as e:
+        logging.warning(f"[SetPreRoll] Exception: {e}")
+        return False
+
+def ensure_preroll_on(engine=None):
+    """Stellt sicher, dass Pre-Roll VOR der Aufnahme AN ist (PTSL, 3 Versuche).
+    Optimiert für Geschwindigkeit – keine Verifikation beim ersten Versuch.
+    WICHTIG: Schließt NIE die Engine (shared Singleton mit run_punch_in)."""
+    _own_engine = engine is None
+    if _own_engine:
+        engine = _get_engine()
+    if engine is None:
+        logging.warning("Pre-Roll EIN: Engine nicht verfügbar – Fallback cmd+k")
+        _send_key(_VK_K, cmd=True)
+        time.sleep(0.15)
+        return
+
+    for attempt in range(3):
+        ok, is_on = _get_preroll_status(engine)
+        if ok and is_on:
+            logging.info("Pre-Roll ist bereits AN – keine Änderung.")
+            return
+
+        label = "AUS" if (ok and not is_on) else "unbekannt"
+        logging.info(f"Pre-Roll ist {label} – schalte ein (PTSL, Versuch {attempt+1}/3)...")
+
+        success = _set_preroll_state(engine, True)
+        if success:
+            logging.info("Pre-Roll EIN gesetzt (PTSL).")
+            return
+
+        logging.warning(f"Pre-Roll EIN FEHLER (Versuch {attempt+1}/3)")
+        time.sleep(0.3)
+
+    logging.error("⚠️  Pre-Roll EIN FEHLGESCHLAGEN nach 3 PTSL-Versuchen – Fallback cmd+k")
+    _send_key(_VK_K, cmd=True)
+    time.sleep(0.15)
+
+def restore_preroll(engine=None):
+    """Stellt sicher, dass Pre-Roll NACH der Aufnahme AUS ist (PTSL, 3 Versuche).
+    WICHTIG: Schließt NIE die Engine (shared Singleton mit run_punch_in)."""
+    _own_engine = engine is None
+    if _own_engine:
+        engine = _get_engine()
+    if engine is None:
+        logging.warning("Pre-Roll AUS: Engine nicht verfügbar – Fallback cmd+k")
+        _send_key(_VK_K, cmd=True)
+        time.sleep(0.15)
+        return
+
+    for attempt in range(3):
+        ok, is_on = _get_preroll_status(engine)
+        if ok and not is_on:
+            logging.info("Pre-Roll ist bereits AUS – keine Änderung.")
+            return
+
+        label = "AN" if (ok and is_on) else "unbekannt"
+        logging.info(f"Pre-Roll ist {label} – schalte aus (PTSL, Versuch {attempt+1}/3)...")
+
+        success = _set_preroll_state(engine, False)
+        if success:
+            logging.info("Pre-Roll AUS gesetzt (PTSL).")
+            return
+
+        logging.warning(f"Pre-Roll AUS FEHLER (Versuch {attempt+1}/3)")
+        time.sleep(0.3)
+
+    logging.error("⚠️  Pre-Roll AUS FEHLGESCHLAGEN nach 3 PTSL-Versuchen – Fallback cmd+k")
+    _send_key(_VK_K, cmd=True)
+    time.sleep(0.15)
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PTSL Helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Singleton Engine (verhindert Verbindungslecks) ───────────────────────
+_engine_instance = None
+_engine_lock = threading.Lock()
+
+_engine_last_test = 0.0  # Zeitstempel des letzten erfolgreichen Health-Checks
+_ENGINE_TEST_COOLDOWN = 8.0  # Sekunden zwischen Health-Checks
+
+def _get_engine():
+    """Gibt eine wiederverwendbare PTSL-Engine zurück. Reconnect bei Fehler.
+    Health-Check wird max. alle _ENGINE_TEST_COOLDOWN Sekunden ausgeführt,
+    um bei frequenten Aufrufen keine 3s-Timeouts zu erzeugen.
+    """
+    global _engine_instance, _engine_last_test
+    with _engine_lock:
+        if _engine_instance is not None:
+            now = time.time()
+            if now - _engine_last_test < _ENGINE_TEST_COOLDOWN:
+                # Verbindung kürzlich geprüft – direkt zurückgeben
+                return _engine_instance
+            # Test ob Verbindung noch lebt – mit Timeout gegen NEXIS-Hänger
+            test_ok = [False]
+            def _test():
+                try:
+                    _engine_instance.transport_state()
+                    test_ok[0] = True
+                except Exception:
+                    pass
+            t = threading.Thread(target=_test, daemon=True, name="EngineTest")
+            t.start()
+            t.join(timeout=10.0)  # 10s – NEXIS kann PTSL-Antworten verzögern
+            if test_ok[0]:
+                _engine_last_test = time.time()
+                return _engine_instance
+            else:
+                logging.warning("PTSL Engine: Verbindung verloren/blockiert – reconnect...")
+                try:
+                    _engine_instance.close()
+                except Exception:
+                    pass
+                _engine_instance = None
+
+        # Neue Engine erstellen
+        try:
+            eng = ptsl.Engine(company_name="PunchBuddy", application_name="PunchBuddy")
+            _engine_instance = eng
+            _engine_last_test = time.time()
+            logging.info("PTSL verbunden.")
+            return eng
+        except Exception as e:
+            logging.error(f"PTSL Verbindung fehlgeschlagen: {e}")
+            return None
+
+def _close_engine():
+    """Schliesst die Singleton-Engine explizit und setzt Health-Check-Timer zurück."""
+    global _engine_instance, _engine_last_test
+    with _engine_lock:
+        if _engine_instance is not None:
+            try:
+                _engine_instance.close()
+            except Exception:
+                pass
+            _engine_instance = None
+            _engine_last_test = 0.0
+            logging.info("PTSL Engine geschlossen.")
+
+_ptsl_lock = threading.Lock()
+
+def _invalidate_engine_health():
+    """Setzt den Health-Check-Timer zurück, damit der nächste _get_engine()-Aufruf
+    die Verbindung sofort neu prüft. Kein Eingriff in NEXIS/Interplay/Session."""
+    global _engine_last_test
+    _engine_last_test = 0.0
+
+def _ptsl_call(fn, *args, label: str = "", timeout: float = 15.0):
+    """Führt PTSL-Aufruf im Thread aus. Gibt (ok, result) zurück.
+    Bei Timeout oder Exception wird der Health-Check-Timer invalidiert,
+    damit _get_engine() beim nächsten Aufruf sofort die Verbindung prüft."""
+    result = [None]
+    error  = [None]
+
+    def _run():
+        if not _ptsl_lock.acquire(timeout=6.0):  # 6s – NEXIS kann vorherigen Befehl verzögern
+            error[0] = TimeoutError("PTSL Blockiert")
+            return
+        try:
+            result[0] = fn(*args)
+        except Exception as e:
+            error[0] = e
+        finally:
+            _ptsl_lock.release()
+
+    t = threading.Thread(target=_run, daemon=True, name=label or fn.__name__)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        logging.warning(f"[{label}] Timeout nach {timeout}s")
+        _invalidate_engine_health()  # Verbindung könnte tot sein – sofort neu prüfen
+        return False, None
+    if error[0]:
+        if isinstance(error[0], TimeoutError):
+            return False, None
+        logging.error(f"[{label}] Fehler: {error[0]}")
+        _invalidate_engine_health()  # Verbindungsfehler – sofort neu prüfen
+        return False, error[0]
+    return True, result[0]
+
+def _show_error(title: str, msg: str):
+    """Zeigt Fehler-Dialog (non-blocking)."""
+    try:
+        subprocess.Popen(["osascript", "-e",
+            f'display alert "{title}" message "{msg}" as critical'])
+    except Exception:
+        pass
+
+def _detect_video_track(engine, settings=None):
+    """Erkennt die Videospur automatisch via PTSL (type=4).
+    Fallback auf settings['video_track'] wenn nichts gefunden."""
+    fallback = (settings or {}).get("video_track", "Video 1")
+    try:
+        tracks = engine.track_list()
+        video_tracks = [t.name for t in tracks if t.type == 4]
+        if video_tracks:
+            name = video_tracks[0]
+            logging.info(f"Video-Spur auto-erkannt: '{name}'")
+            return name
+        else:
+            logging.warning(f"Keine Video-Spur (type=4) gefunden – Fallback: '{fallback}'")
+            return fallback
+    except Exception as e:
+        logging.warning(f"Video-Spur Erkennung fehlgeschlagen: {e} – Fallback: '{fallback}'")
+        return fallback
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hauptautomatisierung
+# ─────────────────────────────────────────────────────────────────────────────
+_running      = False
+_running_lock = threading.Lock()
+_stop_lock    = threading.Lock()  # verhindert gleichzeitige Stop-Aufrufe
+
+def run_punch_in(target_tracks: list, monitor_tracks: list = None):
+    global _running
+    with _running_lock:
+        if _running:
+            logging.warning("Läuft bereits – Trigger ignoriert.")
+            return
+        _running = True
+    _set_busy(True)
+
+    # Fallback: wenn keine Monitor-Spuren angegeben, alle Record-Spuren nehmen
+    if monitor_tracks is None:
+        monitor_tracks = list(target_tracks)
+
+    try:
+        logging.info("=== PunchBuddy START ===")
+        logging.info(f"Record-Spuren: {target_tracks}")
+        logging.info(f"Monitor-Spuren: {monitor_tracks}")
+
+        engine = _get_engine()
+        if engine is None:
+            logging.error("PTSL Engine nicht verfügbar – Abbruch.")
+            return
+
+        # ── 1. Session-Spuren lesen & mit Konfiguration abgleichen ─────
+        ok_tl, all_tracks = _ptsl_call(engine.track_list, label="TrackList", timeout=5.0)
+        if not ok_tl or all_tracks is None:
+            logging.error("Konnte Session-Spuren nicht lesen (PTSL Timeout) – Abbruch.")
+            return
+
+        pt_names     = [t.name for t in all_tracks]
+        rec_want     = set(t for t in target_tracks if t in pt_names)
+        mon_want     = set(t for t in monitor_tracks if t in pt_names)
+
+        logging.info(f"Session-Spuren: {pt_names}")
+        logging.info(f"Record SOLL:    {sorted(rec_want)}")
+        logging.info(f"Monitor SOLL:   {sorted(mon_want)}")
+
+        if not rec_want:
+            logging.warning("Keine Record-Spuren in der Session gefunden – Abbruch.")
+            return
+
+        # ══════════════════════════════════════════════════════════════════
+        # VOR AUFNAHME – strikt sequentiell, mit Settling-Delays
+        # ══════════════════════════════════════════════════════════════════
+
+        # ── Schritt 1: Pre-Roll EIN ──────────────────────────────────────
+        ensure_preroll_on(engine)
+        time.sleep(0.2)  # CHANGE: Settling nach Pre-Roll setzen
+
+        # ── Schritt 2: Record Enable (3 Versuche) ───────────────────────
+        rec_ok = False
+        for attempt in range(3):
+            ok, _ = _ptsl_call(
+                engine.set_track_record_enable_state, sorted(rec_want), True,
+                label=f"RecEnable#{attempt+1}", timeout=5.0
+            )
+            if ok:
+                logging.info(f"Record Enable AN: {sorted(rec_want)}")
+                rec_ok = True
+                break
+            logging.warning(f"Record Enable FEHLER (Versuch {attempt+1}/3)")
+            time.sleep(0.5 * (attempt + 1))
+        if not rec_ok:
+            logging.warning("Record Enable fehlgeschlagen – mache trotzdem weiter.")
+
+        time.sleep(0.3)  # CHANGE: Settling – PT muss Rec-Enable verarbeiten bevor Monitor-State geändert wird
+
+        # ── Schritt 3: Input Monitor AUS (3 Versuche) ────────────────────
+        # AUSKOMMENTIERT AUF WUNSCH (kann später bei Bedarf wieder aktiviert werden)
+        """
+        if mon_want:
+            logging.info(f"Input Monitor AUS für: {sorted(mon_want)}...")
+            for attempt in range(3):
+                ok, _ = _ptsl_call(
+                    engine.set_track_input_monitor_state, sorted(mon_want), False,
+                    label=f"MonOff#{attempt+1}", timeout=5.0
+                )
+                if ok:
+                    logging.info("Input Monitor AUS OK")
+                    break
+                logging.warning(f"Input Monitor AUS FEHLER (Versuch {attempt+1}/3)")
+                time.sleep(0.5 * (attempt + 1))
+        """
+
+        time.sleep(0.5)  # CHANGE: Settling – Monitor-State-Wechsel muss stabilisieren bevor F12.
+                         # Das ist der wahrscheinliche Fix gegen Digital-Null an Clip-Boundaries.
+
+        # CHANGE: Defensives Logging der Timeline-Selection vor F12.
+        # Falls das Problem nochmal auftritt, sehen wir genau was PT hatte.
+        try:
+            import ptsl.ops as ops
+            import ptsl.PTSL_pb2 as pt_pb
+            sel_op = ops.CId_GetTimelineSelection(location_type=pt_pb.TLType_TimeCode)
+            ok_sel, _ = _ptsl_call(
+                lambda: engine.client.run(sel_op) or True,
+                label="GetSelPreRecord", timeout=6.0
+            )
+            if ok_sel:
+                logging.info(
+                    f"[Selection vor F12] in='{sel_op.response.in_time}' "
+                    f"out='{sel_op.response.out_time}' "
+                    f"preroll_start='{sel_op.response.pre_roll_start_time}' "
+                    f"preroll_enabled={sel_op.response.pre_roll_enabled}"
+                )
+        except Exception as _e:
+            logging.debug(f"Selection-Log fehlgeschlagen (unkritisch): {_e}")
+
+        # ── Schritt 4: Aufnahme starten (F12) ────────────────────────────
+        _send_key(_VK_F12)
+        logging.info("Record gestartet (F12).")
+
+        # ── Schritt 5: Warten bis Transport läuft (max 5s) ──────────────
+        _transport_started = False
+        for _ in range(100):
+            ok_ts, ts_r = _ptsl_call(engine.transport_state, label="WaitStart", timeout=6.0)
+            if not ok_ts:
+                time.sleep(0.05)
+                continue
+            s = str(ts_r)
+            if s in ("TS_TransportRecording", "TS_TransportPlaying",
+                     "TS_TransportIsCued", "TS_TransportIsCuedForPreview"):
+                logging.info(f"Transport aktiv: {s}")
+                _transport_started = True
+                break
+            time.sleep(0.05)
+        if not _transport_started:
+            logging.warning("Transport nie gestartet!")
+
+        # ── Schritt 6: Warten bis Transport gestoppt ────────────────────
+        last = ""
+        consecutive_failures = 0
+        _transport_confirmed_stopped = False
+        if _transport_started:
+            for _ in range(7500):  # max 10 Minuten
+                ok_ts, ts_r = _ptsl_call(engine.transport_state, label="WaitStop", timeout=8.0)
+                # NEXIS kann transport_state verzögern – 8s Tolerance, Schwelle auf 10
+                if not ok_ts:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 10:
+                        logging.warning("Transport-Polling: 10x Timeout – breche ab (Anti-Stau).")
+                        _close_engine()
+                        time.sleep(2.0)
+                        engine = _get_engine()
+                        break
+                    time.sleep(0.5)
+                    continue
+                consecutive_failures = 0
+                s = str(ts_r)
+                if s != last:
+                    logging.info(f"Transport: {s}")
+                    last = s
+                if s == "TS_TransportStopped":
+                    logging.info("Transport gestoppt.")
+                    _transport_confirmed_stopped = True
+                    break
+                if s == "TS_TransportIsStopping":
+                    # PT schreibt Aufnahme auf NEXIS – PTSL-Last jetzt drastisch reduzieren.
+                    # 80ms-Polling würde ~12 Anfragen/s erzeugen genau wenn PT die Dateien
+                    # finalisiert, was zu Beachball/Crash führen kann.
+                    # 1.5s = noch 18× langsamer als 80ms – sicherer Puffer.
+                    time.sleep(1.5)
+                else:
+                    time.sleep(0.08)
+            else:
+                logging.warning("Transport-Timeout (10 Min).")
+
+        # ══════════════════════════════════════════════════════════════════
+        # NACH AUFNAHME – strikt sequentiell, mit Settling-Delays
+        # CHANGE: Reihenfolge angepasst – erst Rec-Disable damit PT den Record-
+        # Pfad sauber schliesst, dann Pre-Roll AUS, dann Input EIN.
+        # ══════════════════════════════════════════════════════════════════
+
+        if _transport_confirmed_stopped:
+
+            time.sleep(0.2)  # CHANGE: Settling nach Stopp, PT muss Record-Pfad finalisieren
+
+            # ── Schritt 7: Record Disable (3 Versuche) ───────────────────
+            # CHANGE: Vorgezogen vor Pre-Roll/Monitor, damit PT die Spuren
+            # sauber aus dem Record nimmt bevor Monitor-State geändert wird.
+            if rec_want:
+                for attempt in range(3):
+                    ok, _ = _ptsl_call(
+                        engine.set_track_record_enable_state, sorted(rec_want), False,
+                        label=f"RecDisable#{attempt+1}", timeout=5.0
+                    )
+                    if ok:
+                        logging.info("Record Disable OK")
+                        break
+                    logging.warning(f"Record Disable FEHLER (Versuch {attempt+1}/3)")
+                    time.sleep(0.5 * (attempt + 1))
+
+            time.sleep(0.2)  # CHANGE: Settling vor Pre-Roll/Monitor-Änderung
+
+            # ── Schritt 8: Pre-Roll AUS ──────────────────────────────────
+            restore_preroll(engine)
+            time.sleep(0.2)  # CHANGE: Settling nach Pre-Roll-Aus
+
+            # ── Schritt 9: Input Monitor EIN (3 Versuche) ────────────────
+            # AUSKOMMENTIERT AUF WUNSCH (kann später bei Bedarf wieder aktiviert werden)
+            """
+            if mon_want:
+                logging.info(f"Input Monitor EIN für: {sorted(mon_want)}...")
+                for attempt in range(3):
+                    ok, _ = _ptsl_call(
+                        engine.set_track_input_monitor_state, sorted(mon_want), True,
+                        label=f"MonOn#{attempt+1}", timeout=5.0
+                    )
+                    if ok:
+                        logging.info("Input Monitor EIN OK")
+                        break
+                    logging.warning(f"Input Monitor EIN FEHLER (Versuch {attempt+1}/3)")
+                    time.sleep(0.5 * (attempt + 1))
+            """
+        else:
+            logging.warning("Transport nicht bestätigt gestoppt – State-Wiederherstellung übersprungen.")
+            # Pre-Roll trotzdem zurücksetzen (gefahrlos)
+            restore_preroll(engine)
+
+        logging.info("Punch-In Durchlauf abgeschlossen.")
+
+    except Exception as e:
+        logging.error(f"Fehler: {e}", exc_info=True)
+    finally:
+        gc.collect()
+        with _running_lock:
+            _running = False
+        _set_busy(False)
+        logging.info("=== PunchBuddy ENDE ===")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Play (Monitor Auto) Workflow
+# ─────────────────────────────────────────────────────────────────────────────
+_play_monitor_tracks = []
+
+def run_play():
+    """Play/Stop-Toggle.
+    Stop-Pfad: delegiert an run_stop() – funktioniert auch während einer Aufnahme.
+    Start-Pfad: setzt Input Monitor EIN und startet Playback."""
+    global _running, _play_monitor_tracks
+    import ptsl.PTSL_pb2 as pt
+
+    # Transport-State zuerst lesen – ohne _running_lock, damit Stop auch während
+    # einer laufenden Aufnahme (run_punch_in) ausgelöst werden kann.
+    engine = _get_engine()
+    if engine is None:
+        logging.error("PTSL Engine nicht verfügbar – Abbruch (Play).")
+        return
+
+    ok_ts, ts_r = _ptsl_call(engine.transport_state, label="PlayTransportState", timeout=6.0)
+    if not ok_ts:
+        logging.warning("Play: Konnte Transport-State nicht lesen.")
+        return
+
+    state_str = str(ts_r)
+    logging.info(f"Play: Transport-State: {state_str}")
+
+    # ── STOP-Pfad ────────────────────────────────────────────────────────────
+    if state_str in ("TS_TransportRecording", "TS_TransportPlaying",
+                     "TS_TransportIsCued", "TS_TransportIsCuedForPreview",
+                     "TS_TransportIsStopping"):
+        logging.info("Play: Transport aktiv – stoppe (via run_stop)...")
+        run_stop()
+        return
+
+    # ── START-Pfad ───────────────────────────────────────────────────────────
+    with _running_lock:
+        if _running:
+            logging.warning("Play: Script läuft bereits – Play-Start ignoriert.")
+            return
+        _running = True
+    _set_busy(True)
+    try:
+        settings = load_settings()
+        configured_play = settings.get("play_monitor_tracks", [])
+
+        if configured_play:
+            logging.info(f"Play: Konfigurierte Play-Spuren: {sorted(configured_play)}")
+            tracks_to_mon = list(configured_play)
+        else:
+            logging.info("Play: Keine Play-Spuren konfiguriert – ermittle selektierte Spuren...")
+            tracks_to_mon = []
+
+            # Methode 1: Track-Filter "Selected"
+            try:
+                sel_filter = pt.TrackListInvertibleFilter(filter=pt.Selected, is_inverted=False)
+                ok_sel, selected_tracks = _ptsl_call(
+                    lambda: engine.track_list(filters=[sel_filter]),
+                    label="TrackListSelected", timeout=5.0
+                )
+                if ok_sel and selected_tracks:
+                    logging.info(f"Play: {len(selected_tracks)} selektierte Spur(en) via Filter.")
+                    for t in selected_tracks:
+                        if t.type == 1:
+                            tracks_to_mon.append(t.name)
+                        else:
+                            logging.debug(f"Play: '{t.name}' (type={t.type}) kein AudioTrack – übersprungen.")
+            except Exception as e:
+                logging.warning(f"Play: Filter-Methode fehlgeschlagen ({e}) – Fallback.")
+
+            # Methode 2 (Fallback): alle Tracks iterieren
+            if not tracks_to_mon:
+                logging.info("Play: Fallback – prüfe is_selected aller Tracks...")
+                ok_all, all_tracks = _ptsl_call(engine.track_list, label="TrackListAll", timeout=5.0)
+                if ok_all and all_tracks:
+                    for t in all_tracks:
+                        try:
+                            if int(t.track_attributes.is_selected) == 0:
+                                continue
+                            if t.type != 1:
+                                continue
+                            tracks_to_mon.append(t.name)
+                        except Exception as _e:
+                            logging.debug(f"Play: Track '{getattr(t, 'name', '?')}' übersprungen: {_e}")
+
+        logging.info(f"Play: {len(tracks_to_mon)} Monitor-Spuren: {sorted(tracks_to_mon)}")
+
+        if tracks_to_mon:
+            mon_ok = False
+            for attempt in range(3):
+                ok, _ = _ptsl_call(
+                    engine.set_track_input_monitor_state,
+                    sorted(tracks_to_mon), True,
+                    label=f"PlayMonOn#{attempt+1}", timeout=5.0
+                )
+                if ok:
+                    logging.info("Play: Input Monitor EIN OK")
+                    mon_ok = True
+                    break
+                logging.warning(f"Play: Input Monitor EIN FEHLER (Versuch {attempt+1}/3)")
+                time.sleep(0.5 * (attempt + 1))
+            _play_monitor_tracks = list(tracks_to_mon) if mon_ok else []
+            if not mon_ok:
+                logging.warning("Play: Monitor-EIN fehlgeschlagen – keine Spuren gemerkt.")
+        else:
+            _play_monitor_tracks = []
+            logging.info("Play: Keine Spur selektiert – starte ohne Monitor-Änderung.")
+
+        time.sleep(0.3)
+        logging.info("Play: Starte Playback...")
+        _ptsl_call(engine.toggle_play_state, label="PlayToggle", timeout=6.0)
+
+    except Exception as e:
+        logging.error(f"Fehler in run_play: {e}", exc_info=True)
+    finally:
+        with _running_lock:
+            _running = False
+        _set_busy(False)
+
+
+def run_stop():
+    """Dedizierter Stop: entspricht der Leertaste in Pro Tools.
+    Stoppt sowohl Play als auch Recording — UNABHÄNGIG von _running,
+    damit ein laufender Punch-In jederzeit unterbrochen werden kann."""
+    global _play_monitor_tracks
+
+    # Eigener Lock verhindert Doppel-Stop, blockiert aber keine Aufnahme
+    if not _stop_lock.acquire(blocking=False):
+        logging.info("Stop: bereits in Ausführung – ignoriert.")
+        return
+    try:
+        engine = _get_engine()
+        if engine is None:
+            logging.error("PTSL Engine nicht verfügbar – Abbruch (Stop).")
+            return
+
+        ok_ts, ts_r = _ptsl_call(engine.transport_state, label="StopTransportState", timeout=6.0)
+        if not ok_ts:
+            logging.warning("Stop: Konnte Transport-State nicht lesen.")
+            return
+
+        state_str = str(ts_r)
+        logging.info(f"Stop: Transport-State: {state_str}")
+
+        if state_str in ("TS_TransportStopped", "TS_TransportIsStopping"):
+            logging.info("Stop: Transport steht bereits – nichts zu tun.")
+            return
+
+        # toggle_play_state = Leertaste: stoppt Play UND Recording
+        logging.info("Stop: Sende Stop (toggle_play_state)...")
+        _ptsl_call(engine.toggle_play_state, label="StopToggle", timeout=6.0)
+
+        # Kurz warten bis PT wirklich gestoppt ist (max 5s)
+        for _ in range(50):
+            time.sleep(0.1)
+            ok2, ts2 = _ptsl_call(engine.transport_state, label="StopWait", timeout=6.0)
+            if ok2 and str(ts2) in ("TS_TransportStopped", "TS_TransportIsStopping"):
+                break
+
+        # Play-Monitor zurücksetzen falls ein /play aktiv war
+        if _play_monitor_tracks:
+            time.sleep(0.3)
+            logging.info(f"Stop: Input Monitor AUS für {sorted(_play_monitor_tracks)}...")
+            for attempt in range(3):
+                ok, _ = _ptsl_call(
+                    engine.set_track_input_monitor_state,
+                    sorted(_play_monitor_tracks), False,
+                    label=f"StopMonOff#{attempt+1}", timeout=5.0
+                )
+                if ok:
+                    logging.info("Stop: Input Monitor AUS OK")
+                    break
+                logging.warning(f"Stop: Input Monitor AUS FEHLER (Versuch {attempt+1}/3)")
+                time.sleep(0.5 * (attempt + 1))
+            _play_monitor_tracks = []
+
+        logging.info("Stop: abgeschlossen.")
+
+    except Exception as e:
+        logging.error(f"Fehler in run_stop: {e}", exc_info=True)
+    finally:
+        _stop_lock.release()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Menüleisten-Status (Idle / Busy)
+# ─────────────────────────────────────────────────────────────────────────────
+_app_ref = None          # wird in PunchBuddyApp.__init__ gesetzt
+_ICON_IDLE = "⏺"        # normaler Zustand
+_ICON_BUSY = "🔴"        # Script arbeitet
+
+def _set_busy(busy: bool):
+    """Setzt den Menüleisten-Indikator auf rot (busy) oder normal (idle)."""
+    global _app_ref
+    if _app_ref is not None:
+        try:
+            _app_ref.title = _ICON_BUSY if busy else _ICON_IDLE
+        except Exception:
+            pass
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Export-Workflow
+# ─────────────────────────────────────────────────────────────────────────────
+_export_lock = threading.Lock()
+_export_running = False
+_VK_OE = 41  # Ö auf QWERTZ-Tastatur (= Semicolon-Position auf US)
+_EXTEND_COUNT = 7  # Anzahl Spuren unter V1 die ausgedehnt werden
+
+def _send_shift_oe(count=1):
+    """Sendet Shift+Ö an Pro Tools um die Edit-Selection nach unten auszudehnen."""
+    try:
+        import Quartz
+        pid = _pt_pid()
+        if not pid:
+            logging.warning("Shift+Ö: PT PID nicht gefunden")
+            return False
+        src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+        for _ in range(count):
+            ev_dn = Quartz.CGEventCreateKeyboardEvent(src, _VK_OE, True)
+            ev_up = Quartz.CGEventCreateKeyboardEvent(src, _VK_OE, False)
+            Quartz.CGEventSetFlags(ev_dn, Quartz.kCGEventFlagMaskShift)
+            Quartz.CGEventSetFlags(ev_up, Quartz.kCGEventFlagMaskShift)
+            Quartz.CGEventPostToPid(pid, ev_dn)
+            Quartz.CGEventPostToPid(pid, ev_up)
+            time.sleep(0.05)
+        return True
+    except Exception as e:
+        logging.error(f"Shift+Ö senden: {e}")
+        return False
+
+_VK_F13   = 105   # F13
+_VK_RETURN = 36   # Enter/Return
+_VK_TAB    = 48   # Tab
+_VK_DOWN   = 125  # Arrow Down
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Interplay Export (UI-Automation)
+# ─────────────────────────────────────────────────────────────────────────────
+def _run_applescript(script):
+    """Fuehrt ein AppleScript aus und gibt (returncode, stdout, stderr) zurueck."""
+    proc = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True, text=True, timeout=30
+    )
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+def _read_pt_export_result(timeout=12, settings=None):
+    """Liest den Inhalt des Pro Tools Bestätigungsfensters nach dem Export.
+    Überspringt Hauptfenster (Edit/Mix/Session).
+    Gibt (window_title, window_text, success) zurück.
+    success=True  → Erfolgs-Keywords gefunden
+    success=False → Fehler-Keywords gefunden
+    success=None  → kein eindeutiges Ergebnis (Fenster nicht lesbar / kein Keyword)"""
+
+    script = '''
+        tell application "System Events"
+            tell process "Pro Tools"
+                repeat with w in windows
+                    try
+                        set wTitle to name of w
+                        if wTitle does not contain "Edit:" and ¬
+                           wTitle does not contain "Mix:" and ¬
+                           wTitle does not contain "Transport" and ¬
+                           wTitle is not "" then
+                            set textContent to ""
+                            try
+                                repeat with st in (every static text of w)
+                                    try
+                                        set v to value of st
+                                        if v is not missing value and v is not "" then
+                                            set textContent to textContent & v & " | "
+                                        end if
+                                    end try
+                                end repeat
+                            end try
+                            return wTitle & "|||" & textContent
+                        end if
+                    end try
+                end repeat
+                return "NO_DIALOG|||"
+            end tell
+        end tell
+    '''
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            rc, out, _ = _run_applescript(script)
+            if rc == 0 and "|||" in out:
+                parts = out.split("|||", 1)
+                title = parts[0].strip()
+                text  = parts[1].strip() if len(parts) > 1 else ""
+                if title and title != "NO_DIALOG":
+                    combined = (title + " " + text).lower()
+                    # Keywords aus Settings laden, Fallback auf Defaults
+                    _s = settings or {}
+                    _err_raw = _s.get("export_error_keywords",
+                        "error,fail,fehler,unsuccessful,could not,unable,problem,warning,aborted,abgebrochen")
+                    _suc_raw = _s.get("export_success_keywords",
+                        "success,complete,finished,done,exported,erfolgreich,abgeschlossen,fertig")
+                    error_kw   = [k.strip().lower() for k in _err_raw.split(",") if k.strip()]
+                    success_kw = [k.strip().lower() for k in _suc_raw.split(",") if k.strip()]
+                    if any(k in combined for k in error_kw):
+                        return title, text, False
+                    if any(k in combined for k in success_kw):
+                        return title, text, True
+                    return title, text, None   # Fenster gefunden, Ergebnis unklar
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return "", "", None   # Kein Fenster gefunden
+
+
+def _wait_for_pt_window(title_contains, timeout=30, gone=False):
+    """
+    Wartet bis ein Pro Tools Fenster mit dem Titel erscheint (gone=False)
+    oder verschwindet (gone=True). Gibt True zurueck bei Erfolg.
+    """
+    script = f'''
+        tell application "System Events"
+            tell process "Pro Tools"
+                set wNames to name of every window
+            end tell
+        end tell
+        return wNames as text
+    '''
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            rc, out, _ = _run_applescript(script)
+            if rc == 0:
+                found = title_contains.lower() in out.lower()
+                if (not gone and found) or (gone and not found):
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Interplay Import (Avid Interplay Access → Pro Tools)
+# ─────────────────────────────────────────────────────────────────────────────
+_import_running = False
+_import_lock = threading.Lock()
+
+def _run_applescript_safe(script, timeout=30, label=""):
+    """Führt AppleScript aus, fängt Timeouts sauber ab. Gibt (ok, stdout) zurück."""
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=timeout
+        )
+        out = proc.stdout.strip()
+        if proc.returncode != 0:
+            err = proc.stderr.strip()
+            logging.warning(f"  [{label}] AppleScript returncode {proc.returncode}: {err}")
+        return True, out
+    except subprocess.TimeoutExpired:
+        logging.warning(f"  [{label}] AppleScript Timeout nach {timeout}s")
+        return False, ""
+    except Exception as e:
+        logging.error(f"  [{label}] AppleScript Fehler: {e}")
+        return False, ""
+
+def run_interplay_import():
+    """Führt den Interplay Import (Avid Interplay Access → Pro Tools) schrittweise aus."""
+    global _import_running
+    with _import_lock:
+        if _import_running:
+            logging.warning("Import laeuft bereits – ignoriert.")
+            return
+        _import_running = True
+    _set_busy(True)
+
+    try:
+        logging.info("=== INTERPLAY IMPORT START ===")
+
+        # ── Schritt 0: Offene Session schließen (falls aktiviert) ─────
+        settings = load_settings()
+        if settings.get("import_close_session", True):
+            logging.info("  Import Schritt 0: Prüfe ob eine Session offen ist...")
+            try:
+                engine = _get_engine()
+                if engine is not None:
+                    try:
+                        sess_name = engine.session_name()
+                        if sess_name:
+                            logging.info(f"  Session '{sess_name}' ist offen – wird gespeichert und geschlossen...")
+                            engine.save_session()
+                            logging.info(f"  Session '{sess_name}' gespeichert.")
+                            engine.close_session(save_on_close=True)
+                            logging.info(f"  Session '{sess_name}' geschlossen.")
+                            # Singleton zurücksetzen: PTSL-Verbindung zur geschlossenen
+                            # Session ist ungültig – neue Session braucht neue Verbindung
+                            _close_engine()
+                            time.sleep(1.5)  # Pro Tools braucht kurz zum Schließen
+                        else:
+                            logging.info("  Keine Session offen – überspringe.")
+                    except Exception as e:
+                        # session_name() wirft Exception wenn keine Session offen
+                        logging.info(f"  Keine Session offen (oder Fehler: {e}) – fahre fort.")
+                else:
+                    logging.info("  PTSL Engine nicht verfügbar – überspringe Session-Check.")
+            except Exception as e:
+                logging.warning(f"  Session-Check fehlgeschlagen: {e} – fahre trotzdem fort.")
+
+        # ── Schritt 1: Interplay Access – Sequenzname kopieren ────────
+        # Nutzt CGEvent statt AppleScript System Events (keine Accessibility-Probleme)
+        _VK_RETURN = 36   # Return (lokal, da nur hier gebraucht)
+        _VK_1      = 18   # '1'
+
+        logging.info("  Import Schritt 1: Interplay Access – Sequenzname kopieren...")
+        _activate_app("interplayAccess")
+        time.sleep(0.8)
+        _send_key_to_app(_VK_F2, "interplayAccess")        # Rename-Modus öffnen
+        time.sleep(0.4)
+        _send_key_to_app(_VK_A, "interplayAccess", cmd=True)  # Alles selektieren
+        time.sleep(0.2)
+        _send_key_to_app(_VK_C, "interplayAccess", cmd=True)  # Kopieren
+        time.sleep(0.5)
+        _send_key_to_app(_VK_ESC, "interplayAccess")       # Rename-Modus verlassen
+        time.sleep(0.5)
+        _send_key_to_app(_VK_P, "interplayAccess", cmd=True, shift=True)  # An PT senden
+        logging.info("  Import Schritt 1 OK.")
+        time.sleep(1.0)
+
+        # ── Schritt 2: Auf "… (offline)"-Fenster warten, Name einfügen ──
+        # Pro Tools öffnet nach Cmd+Shift+P aus Interplay ein Fenster dessen
+        # Titel sich mit jedem PT-Update ändert ("ProTools Ultimate 2026.4 (offline)").
+        # "(offline)" ist der versionsstabile Substring – darauf warten statt blind schlafen.
+        logging.info("  Import Schritt 2: Warte auf Pro Tools '(offline)'-Dialog...")
+        _activate_app("Pro Tools")
+        if _wait_for_pt_window("offline", timeout=30):
+            logging.info("  Import Schritt 2: Fenster gefunden.")
+        else:
+            logging.warning("  Import Schritt 2: '(offline)'-Fenster nach 30s nicht erschienen – versuche trotzdem.")
+        time.sleep(0.3)
+        _send_key(_VK_V, cmd=True)  # Sequenzname einfügen
+        time.sleep(0.3)
+        _send_key(_VK_RETURN)       # Bestätigen / Fenster schließen
+        logging.info("  Import Schritt 2 OK.")
+
+        # ── Schritt 3: Auf "Import Session Data" Fenster warten ───────
+        logging.info("  Import Schritt 3: Warte auf 'Import Session Data'...")
+        if not _wait_for_pt_window("Import Session Data", timeout=60):
+            logging.error("  Import Schritt 3 FEHLER: 'Import Session Data' nicht erschienen.")
+            return
+        logging.info("  Import Schritt 3 OK – Fenster gefunden.")
+        time.sleep(0.5)
+
+        # ── Schritt 4: Match All + Playlist-Option setzen ─────────────
+        # (Button-Clicks via AppleScript – braucht KEIN keystroke-Permission)
+        logging.info("  Import Schritt 4: Match All + Playlist-Option...")
+        ok, out = _run_applescript_safe('''
+            try
+                tell application "System Events"
+                    tell process "Pro Tools"
+                        set frontmost to true
+                        set importWin to window "Import Session Data"
+
+                        -- Match All
+                        try
+                            click button "Match All" of importWin
+                        end try
+                        delay 0.5
+
+                        -- Playlist-Option: Import - Overlay New On Existing Playlists
+                        set foundOption to false
+                        try
+                            click pop up button "Main Playlist Options" of importWin
+                            delay 0.2
+                            click menu item "Import - Overlay New On Existing Playlists" of menu 1 of pop up button "Main Playlist Options" of importWin
+                            set foundOption to true
+                        on error
+                            try
+                                click radio button "Import - Overlay New On Existing Playlists" of importWin
+                                set foundOption to true
+                            on error
+                                try
+                                    click button "Import - Overlay New On Existing Playlists" of importWin
+                                    set foundOption to true
+                                end try
+                            end try
+                        end try
+
+                        if not foundOption then
+                            set allPopUps to pop up buttons of importWin
+                            repeat with p in allPopUps
+                                try
+                                    click p
+                                    delay 0.2
+                                    if exists menu item "Import - Overlay New On Existing Playlists" of menu 1 of p then
+                                        click menu item "Import - Overlay New On Existing Playlists" of menu 1 of p
+                                        set foundOption to true
+                                        exit repeat
+                                    else
+                                        key code 53
+                                        delay 0.1
+                                    end if
+                                end try
+                            end repeat
+                        end if
+
+                        if not foundOption then
+                            set allGroups to groups of importWin
+                            repeat with g in allGroups
+                                set groupPopUps to pop up buttons of g
+                                repeat with p in groupPopUps
+                                    try
+                                        click p
+                                        delay 0.2
+                                        if exists menu item "Import - Overlay New On Existing Playlists" of menu 1 of p then
+                                            click menu item "Import - Overlay New On Existing Playlists" of menu 1 of p
+                                            set foundOption to true
+                                            exit repeat
+                                        else
+                                            key code 53
+                                            delay 0.1
+                                        end if
+                                    end try
+                                end repeat
+                                if foundOption then exit repeat
+                                try
+                                    click radio button "Import - Overlay New On Existing Playlists" of g
+                                    set foundOption to true
+                                    exit repeat
+                                end try
+                                try
+                                    click button "Import - Overlay New On Existing Playlists" of g
+                                    set foundOption to true
+                                    exit repeat
+                                end try
+                            end repeat
+                        end if
+                    end tell
+                end tell
+                if foundOption then
+                    return "OK"
+                else
+                    return "WARN:Playlist-Option nicht gefunden"
+                end if
+            on error errMsg
+                return "ERROR:" & errMsg
+            end try
+        ''', timeout=20, label="MatchAll")
+        if "ERROR" in out:
+            logging.error(f"  Import Schritt 4 FEHLER: {out}")
+            return
+        if "WARN" in out:
+            logging.warning(f"  Import Schritt 4: {out}")
+        else:
+            logging.info("  Import Schritt 4 OK.")
+        time.sleep(0.3)
+
+        # ── Schritt 5: Choose + Track Data Preset ─────────────────────
+        # (Button-Clicks via AppleScript, Preset-Shortcut via CGEvent)
+        logging.info("  Import Schritt 5: Choose + Track Data Preset...")
+        ok, out = _run_applescript_safe('''
+            try
+                tell application "System Events"
+                    tell process "Pro Tools"
+                        set frontmost to true
+                        set importWin to window "Import Session Data"
+
+                        -- Choose... Button
+                        try
+                            click button "Choose..." of importWin
+                        on error
+                            set allGroups to groups of importWin
+                            repeat with g in allGroups
+                                try
+                                    click button "Choose..." of g
+                                    exit repeat
+                                end try
+                            end repeat
+                        end try
+                    end tell
+                end tell
+                return "OK"
+            on error errMsg
+                return "ERROR:" & errMsg
+            end try
+        ''', timeout=10, label="ChooseBtn")
+        if "ERROR" in out:
+            logging.warning(f"  Import Schritt 5a (Choose): {out}")
+
+        # Warte auf Track Data Fenster
+        logging.info("  Import Schritt 5: Warte auf Track Data Fenster...")
+        if _wait_for_pt_window("Track Data to Import", timeout=15):
+            time.sleep(0.3)
+            # Preset 1 via Ctrl+1 (CGEvent)
+            _send_key_to_app(_VK_1, "Pro Tools", ctrl=True)
+            time.sleep(0.3)
+            _send_key(_VK_RETURN)  # Confirm
+            logging.info("  Import Schritt 5 OK.")
+        else:
+            logging.warning("  Import Schritt 5: Track Data Fenster nicht gefunden.")
+        time.sleep(1.0)
+
+        # ── Schritt 6: Import bestätigen (CGEvent) ────────────────────
+        logging.info("  Import Schritt 6: Import bestätigen...")
+        time.sleep(0.3)
+        _send_key(_VK_RETURN)
+        logging.info("  Import Schritt 6 OK – Import gestartet.")
+
+        # ── Schritt 7: Warte bis Import Session Data Fenster weg ──────
+        logging.info("  Import Schritt 7: Warte auf Abschluss (max 120s)...")
+        if _wait_for_pt_window("Import Session Data", timeout=120, gone=True):
+            logging.info("  Import Schritt 7 OK – Import Session Data geschlossen.")
+        else:
+            logging.warning("  Import Schritt 7: Fenster nach 120s noch offen.")
+
+        # ── Schritt 8: Warte bis Pro Tools fertig geladen hat ─────────
+        logging.info("  Import Schritt 8: Warte bis Pro Tools bereit ist...")
+        time.sleep(2.0)
+        for i in range(180):
+            ok, out = _run_applescript_safe('''
+                try
+                    tell application "System Events"
+                        tell process "Pro Tools"
+                            if exists window 1 then
+                                set winTitle to name of window 1
+                                if winTitle is not missing value then
+                                    if winTitle contains "Importing" or winTitle contains "Processing" or winTitle contains "Task" or winTitle contains "Missing" or winTitle contains "Restoring" then
+                                        return "BUSY"
+                                    end if
+                                end if
+                                set progIndicators to (every UI element of window 1 whose role is "AXProgressIndicator")
+                                if (count of progIndicators) > 0 then
+                                    return "BUSY"
+                                end if
+                            end if
+                        end tell
+                    end tell
+                    return "READY"
+                on error
+                    return "READY"
+                end try
+            ''', timeout=5, label="WaitReady")
+            if not ok or out != "BUSY":
+                break
+            if i % 10 == 0 and i > 0:
+                logging.info(f"  Import Schritt 8: Pro Tools noch beschäftigt ({i}s)...")
+            time.sleep(1.0)
+        logging.info("  Import Schritt 8 OK – Pro Tools bereit.")
+
+        # ── Schritt 9: Numpad ,1, senden ──────────────────────────────
+        time.sleep(3.0)
+        logging.info("  Import Schritt 9: Numpad ,1, senden...")
+        _send_key(65)   # Numpad Komma
+        time.sleep(0.1)
+        _send_key(83)   # Numpad 1
+        time.sleep(0.1)
+        _send_key(65)   # Numpad Komma
+        logging.info("  Import Schritt 9 OK.")
+
+        logging.info("=== INTERPLAY IMPORT ENDE ===")
+    except Exception as e:
+        logging.error(f"Import Fehler: {e}", exc_info=True)
+    finally:
+        # Engine nach Import schließen: Pro Tools hat jetzt eine neue Session,
+        # der alte Singleton ist ungültig. Nächster Aufruf verbindet sich frisch.
+        _close_engine()
+        with _import_lock:
+            _import_running = False
+        _set_busy(False)
+
+
+def run_interplay_export(export_tracks, settings, workspace_steps=17):
+    """
+    Interplay Export mit vorgelagertem Consolidate + Loudness:
+    1. Consolidate + Trim + Loudness (wie WAV/AAF)
+    2. F13 → "Selected Tracks to Sequence in Production Management..."
+    3. "Export Comment" → Enter
+    4. "Export Options" → Select Workspace + Pfeil-Hoch × N → Enter
+    5. "Processing Audio..." abwarten
+    6. Bestaetigungsmeldung → Enter
+    """
+    _VK_UP = 126  # Arrow Up
+    _VK_RETURN = 36
+
+    _set_busy(True)
+    try:
+        logging.info("=== INTERPLAY EXPORT START ===")
+
+        engine = _get_engine()
+        if engine is None:
+            logging.error("PTSL Engine nicht verfuegbar – Abbruch.")
+            return False
+
+        session_path = engine.session_path()
+        session_dir = os.path.dirname(session_path)
+
+        # ── Versteckte Spuren einblenden ─────────────────────────────
+        logging.info("  Interplay: DoE und AD einblenden...")
+        try:
+            engine.set_track_hidden_state(["DoE", "AD"], False)
+            time.sleep(0.2)
+        except Exception as e:
+            logging.warning(f"  Spuren einblenden: {e}")
+
+        # ── Vorbereitung: Consolidate + Trim + Loudness ──────────────
+        video_track = _detect_video_track(engine, settings)
+        in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
+
+        # Video-Ende ermitteln
+        logging.info(f"  Interplay: Spuren selektieren: {export_tracks}")
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.3)
+
+        video_end = None
+        try:
+            engine.select_all_clips_on_track(video_track)
+            time.sleep(0.3)
+            video_sel = engine.get_timeline_selection()
+            video_end = video_sel[1]
+            logging.info(f"  Interplay: Video: {video_sel[0]} -> {video_end}")
+        except Exception as e:
+            logging.error(f"  Interplay: Fehler Videospur '{video_track}': {e}")
+
+        if not video_end or video_end == "00:00:00:00.00":
+            logging.error("  Interplay: Video-Ende nicht ermittelt – überspringe Consolidate.")
+        else:
+            # Export-Spuren erneut selektieren
+            engine.select_tracks_by_name(export_tracks)
+            time.sleep(0.2)
+
+            # Timeline setzen
+            logging.info(f"  Interplay: Timeline: {in_time} -> {video_end}")
+            engine.set_timeline_selection(in_time=in_time, out_time=video_end)
+            time.sleep(0.2)
+            _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT))
+            time.sleep(0.3)
+
+            # Consolidate
+            logging.info("  Interplay: Consolidate...")
+            engine.consolidate_clip()
+            time.sleep(1.0)
+            logging.info("  Interplay: Consolidate OK")
+
+            # Überhänge trimmen
+            _trim_overhangs(engine, export_tracks, in_time, video_end)
+
+            # Loudness-Korrektur
+            if settings.get("loudness_enabled", True):
+                loud_tracks = settings.get("loudness_tracks", ["ST"])
+                target_lufs = settings.get("target_lufs", -23.0)
+                max_tp = settings.get("max_truepeak", -3.0)
+                for lt in loud_tracks:
+                    normalize_track(engine, session_dir, lt, target_lufs, max_tp)
+
+            logging.info("  Interplay: Vorbereitung (Consolidate+Loudness) abgeschlossen.")
+
+        # ── DMGs auswerfen (verschieben den Workspace-Count) ─────────
+        try:
+            result = subprocess.run(
+                ["hdiutil", "info", "-plist"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                import plistlib
+                info = plistlib.loads(result.stdout.encode())
+                ejected = []
+                for img in info.get("images", []):
+                    img_path = img.get("image-path", "")
+                    for entity in img.get("system-entities", []):
+                        mount_point = entity.get("mount-point", "")
+                        if mount_point:
+                            try:
+                                subprocess.run(
+                                    ["hdiutil", "detach", mount_point, "-force"],
+                                    capture_output=True, timeout=10
+                                )
+                                ejected.append(os.path.basename(img_path))
+                            except Exception:
+                                pass
+                if ejected:
+                    logging.info(f"  Interplay: {len(ejected)} DMG(s) ausgeworfen: {ejected}")
+                    time.sleep(1.0)  # Pro Tools braucht kurz um Volumes zu aktualisieren
+        except Exception as e:
+            logging.warning(f"  Interplay: DMG-Auswurf fehlgeschlagen: {e}")
+
+        # Export-Spuren selektieren (nach Consolidate/Loudness)
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.3)
+
+        logging.info("  Interplay: F13 senden...")
+        _send_key(_VK_F13)
+
+        # ── 1. Export Comment Fenster ─────────────────────────────────
+        logging.info("  Interplay: Warte auf 'Export Comment'...")
+        if not _wait_for_pt_window("Export Comment", timeout=10):
+            logging.warning("  Interplay: 'Export Comment' nicht erschienen – Abbruch.")
+            return False
+        time.sleep(0.5)
+        _send_key(_VK_RETURN)
+        logging.info("  Interplay: Export Comment bestaetigt.")
+
+        # ── 2. Export Options Fenster ─────────────────────────────────
+        logging.info("  Interplay: Warte auf 'Export Options'...")
+        if not _wait_for_pt_window("Export Options", timeout=10):
+            logging.warning("  Interplay: 'Export Options' nicht erschienen – Abbruch.")
+            return False
+        time.sleep(1.0)
+
+        # "Select Workspace" Radio Button per AppleScript klicken
+        radio_script = '''
+            tell application "System Events"
+                tell process "Pro Tools"
+                    set frontmost to true
+                    tell window 1
+                        set allRadios to every radio button
+                        repeat with r in allRadios
+                            set rName to name of r
+                            if rName contains "Select Workspace" or rName contains "Workspace" then
+                                click r
+                                delay 0.5
+                                return "OK: " & rName
+                            end if
+                        end repeat
+                        return "RADIO NOT FOUND"
+                    end tell
+                end tell
+            end tell
+        '''
+        rc, out, err = _run_applescript(radio_script)
+        if "OK" in out:
+            logging.info(f"  Interplay: Radio Button geklickt: {out}")
+        else:
+            logging.warning(f"  Interplay: Radio Button nicht gefunden: {out} {err}")
+
+        time.sleep(0.5)
+
+        # Popup-Position ermitteln fuer Mausklick (sucht das Popup neben dem Radio-Button)
+        popup_script = '''
+            tell application "System Events"
+                tell process "Pro Tools"
+                    tell window 1
+                        set radioX to -1
+                        set radioY to -1
+                        set allRadios to every radio button
+                        repeat with r in allRadios
+                            if (name of r) contains "Workspace" then
+                                set pos to position of r
+                                set radioX to item 1 of pos
+                                set radioY to item 2 of pos
+                                exit repeat
+                            end if
+                        end repeat
+                        
+                        if radioY is not -1 then
+                            set allPopups to every pop up button
+                            repeat with p in allPopups
+                                try
+                                    set py to item 2 of (position of p)
+                                    -- Gleiche Y-Hoehe (Toleranz 15 Pixel)
+                                    if py - radioY < 15 and radioY - py < 15 then
+                                        set pos to position of p
+                                        set sz to size of p
+                                        set cx to (item 1 of pos) + (item 1 of sz) / 2
+                                        set cy to (item 2 of pos) + (item 2 of sz) / 2
+                                        return "POPUP_OPEN:" & cx & "," & cy
+                                    end if
+                                end try
+                            end repeat
+                            
+                            -- Fallback: Geometrisch rechts vom Radio-Button
+                            set fallback_cx to radioX + 150
+                            set fallback_cy to radioY + 8
+                            return "POPUP_OPEN:" & fallback_cx & "," & fallback_cy
+                        end if
+                        return "NO_POPUP"
+                    end tell
+                end tell
+            end tell
+        '''
+        rc, out, err = _run_applescript(popup_script)
+        popup_x, popup_y = None, None
+        if "POPUP_OPEN" in out:
+            logging.info(f"  Interplay: Popup-Koordinaten gefunden: {out}")
+            try:
+                coords = out.split(":")[1].strip()
+                popup_x = float(coords.split(",")[0])
+                popup_y = float(coords.split(",")[1])
+            except Exception:
+                pass
+        else:
+            logging.warning(f"  Interplay: Kein Popup oder Radiobutton gefunden: {out} {err}")
+
+        time.sleep(0.5)
+
+        # Mausklick auf das geoeffnete Popup-Menue
+        import Quartz
+        if popup_x is not None and popup_y is not None:
+            logging.info(f"  Interplay: Mausklick auf Popup ({popup_x:.0f}, {popup_y:.0f})...")
+            point = Quartz.CGPointMake(popup_x, popup_y)
+            click_down = Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventLeftMouseDown, point, Quartz.kCGMouseButtonLeft
+            )
+            click_up = Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventLeftMouseUp, point, Quartz.kCGMouseButtonLeft
+            )
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, click_down)
+            time.sleep(0.05)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, click_up)
+            time.sleep(0.5)
+        else:
+            logging.warning("  Interplay: Popup-Position unbekannt – ueberspringe Mausklick.")
+
+        # Workspace per Pfeiltasten auswaehlen
+        logging.info(f"  Interplay: {workspace_steps}x Pfeil-Hoch...")
+        pid = _pt_pid()
+        if pid:
+            src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+            for _ in range(workspace_steps):
+                ev_dn = Quartz.CGEventCreateKeyboardEvent(src, _VK_UP, True)
+                ev_up = Quartz.CGEventCreateKeyboardEvent(src, _VK_UP, False)
+                Quartz.CGEventPostToPid(pid, ev_dn)
+                Quartz.CGEventPostToPid(pid, ev_up)
+                time.sleep(0.05)
+        time.sleep(0.3)
+        _send_key(_VK_RETURN)
+        logging.info("  Interplay: Workspace ausgewaehlt.")
+
+        time.sleep(0.5)
+        _send_key(_VK_RETURN)
+        logging.info("  Interplay: Export Options bestaetigt.")
+
+        # ── 3. Processing Audio abwarten ──────────────────────────────
+        logging.info("  Interplay: Warte auf Processing...")
+        processing_found = False
+        for title_part in ["Processing", "Bouncing", "Exporting"]:
+            if _wait_for_pt_window(title_part, timeout=10):
+                processing_found = True
+                logging.info(f"  Interplay: '{title_part}' Fenster gefunden, warte...")
+                _wait_for_pt_window(title_part, timeout=300, gone=True)
+                logging.info(f"  Interplay: '{title_part}' abgeschlossen.")
+                break
+
+        if not processing_found:
+            logging.info("  Interplay: Kein Processing-Fenster – vermutlich bereits fertig.")
+
+        # ── 4. Bestaetigungsmeldung auslesen und bestaetigen ─────────
+        logging.info("  Interplay: Warte auf Bestaetigungsfenster...")
+        win_title, win_text, export_ok = _read_pt_export_result(timeout=12, settings=settings)
+
+        if win_title:
+            logging.info(f"  Interplay: Bestaetigungsfenster: '{win_title}'")
+            if win_text:
+                logging.info(f"  Interplay: Fensterinhalt: {win_text[:200]}")
+        else:
+            logging.warning("  Interplay: Kein Bestaetigungsfenster gefunden (Timeout).")
+
+        if export_ok is True:
+            logging.info("  Interplay: Export ERFOLGREICH.")
+        elif export_ok is False:
+            logging.error("  Interplay: Export FEHLGESCHLAGEN!")
+        else:
+            logging.info("  Interplay: Export-Ergebnis unklar (keine Schluesselwoerter).")
+
+        time.sleep(2.0)   # 2s anzeigen bevor Return
+        _send_key(_VK_RETURN)
+        logging.info("  Interplay: Bestaetigungsfenster bestaetigt.")
+        time.sleep(0.5)
+
+        # ── 5. Sequence umbenennen – nur bei Erfolg oder unklarem Ergebnis ──
+        if settings.get("interplay_rename_enabled", False):
+            if export_ok is False:
+                logging.warning("  Interplay: Umbenennung uebersprungen – Export war fehlerhaft.")
+            else:
+                logging.info("  Interplay: Starte Sequence-Umbenennung...")
+                _rename_sequence_in_interplay(settings)
+
+        logging.info("=== INTERPLAY EXPORT ENDE ===")
+        return export_ok is not False   # False nur bei erkanntem Fehler
+
+    except Exception as e:
+        logging.error(f"Interplay Export Fehler: {e}", exc_info=True)
+        return False
+    finally:
+        _set_busy(False)
+
+
+def _rename_sequence_in_interplay(settings):
+    """Benennt die aktuell selektierte Sequenz in Interplay Access um.
+    Liest Clipboard-Namen nach F2 → Cmd+A → Cmd+C → ESC,
+    wendet trim_start / trim_end / prefix / suffix an, schreibt zurück."""
+    trim_start = max(0, int(settings.get("interplay_rename_trim_start", 0)))
+    trim_end   = max(0, int(settings.get("interplay_rename_trim_end", 0)))
+    prefix     = settings.get("interplay_rename_prefix", "")
+    suffix     = settings.get("interplay_rename_suffix", "")
+
+    if trim_start == 0 and trim_end == 0 and not prefix and not suffix:
+        logging.info("  Rename: Keine Änderungen konfiguriert – überspringe.")
+        return
+
+    # ── Schritt 1: aktuellen Namen lesen ────────────────────────────
+    _activate_app("interplayAccess")
+    time.sleep(0.4)
+    _send_key_to_app(_VK_F2, "interplayAccess")            # Rename-Dialog öffnen
+    time.sleep(0.4)
+    _send_key_to_app(_VK_A, "interplayAccess", cmd=True)   # Alles selektieren
+    time.sleep(0.2)
+    _send_key_to_app(_VK_C, "interplayAccess", cmd=True)   # Kopieren
+    time.sleep(0.3)
+    _send_key_to_app(_VK_ESC, "interplayAccess")           # Abbrechen ohne Änderung
+    time.sleep(0.3)
+
+    try:
+        current_name = subprocess.run(
+            ["pbpaste"], capture_output=True, text=True, timeout=2
+        ).stdout.strip()
+    except Exception as e:
+        logging.warning(f"  Rename: Clipboard lesen fehlgeschlagen: {e}")
+        return
+
+    if not current_name:
+        logging.warning("  Rename: Clipboard leer – überspringe Umbenennung.")
+        return
+
+    logging.info(f"  Rename: Aktueller Name: '{current_name}'")
+
+    # ── Schritt 2: neuen Namen berechnen ────────────────────────────
+    end_idx = len(current_name) - trim_end if trim_end > 0 else len(current_name)
+    end_idx = max(trim_start, end_idx)          # Sicherstellen: nicht negativ
+    new_name = prefix + current_name[trim_start:end_idx] + suffix
+
+    if not new_name:
+        logging.warning("  Rename: Berechneter Name ist leer – überspringe.")
+        return
+
+    if new_name == current_name:
+        logging.info("  Rename: Name unverändert – überspringe.")
+        return
+
+    logging.info(f"  Rename: Neuer Name: '{new_name}'")
+
+    # ── Schritt 3: neuen Namen in Clipboard, dann einfügen ──────────
+    try:
+        subprocess.run(["pbcopy"], input=new_name, text=True, timeout=2)
+    except Exception as e:
+        logging.warning(f"  Rename: Clipboard schreiben fehlgeschlagen: {e}")
+        return
+
+    _activate_app("interplayAccess")
+    time.sleep(0.3)
+    _send_key_to_app(_VK_F2, "interplayAccess")            # Rename-Dialog öffnen
+    time.sleep(0.4)
+    _send_key_to_app(_VK_A, "interplayAccess", cmd=True)   # Alles selektieren
+    time.sleep(0.2)
+    _send_key_to_app(_VK_V, "interplayAccess", cmd=True)   # Neuen Namen einfügen
+    time.sleep(0.3)
+    _send_key_to_app(_VK_RETURN, "interplayAccess")        # Bestätigen
+    time.sleep(0.5)
+    logging.info("  Rename: Umbenennung abgeschlossen.")
+
+
+def run_export(export_tracks, video_track=None, settings=None):
+    """
+    Export-Workflow (Keyboard-basiert, ~5s):
+      1. DoE und AD einblenden
+      2. Video-Ende von V1 ermitteln
+      3. Timeline setzen + Shift+Ö zum Ausdehnen auf alle Spuren
+      4. Consolidate (alle Spuren auf einmal)
+      5. Pre/Post-Material loeschen
+      6. Export-Spuren am Spurenkopf markieren
+    """
+    global _export_running
+    with _export_lock:
+        if _export_running:
+            logging.warning("Export laeuft bereits – ignoriert.")
+            return
+        _export_running = True
+    _set_busy(True)
+
+    if settings is None:
+        settings = load_settings()
+
+    try:
+        logging.info("=== EXPORT START ===")
+        logging.info(f"  Export-Spuren: {export_tracks}")
+
+        # Pro Tools in den Vordergrund (fuer Keyboard-Befehle)
+        try:
+            subprocess.run(
+                ["osascript", "-e", 'tell application "Pro Tools" to activate'],
+                timeout=3, capture_output=True
+            )
+            time.sleep(0.3)
+        except Exception:
+            pass
+
+        engine = _get_engine()
+        if engine is None:
+            logging.error("PTSL Engine nicht verfügbar – Abbruch.")
+            return
+
+        # ── 1. Versteckte Spuren einblenden ──────────────────────────
+        logging.info("Schritt 1: DoE und AD einblenden...")
+        try:
+            engine.set_track_hidden_state(["DoE", "AD"], False)
+            time.sleep(0.2)
+        except Exception as e:
+            logging.warning(f"  Spuren einblenden: {e}")
+
+        # ── 2. Video-Ende ermitteln ──────────────────────────────────
+        # Auto-detect oder Fallback auf Parameter/Settings
+        video_track = video_track or _detect_video_track(engine, settings)
+        logging.info(f"Schritt 2: Video-Ende ermitteln (Spur: '{video_track}')...")
+        try:
+            engine.select_all_clips_on_track(video_track)
+            time.sleep(0.3)
+            video_sel = engine.get_timeline_selection()
+            video_end = video_sel[1]
+            logging.info(f"  Video: {video_sel[0]} -> {video_end}")
+        except Exception as e:
+            logging.error(f"  Fehler Videospur '{video_track}': {e}")
+            return
+
+        if not video_end or video_end == "00:00:00:00.00":
+            logging.error("  Video-Ende nicht ermittelt – Abbruch.")
+            return
+
+        in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
+
+        # ── 3. Timeline + Selection ausdehnen ────────────────────────
+        logging.info(f"Schritt 3: Timeline {in_time} -> {video_end} + {_EXTEND_COUNT}x Shift+Ö")
+        engine.set_timeline_selection(in_time=in_time, out_time=video_end)
+        time.sleep(0.2)
+        _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT) if settings else _EXTEND_COUNT)
+        time.sleep(0.3)
+
+        # ── 4. Consolidate (alle Spuren auf einmal) ──────────────────
+        logging.info("Schritt 4: Consolidate...")
+        engine.consolidate_clip()
+        time.sleep(1.0)
+        logging.info("  Consolidate OK")
+
+        # ── 5. Ueberhaenge pro Spur loeschen ─────────────────────────
+        _trim_overhangs(engine, export_tracks, in_time, video_end)
+
+        # ── 7. Loudness-Korrektur (EBU R128) ─────────────────────
+        if settings.get("loudness_enabled", True):
+            loud_tracks = settings.get("loudness_tracks", ["ST"])
+            logging.info(f"Schritt 7: Loudness-Korrektur fuer {loud_tracks}...")
+            try:
+                session_path = engine.session_path()
+                session_dir = os.path.dirname(session_path)
+                target_lufs = settings.get("target_lufs", -23.0)
+                max_tp = settings.get("max_truepeak", -3.0)
+                for lt in loud_tracks:
+                    normalize_track(engine, session_dir, lt, target_lufs, max_tp)
+            except Exception as e:
+                logging.error(f"  Normalisierung fehlgeschlagen: {e}")
+        else:
+            logging.info("Schritt 7: ST-Spur normalisieren uebersprungen (deaktiviert).")
+
+        # -- 8a. WAV Export (optional) --
+        if settings.get("wav_export_enabled", False):
+            logging.info("Schritt 8a: WAV Export...")
+            try:
+                session_path = engine.session_path()
+                s_dir = os.path.dirname(session_path)
+                _do_wav_export(export_tracks, s_dir)
+            except Exception as e:
+                logging.error(f"  WAV Export Fehler: {e}")
+        else:
+            logging.info("Schritt 8a: WAV Export uebersprungen (deaktiviert).")
+
+        # -- 8b. AAF Export (optional) --
+        if settings.get("aaf_export_enabled", False):
+            logging.info("Schritt 8b: AAF Export...")
+            try:
+                session_path = engine.session_path()
+                s_dir = os.path.dirname(session_path)
+                s_name = os.path.splitext(os.path.basename(session_path))[0]
+                _do_aaf_export(s_name, s_dir)
+            except Exception as e:
+                logging.error(f"  AAF Export Fehler: {e}")
+        else:
+            logging.info("Schritt 8b: AAF Export uebersprungen (deaktiviert).")
+
+        # -- 8c. Interplay Export (optional) --
+        if settings.get("interplay_enabled", False):
+            logging.info("Schritt 8c: Interplay Export...")
+            ws_steps = settings.get("interplay_workspace_steps", 17)
+            try:
+                run_interplay_export(export_tracks, settings, workspace_steps=ws_steps)
+            except Exception as e:
+                logging.error(f"  Interplay Export Fehler: {e}")
+        else:
+            logging.info("Schritt 8c: Interplay Export uebersprungen (deaktiviert).")
+
+        # -- 9. Abschluss: Spuren markieren, eingeblendet lassen --
+        logging.info("Schritt 9: Export-Spuren markieren...")
+        engine.set_timeline_selection(in_time=in_time, out_time=video_end)
+        engine.select_tracks_by_name(export_tracks)
+
+        logging.info("=== EXPORT ABGESCHLOSSEN ===")
+        logging.info(f"  {len(export_tracks)} Spuren konsolidiert und bereinigt.")
+
+    except Exception as e:
+        logging.error(f"Export Fehler: {e}", exc_info=True)
+    finally:
+        with _export_lock:
+            _export_running = False
+        _set_busy(False)
+
+
+# -----------------------------------------------------------------------------
+# WAV Export - Konsolidierte Dateien in Export-Ordner kopieren
+# -----------------------------------------------------------------------------
+def _trim_overhangs(engine, export_tracks, in_time, video_end):
+    """Löscht Überhänge (Pre/Post-Material) pro Spur außerhalb der Export-Range."""
+    logging.info(f"  Ueberhaenge loeschen ({len(export_tracks)} Spuren)...")
+    for track_name in export_tracks:
+        # Pre-Material (vor Start-TC) löschen
+        engine.select_all_clips_on_track(track_name)
+        time.sleep(0.1)
+        # 1 Frame vor dem Start-TC berechnen
+        tc_parts = in_time.replace(".00", "").split(":")
+        pre_h, pre_m, pre_s, pre_f = int(tc_parts[0]), int(tc_parts[1]), int(tc_parts[2]), int(tc_parts[3])
+        if pre_f > 0:
+            pre_f -= 1
+        elif pre_s > 0:
+            pre_s -= 1; pre_f = 24
+        elif pre_m > 0:
+            pre_m -= 1; pre_s = 59; pre_f = 24
+        elif pre_h > 0:
+            pre_h -= 1; pre_m = 59; pre_s = 59; pre_f = 24
+        pre_tc = f"{pre_h:02d}:{pre_m:02d}:{pre_s:02d}:{pre_f:02d}.00"
+        engine.set_timeline_selection(
+            in_time="00:00:00:00.00",
+            out_time=pre_tc
+        )
+        time.sleep(0.1)
+        try:
+            engine.clear()
+        except Exception:
+            pass
+
+        # Post-Material (nach Video-Ende) löschen
+        engine.select_all_clips_on_track(track_name)
+        time.sleep(0.1)
+        engine.set_timeline_selection(
+            in_time=video_end,
+            out_time="23:59:59:24.00"
+        )
+        time.sleep(0.1)
+        try:
+            engine.clear()
+        except Exception:
+            pass
+
+    logging.info("  Ueberhaenge geloescht")
+
+
+# -----------------------------------------------------------------------------
+def _do_wav_export(export_tracks, session_dir):
+    """Kopiert die konsolidierten WAV-Dateien in den Export-Ordner."""
+    audio_dir = os.path.join(session_dir, "Audio Files")
+    export_dir = os.path.join(session_dir, "export")
+    os.makedirs(export_dir, exist_ok=True)
+
+    if not os.path.isdir(audio_dir):
+        logging.error(f"  Audio-Ordner nicht gefunden: {audio_dir}")
+        return
+
+    copied = 0
+    for track_name in export_tracks:
+        candidates = []
+        for f in os.listdir(audio_dir):
+            if not f.lower().endswith(".wav"):
+                continue
+            base = os.path.splitext(f)[0]
+            if base == track_name or base.startswith(track_name + "_") or base.startswith(track_name + "."):
+                full = os.path.join(audio_dir, f)
+                candidates.append((os.path.getmtime(full), full, f))
+
+        if candidates:
+            candidates.sort(reverse=True)
+            src = candidates[0][1]
+            dst = os.path.join(export_dir, f"{track_name}.wav")
+            shutil.copy2(src, dst)
+            logging.info(f"  WAV: {candidates[0][2]} -> {track_name}.wav")
+            copied += 1
+        else:
+            logging.warning(f"  WAV: Keine Datei fuer Spur '{track_name}' in Audio Files")
+
+    logging.info(f"  WAV Export: {copied}/{len(export_tracks)} Dateien kopiert -> {export_dir}")
+
+
+def run_wav_export_standalone(export_tracks, settings):
+    """Standalone WAV Export – mit vorgelagertem Consolidate."""
+    try:
+        logging.info("=== WAV EXPORT (Standalone) START ===")
+        _set_busy(True)
+        engine = _get_engine()
+        if engine is None:
+            logging.error("PTSL Engine nicht verfuegbar.")
+            return
+        session_path = engine.session_path()
+        session_dir = os.path.dirname(session_path)
+
+        # Spuren selektieren
+        logging.info(f"  Spuren selektieren: {export_tracks}")
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.3)
+
+        # Video-Ende ermitteln (wie im Haupt-Export)
+        in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
+        video_track = _detect_video_track(engine, settings)
+        video_end = None
+        try:
+            engine.select_all_clips_on_track(video_track)
+            time.sleep(0.3)
+            video_sel = engine.get_timeline_selection()
+            video_end = video_sel[1]
+            logging.info(f"  Video: {video_sel[0]} -> {video_end}")
+        except Exception as e:
+            logging.error(f"  Fehler Videospur '{video_track}': {e}")
+
+        if not video_end or video_end == "00:00:00:00.00":
+            logging.error("  Video-Ende nicht ermittelt – Abbruch.")
+            return
+
+        # Export-Spuren erneut selektieren (nach Video-Detection)
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.2)
+
+        # Timeline setzen
+        logging.info(f"  Timeline: {in_time} -> {video_end}")
+        engine.set_timeline_selection(in_time=in_time, out_time=video_end)
+        time.sleep(0.2)
+        # Selection auf Export-Spuren ausdehnen
+        _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT))
+        time.sleep(0.3)
+
+        # Consolidate
+        logging.info("  Consolidate...")
+        engine.consolidate_clip()
+        time.sleep(1.0)
+        logging.info("  Consolidate OK")
+
+        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden)
+        _trim_overhangs(engine, export_tracks, in_time, video_end)
+
+        # Loudness-Korrektur
+        if settings.get("loudness_enabled", True):
+            loud_tracks = settings.get("loudness_tracks", ["ST"])
+            target_lufs = settings.get("target_lufs", -23.0)
+            max_tp = settings.get("max_truepeak", -3.0)
+            for lt in loud_tracks:
+                normalize_track(engine, session_dir, lt, target_lufs, max_tp)
+
+        _do_wav_export(export_tracks, session_dir)
+        logging.info("=== WAV EXPORT (Standalone) ENDE ===")
+    except Exception as e:
+        logging.error(f"WAV Export Fehler: {e}", exc_info=True)
+    finally:
+        _set_busy(False)
+
+
+# -----------------------------------------------------------------------------
+# AAF Export - Pro Tools UI-Automation
+# -----------------------------------------------------------------------------
+_AAF_EXPORT_SCRIPT_TEMPLATE = '''
+set exportPath to "{export_path}"
+
+tell application "Pro Tools" to activate
+delay 0.5
+
+tell application "System Events"
+    tell process "Pro Tools"
+        set frontmost to true
+        delay 0.3
+
+        -- Datei > Export > Selected Tracks as New AAF/OMF...
+        try
+            click menu item "Selected Tracks as New AAF/OMF..." of menu of menu item "Export" of menu "File" of menu bar 1
+        on error
+            try
+                click menu item "Selected Tracks as New AAF/OMF…" of menu of menu item "Export" of menu "File" of menu bar 1
+            on error
+                return "ERROR:Menu item not found"
+            end try
+        end try
+
+        -- 1. Warte auf "Export to OMF/AAF" Fenster
+        delay 1.5
+        set exportWinFound to false
+        repeat 30 times
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    if name of w contains "Export to OMF" or name of w contains "Export to AAF" or name of w contains "OMF/AAF" then
+                        set exportWinFound to true
+                        exit repeat
+                    end if
+                end repeat
+                if exportWinFound then exit repeat
+            end try
+            delay 0.5
+        end repeat
+
+        if not exportWinFound then
+            return "ERROR:Export to OMF/AAF dialog not found"
+        end if
+        delay 0.5
+
+        -- 2. Audio Media Options: Format-Dropdown gezielt auf "Embedded" setzen
+        -- Group 3 = "Audio Media Options", Popup 3 darin = "Format"
+        try
+            set audioGroup to group 3 of window 1
+            set formatPopup to pop up button 3 of audioGroup
+            set currentFormat to value of formatPopup
+            
+            if currentFormat is not "Embedded" then
+                -- Format-Dropdown klicken und "Embedded" auswaehlen
+                click formatPopup
+                delay 0.3
+                -- 4x Pfeiltaste nach unten = "Embedded"
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 36 -- Enter
+                delay 0.3
+            end if
+        on error errMsg
+            -- Fallback: versuche ueber die Gruppe mit dem Titel
+            try
+                set allGroups to every group of window 1
+                repeat with g in allGroups
+                    try
+                        if title of g contains "Audio" then
+                            set formatPopup to pop up button 3 of g
+                            click formatPopup
+                            delay 0.3
+                            key code 125
+                            delay 0.1
+                            key code 125
+                            delay 0.1
+                            key code 125
+                            delay 0.1
+                            key code 125
+                            delay 0.1
+                            key code 36
+                            exit repeat
+                        end if
+                    end try
+                end repeat
+            end try
+        end try
+
+
+        delay 0.3
+
+        -- 3. Dialog mit Enter bestaetigen
+        key code 36
+        delay 1.5
+
+        -- 4. Warte auf "Publishing Options" Fenster
+        set pubWinFound to false
+        repeat 30 times
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    if name of w contains "Publishing" then
+                        set pubWinFound to true
+                        exit repeat
+                    end if
+                end repeat
+                if pubWinFound then exit repeat
+            end try
+            delay 0.5
+        end repeat
+
+        if not pubWinFound then
+            return "ERROR:Publishing Options dialog not found"
+        end if
+        delay 0.5
+
+        -- 5. Pfeiltaste rechts + "_Audio" tippen
+        key code 124
+        delay 0.1
+        keystroke "_Audio"
+        delay 0.3
+
+        -- 6. Enter zum Bestaetigen
+        key code 36
+        delay 1.5
+
+        -- 7. Warte auf "Save" Dialog
+        set saveWinFound to false
+        repeat 30 times
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    if name of w contains "Save" or name of w contains "Speichern" then
+                        set saveWinFound to true
+                        exit repeat
+                    end if
+                end repeat
+                if saveWinFound then exit repeat
+            end try
+            try
+                if exists sheet 1 of window 1 then
+                    set saveWinFound to true
+                    exit repeat
+                end if
+            end try
+            delay 0.5
+        end repeat
+
+        if not saveWinFound then
+            return "ERROR:Save dialog not found"
+        end if
+        delay 0.5
+
+        -- 8. Zum Export-Ordner navigieren via Cmd+Shift+G
+        keystroke "g" using {{command down, shift down}}
+        delay 0.8
+
+        keystroke "a" using command down
+        delay 0.1
+        keystroke exportPath
+        delay 0.3
+
+        key code 36
+        delay 0.8
+
+        -- 9. Save mit Enter
+        key code 36
+        delay 1.5
+
+        -- 9b. Replace-Dialog abfangen (falls Datei bereits existiert)
+        -- Der Dialog hat einen LEEREN Fensternamen, daher direkt Yes/Ja Button suchen
+        try
+            if exists button "Yes" of window 1 then
+                click button "Yes" of window 1
+                delay 0.5
+            end if
+        end try
+        try
+            if exists button "Ja" of window 1 then
+                click button "Ja" of window 1
+                delay 0.5
+            end if
+        end try
+
+        -- 10. Warte bis Export abgeschlossen
+        repeat 180 times
+            set stillBusy to false
+            
+            -- Zuerst: Replace/Yes/Ja Dialoge sofort bestaetigen
+            try
+                if exists button "Yes" of window 1 then
+                    click button "Yes" of window 1
+                    delay 0.5
+                end if
+            end try
+            try
+                if exists button "Ja" of window 1 then
+                    click button "Ja" of window 1
+                    delay 0.5
+                end if
+            end try
+            
+            -- Dann: Pruefen ob noch Export-Fenster offen sind
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    set wName to name of w
+                    if wName contains "Export" or wName contains "Save" or wName contains "Publishing" or wName contains "Bouncing" or wName contains "Writing" then
+                        set stillBusy to true
+                        exit repeat
+                    end if
+                    -- Fenster ohne Namen mit Yes/No = Replace-Dialog
+                    if wName is "" then
+                        try
+                            if exists button "Yes" of w then
+                                click button "Yes" of w
+                                set stillBusy to true
+                                exit repeat
+                            end if
+                        end try
+                        try
+                            if exists button "Ja" of w then
+                                click button "Ja" of w
+                                set stillBusy to true
+                                exit repeat
+                            end if
+                        end try
+                    end if
+                end repeat
+            end try
+            if not stillBusy then exit repeat
+            delay 1.0
+        end repeat
+
+        delay 1.0
+
+    end tell
+end tell
+return "OK"
+'''
+
+
+def _do_aaf_export(session_name, session_dir):
+    """Exportiert die selektierten Spuren als AAF mit Embedded Audio."""
+    export_dir = os.path.join(session_dir, "export")
+    os.makedirs(export_dir, exist_ok=True)
+
+    script = _AAF_EXPORT_SCRIPT_TEMPLATE.format(
+        export_path=export_dir.replace('"', '\\"')
+    )
+
+    logging.info(f"  AAF: Exportiere nach {export_dir}")
+    rc, out, err = _run_applescript(script)
+    if "ERROR" in out:
+        logging.error(f"  AAF AppleScript Fehler: {out}")
+    else:
+        logging.info(f"  AAF Export abgeschlossen: {out}")
+
+
+
+
+def run_aaf_export_standalone(export_tracks, settings):
+    """Standalone AAF Export – mit vorgelagertem Consolidate."""
+    try:
+        logging.info("=== AAF EXPORT (Standalone) START ===")
+        _set_busy(True)
+        engine = _get_engine()
+        if engine is None:
+            logging.error("PTSL Engine nicht verfuegbar.")
+            return
+        session_path = engine.session_path()
+        session_dir = os.path.dirname(session_path)
+        session_name = os.path.splitext(os.path.basename(session_path))[0]
+
+        # Spuren selektieren
+        logging.info(f"  Spuren selektieren: {export_tracks}")
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.3)
+
+        # Video-Ende ermitteln (wie im Haupt-Export)
+        in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
+        video_track = _detect_video_track(engine, settings)
+        video_end = None
+        try:
+            engine.select_all_clips_on_track(video_track)
+            time.sleep(0.3)
+            video_sel = engine.get_timeline_selection()
+            video_end = video_sel[1]
+            logging.info(f"  Video: {video_sel[0]} -> {video_end}")
+        except Exception as e:
+            logging.error(f"  Fehler Videospur '{video_track}': {e}")
+
+        if not video_end or video_end == "00:00:00:00.00":
+            logging.error("  Video-Ende nicht ermittelt – Abbruch.")
+            return
+
+        # Export-Spuren erneut selektieren (nach Video-Detection)
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.2)
+
+        # Timeline setzen
+        logging.info(f"  Timeline: {in_time} -> {video_end}")
+        engine.set_timeline_selection(in_time=in_time, out_time=video_end)
+        time.sleep(0.2)
+        # Selection auf Export-Spuren ausdehnen
+        _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT))
+        time.sleep(0.3)
+
+        # Consolidate
+        logging.info("  Consolidate...")
+        engine.consolidate_clip()
+        time.sleep(1.0)
+        logging.info("  Consolidate OK")
+
+        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden)
+        _trim_overhangs(engine, export_tracks, in_time, video_end)
+
+        # Loudness-Korrektur
+        if settings.get("loudness_enabled", True):
+            loud_tracks = settings.get("loudness_tracks", ["ST"])
+            target_lufs = settings.get("target_lufs", -23.0)
+            max_tp = settings.get("max_truepeak", -3.0)
+            for lt in loud_tracks:
+                normalize_track(engine, session_dir, lt, target_lufs, max_tp)
+
+        # Spuren erneut selektieren für AAF-Export
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.2)
+        engine.set_timeline_selection(in_time=in_time, out_time=video_end)
+        time.sleep(0.2)
+
+        _do_aaf_export(session_name, session_dir)
+        logging.info("=== AAF EXPORT (Standalone) ENDE ===")
+    except Exception as e:
+        logging.error(f"AAF Export Fehler: {e}", exc_info=True)
+    finally:
+        _set_busy(False)
+
+
+def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max_truepeak=-3.0):
+    """
+    Normalisiert die konsolidierte Audiodatei einer Spur nach EBU R128.
+    1. Findet die neueste '<track_name>*' .wav im Audio Files Ordner
+    2. Misst integrierte Lautheit (LUFS) und True Peak
+    3. Wendet Gain-Korrektur an (mit True-Peak-Limiter)
+    4. Ueberschreibt die Datei
+    5. Aktualisiert Pro Tools (refresh)
+    """
+    logging.info(f"  Loudness-Korrektur fuer Spur '{track_name}'...")
+    try:
+        import soundfile as sf
+        import pyloudnorm as pyln
+        import numpy as np
+    except ImportError as e:
+        logging.error(f"Normalisierung: fehlende Bibliothek: {e}")
+        logging.error("  pip3 install pyloudnorm soundfile")
+        return
+
+    audio_dir = os.path.join(session_dir, "Audio Files")
+    if not os.path.isdir(audio_dir):
+        logging.error(f"  Audio-Ordner nicht gefunden: {audio_dir}")
+        return
+
+    # Neueste konsolidierte Datei fuer diese Spur finden
+    st_files = []
+    for f in os.listdir(audio_dir):
+        base = os.path.splitext(f)[0]
+        if (base == track_name or base.startswith(track_name + "_") or base.startswith(track_name + ".")) and f.lower().endswith(".wav"):
+            full = os.path.join(audio_dir, f)
+            mtime = os.path.getmtime(full)
+            size = os.path.getsize(full)
+            st_files.append((mtime, size, full, f))
+
+    if not st_files:
+        logging.warning(f"  Keine {track_name}*.wav Dateien gefunden – Normalisierung uebersprungen.")
+        return
+
+    st_files.sort(reverse=True)  # Neueste zuerst (nach mtime)
+    target_file = st_files[0][2]
+    target_name = st_files[0][3]
+    logging.info(f"  Datei: {target_name} ({st_files[0][1] / 1024 / 1024:.1f} MB)")
+
+    # Audio lesen
+    data, rate = sf.read(target_file)
+    logging.info(f"  Sample-Rate: {rate} Hz, Dauer: {len(data)/rate:.1f}s, Kanaele: {data.ndim}")
+
+    # Lautheit messen
+    meter = pyln.Meter(rate)
+    current_lufs = meter.integrated_loudness(data)
+    logging.info(f"  Aktuelle Lautheit: {current_lufs:.1f} LUFS (Ziel: {target_lufs} LUFS)")
+
+    if current_lufs == float('-inf'):
+        logging.warning("  Stille erkannt – Normalisierung uebersprungen.")
+        return
+
+    # Gain berechnen
+    gain_db = target_lufs - current_lufs
+    gain_linear = 10 ** (gain_db / 20.0)
+    logging.info(f"  Gain-Korrektur: {gain_db:+.1f} dB")
+
+    # Gain anwenden
+    normalized = data * gain_linear
+
+    # True Peak pruefen und limitieren
+    peak_linear = np.max(np.abs(normalized))
+    peak_db = 20 * np.log10(peak_linear) if peak_linear > 0 else -120.0
+    logging.info(f"  True Peak nach Gain: {peak_db:.1f} dB (Max: {max_truepeak} dB)")
+
+    if peak_db > max_truepeak:
+        # Limitieren: Gain so reduzieren dass True Peak eingehalten wird
+        reduction_db = peak_db - max_truepeak
+        reduction_linear = 10 ** (-reduction_db / 20.0)
+        normalized *= reduction_linear
+        final_lufs = current_lufs + gain_db - reduction_db
+        logging.info(f"  True Peak Limiter: -{reduction_db:.1f} dB angewendet")
+        logging.info(f"  Endgueltige Lautheit: {final_lufs:.1f} LUFS")
+    else:
+        logging.info(f"  True Peak OK – kein Limiting noetig")
+
+    # Datei ueberschreiben
+    sf.write(target_file, normalized, rate)
+    logging.info(f"  Datei ueberschrieben: {target_name}")
+
+    # ── Loudness Correction Metadata schreiben ───────────────────────
+    final_peak = np.max(np.abs(normalized))
+    final_peak_db = 20 * np.log10(final_peak) if final_peak > 0 else -120.0
+    original_peak = np.max(np.abs(data))
+    original_peak_db = 20 * np.log10(original_peak) if original_peak > 0 else -120.0
+    limiting_applied = peak_db > max_truepeak
+    if limiting_applied:
+        final_lufs_val = current_lufs + gain_db - (peak_db - max_truepeak)
+    else:
+        final_lufs_val = target_lufs
+
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    duration_s = len(data) / rate
+    duration_min = int(duration_s // 60)
+    duration_sec = duration_s % 60
+
+    meta_path = os.path.join(session_dir, "Loudness Correction Metadata.txt")
+    try:
+        with open(meta_path, "w", encoding="utf-8") as mf:
+            mf.write("=" * 60 + "\n")
+            mf.write("  LOUDNESS CORRECTION METADATA\n")
+            mf.write("  EBU R128 / ITU-R BS.1770\n")
+            mf.write("=" * 60 + "\n\n")
+            mf.write(f"  Datum:              {timestamp}\n")
+            mf.write(f"  Quelldatei:         {target_name}\n")
+            mf.write(f"  Sample-Rate:        {rate} Hz\n")
+            mf.write(f"  Kanaele:            {'Stereo' if data.ndim == 2 else 'Mono'}\n")
+            mf.write(f"  Dauer:              {duration_min}:{duration_sec:05.2f}\n\n")
+            mf.write("-" * 60 + "\n")
+            mf.write("  MESSWERTE\n")
+            mf.write("-" * 60 + "\n\n")
+            mf.write(f"  Original Lautheit:  {current_lufs:.1f} LUFS\n")
+            mf.write(f"  Ziel Lautheit:      {target_lufs:.1f} LUFS\n")
+            mf.write(f"  Gain-Korrektur:     {gain_db:+.1f} dB\n\n")
+            mf.write(f"  Original True Peak: {original_peak_db:.1f} dB\n")
+            mf.write(f"  Max True Peak:      {max_truepeak:.1f} dB\n")
+            mf.write(f"  True Peak Limiter:  {'Ja (%.1f dB)' % (peak_db - max_truepeak) if limiting_applied else 'Nein'}\n\n")
+            mf.write("-" * 60 + "\n")
+            mf.write("  ERGEBNIS\n")
+            mf.write("-" * 60 + "\n\n")
+            mf.write(f"  Endgueltige Lautheit: {final_lufs_val:.1f} LUFS\n")
+            mf.write(f"  Endgueltiger Peak:    {final_peak_db:.1f} dB TP\n")
+            mf.write(f"  Norm konform:         {'JA' if final_lufs_val >= target_lufs - 0.5 and final_peak_db <= max_truepeak else 'NEIN'}\n\n")
+            mf.write("=" * 60 + "\n")
+        logging.info(f"  Metadata geschrieben: {meta_path}")
+    except Exception as e:
+        logging.warning(f"  Metadata schreiben: {e}")
+
+    # Pro Tools aktualisieren und Clip umbenennen
+    try:
+        engine.refresh_all_modified_audio_files()
+        time.sleep(3.0)  # PT braucht Zeit um die Datei neu einzulesen
+        logging.info("  Pro Tools Audio-Dateien aktualisiert")
+
+        # Clip-Name = Dateiname ohne Extension (z.B. ST_02.wav -> ST_02)
+        clip_name = os.path.splitext(target_name)[0]
+        new_name = f"{clip_name}-loudness"
+
+        try:
+            engine.rename_target_clip(clip_name, new_name, rename_file=True)
+            logging.info(f"  Clip umbenannt: {clip_name} -> {new_name}")
+        except Exception:
+            # Fallback: PT benennt Consolidate-Clips als ST_XX
+            renamed = False
+            for i in range(1, 20):
+                try_name = f"ST_{i:02d}"
+                try:
+                    engine.rename_target_clip(try_name, f"{try_name}-loudness", rename_file=True)
+                    logging.info(f"  Clip umbenannt (Fallback): {try_name} -> {try_name}-loudness")
+                    renamed = True
+                    break
+                except Exception:
+                    continue
+            if not renamed:
+                logging.warning("  Clip konnte nicht umbenannt werden")
+    except Exception as e:
+        logging.warning(f"  PT Rename/Refresh: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Globale Referenzliste für ObjC-Objekte (verhindert PyObjC Dealloc-Crash)
+# Python-Attribut-Assignments auf ObjC-Proxies lösen Deallokationskaskaden
+# aus die in PyObjC/Python 3.14 SIGBUS/SIGSEGV verursachen.
+# Deshalb: NIEMALS ObjC-Objekte als Instanz-Attribute speichern/überschreiben.
+# ─────────────────────────────────────────────────────────────────────────────
+_config_refs = []  # Wird in _open_config_window befüllt
+
+# ── Icon-Pfad ermitteln (global, wird für Dock, Fenster und Menüleiste verwendet) ─
+_ICON_PNG_PATH = None
+
+def _resolve_icon_path():
+    """Ermittelt den Pfad zum PunchBuddy Icon (PNG)."""
+    global _ICON_PNG_PATH
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "PunchBuddy.png"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Resources", "PunchBuddy.png"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            _ICON_PNG_PATH = p
+            return p
+    return None
+
+def _load_ns_icon():
+    """Lädt das PunchBuddy Icon als NSImage (für Dock und Fenster)."""
+    if not APPKIT_OK:
+        return None
+    path = _ICON_PNG_PATH or _resolve_icon_path()
+    if path and os.path.exists(path):
+        try:
+            icon = AppKit.NSImage.alloc().initWithContentsOfFile_(path)
+            if icon:
+                icon.setSize_(AppKit.NSMakeSize(128, 128))
+                return icon
+        except Exception as e:
+            logging.warning(f"Icon laden fehlgeschlagen: {e}")
+    return None
+
+def _ensure_dock_icon():
+    """Setzt PunchBuddy Icon UND Namen im Dock.
+    
+    Wenn ein Python-Script läuft, zeigt macOS im Dock standardmäßig
+    'Python' als Name und das Python-Icon. Diese Funktion überschreibt
+    beides über das NSBundle-InfoDictionary und die NSApplication API.
+    """
+    if not APPKIT_OK:
+        return
+    try:
+        ns_app = AppKit.NSApplication.sharedApplication()
+
+        # 1. Dock-Name ändern: CFBundleName im InfoDictionary überschreiben
+        #    Damit zeigt macOS im Dock "PunchBuddy" statt "Python"
+        bundle = AppKit.NSBundle.mainBundle()
+        info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+        if info:
+            info['CFBundleName'] = 'PunchBuddy'
+
+        # 2. Activation Policy auf Regular → App erscheint im Dock
+        ns_app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyRegular)
+
+        # 3. Dock-Icon setzen
+        icon = _load_ns_icon()
+        if icon:
+            ns_app.setApplicationIconImage_(icon)
+
+        logging.info("Dock: Name='PunchBuddy', Icon gesetzt.")
+    except Exception as e:
+        logging.warning(f"Dock-Icon/Name setzen fehlgeschlagen: {e}")
+
+_resolve_icon_path()  # Beim Import einmal auflösen
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Menüleisten-App
+# ─────────────────────────────────────────────────────────────────────────────
+class PunchBuddyApp(rumps.App):
+    def __init__(self):
+        super().__init__("PunchBuddy", icon=_ICON_PNG_PATH, template=True,
+                         quit_button=None)  # Custom Quit-Handler für Watchdog-Cleanup
+        global _app_ref
+        _app_ref = self
+        self.settings        = load_settings()
+
+        # ── Profil A (Standard) ──────────────────────────────────────────
+        self.start_item      = rumps.MenuItem("Punch-In A starten",      callback=self._on_start)
+
+        # ── Profil B (zweiter Trigger) ───────────────────────────────────
+        self.start_b_item    = rumps.MenuItem("Punch-In B starten",      callback=self._on_start_b)
+
+        # ── Play (Auto Monitor) ──────────────────────────────────────────
+        self.play_item       = rumps.MenuItem("Play",      callback=self._on_start_play)
+
+        # ── Export ────────────────────────────────────────────────────────
+        self.export_item       = rumps.MenuItem("Export starten (komplett)",  callback=self._on_start_export)
+        self.wav_export_item   = rumps.MenuItem("WAV Export",  callback=self._on_start_export_wav)
+        self.aaf_export_item   = rumps.MenuItem("AAF Export",  callback=self._on_start_export_aaf)
+        self.interplay_export_item = rumps.MenuItem("Interplay Export", callback=self._on_start_export_interplay)
+        self.rename_seq_item   = rumps.MenuItem("Sequence umbenennen", callback=self._on_rename_sequence)
+
+        self.import_item       = rumps.MenuItem("Interplay Import starten",  callback=self._on_start_import)
+
+        self.settings_item      = rumps.MenuItem("Einstellungen...",  callback=self._on_unified_settings)
+        self.open_log_item      = rumps.MenuItem("Log File öffnen", callback=self._on_open_log)
+
+        # ── Menuestruktur ────────────────────────────────────────────────
+        
+        # 1. Haupt-Trigger (Top Level)
+        self.menu = [
+            self.start_item,
+            self.start_b_item,
+            self.play_item,
+            rumps.separator,
+        ]
+
+        # Export-Untermenue
+        export_menu = rumps.MenuItem("Export")
+        export_menu.add(self.export_item)
+        export_menu.add(rumps.separator)
+        export_menu.add(self.wav_export_item)
+        export_menu.add(self.aaf_export_item)
+        export_menu.add(self.interplay_export_item)
+        export_menu.add(rumps.separator)
+        export_menu.add(self.rename_seq_item)
+        self.menu.add(export_menu)
+
+        self.menu.add(self.import_item)
+        self.menu.add(rumps.separator)
+
+        # 2. Einstellungen (nur noch Fenster – URLs sind im Webtrigger-Tab)
+        self.menu.add(rumps.separator)
+        self.menu.add(self.settings_item)
+        self.menu.add(self.open_log_item)
+
+        
+        # 3. Hilfe & Info (Untermenü)
+        help_menu = rumps.MenuItem("Hilfe & Info")
+        
+        manual_item = rumps.MenuItem("Bedienungsanleitung", callback=self._on_help_manual)
+        docs_item = rumps.MenuItem("Technische Dokumentation", callback=self._on_help_docs)
+        
+        credits_title = rumps.MenuItem("Programmiert von:", callback=None)
+        credits_names = rumps.MenuItem("Jens Rühl & Christian Becker", callback=None)
+        
+        opensource_item = rumps.MenuItem("Open Source Software & Lizenzen", callback=self._on_help_opensource)
+
+        help_menu.add(manual_item)
+        help_menu.add(docs_item)
+        help_menu.add(rumps.separator)
+        help_menu.add(opensource_item)
+        help_menu.add(rumps.separator)
+        help_menu.add(credits_title)
+        help_menu.add(credits_names)
+
+        self.menu.add(help_menu)
+        self.menu.add(rumps.separator)
+        self.menu.add(rumps.MenuItem("Beenden", callback=self._on_quit))
+
+
+        self._start_http()
+
+        # ── Startup: Pre-Roll sicherstellen dass AUS ────────────────────────
+        def _startup_preroll_check():
+            time.sleep(2.0)  # Kurz warten bis PT vollständig bereit
+            logging.info("=== Startup: Pre-Roll auf AUS stellen ===")
+            restore_preroll()
+
+        threading.Thread(target=_startup_preroll_check, daemon=True, name="StartupPreRoll").start()
+
+        # ── Tooltip für Menüleisten-Icon setzen (nach App-Start) ───────────
+        self._tooltip_timer = rumps.Timer(self._set_tooltip, 1)
+        self._tooltip_timer.start()
+
+    # ── Internes ──────────────────────────────────────────────────────────
+
+    def _set_tooltip(self, timer):
+        """Setzt Tooltip und Dock-Icon nach App-Start (NSApp existiert jetzt)."""
+        timer.stop()
+        try:
+            # ── Tooltip für Menüleisten-Icon ────────────────────────────────
+            if hasattr(self, '_nsapp') and self._nsapp:
+                nsstatusitem = getattr(self._nsapp, 'nsstatusitem', None)
+                if nsstatusitem:
+                    nsstatusitem.button().setToolTip_("PunchBuddy")
+                    logging.info("Menüleisten-Tooltip gesetzt: PunchBuddy")
+        except Exception as e:
+            logging.debug(f"Tooltip setzen fehlgeschlagen: {e}")
+
+        # ── Dock-Icon sofort beim Start anzeigen ─────────────────────────
+        _ensure_dock_icon()
+
+    def _start_http(self):
+        app_ref = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/trigger":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger()
+                elif self.path == "/trigger2":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger_b()
+                elif self.path == "/export":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger_export()
+                elif self.path == "/import":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger_import()
+                elif self.path == "/export_wav":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger_export_wav()
+                elif self.path == "/export_aaf":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger_export_aaf()
+                elif self.path == "/export_interplay":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger_export_interplay()
+                elif self.path == "/play":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger_play()
+                elif self.path == "/stop":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger_stop()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, fmt, *args):
+                pass  # kein HTTP-Logging in Konsole
+
+        try:
+            socketserver.TCPServer.allow_reuse_address = True
+            port = self.settings.get("http_port", 8899)
+            try:
+                self.httpd = socketserver.TCPServer(("127.0.0.1", port), Handler)
+            except OSError:
+                # Port belegt – freien Port automatisch ermitteln
+                logging.warning(f"Port {port} belegt – suche freien Port...")
+                self.httpd = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+                port = self.httpd.server_address[1]
+                self.settings["http_port"] = port
+                save_settings(self.settings)
+                logging.info(f"Freier Port gefunden und gespeichert: {port}")
+            self._http_port = port
+            threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+            atexit.register(self.httpd.shutdown)
+            logging.info(f"Stream Deck HTTP-Server lauscht auf Port {port}")
+            logging.info(f"  /trigger  → Profil A")
+            logging.info(f"  /trigger2 → Profil B")
+            logging.info(f"  /export   → Export (komplett)")
+            logging.info(f"  /import   → Interplay Import")
+            logging.info(f"  /export_wav → WAV Export")
+            logging.info(f"  /export_interplay → Interplay Export")
+            logging.info(f"  /play       → Play/Stop (Toggle)")
+            logging.info(f"  /stop       → Stop (dediziert)")
+        except Exception as e:
+            self._http_port = 8899  # Fallback für URL-Anzeige
+            logging.error(f"HTTP-Server Start fehlgeschlagen: {e}")
+
+
+
+    def _trigger(self):
+        logging.info(">>> TRIGGER A <<<")
+        tracks = self.settings.get("tracks", DEFAULT_SETTINGS["tracks"])
+        monitor = self.settings.get("monitor_tracks", DEFAULT_SETTINGS["monitor_tracks"])
+        threading.Thread(target=run_punch_in, args=(tracks, monitor), daemon=True).start()
+
+    def _trigger_play(self):
+        logging.info(">>> TRIGGER PLAY <<<")
+        threading.Thread(target=run_play, daemon=True).start()
+
+    def _trigger_stop(self):
+        logging.info(">>> TRIGGER STOP <<<")
+        threading.Thread(target=run_stop, daemon=True).start()
+
+    def _trigger_b(self):
+        logging.info(">>> TRIGGER B <<<")
+        tracks = self.settings.get("tracks_b", DEFAULT_SETTINGS["tracks_b"])
+        if not tracks:
+            logging.warning("Profil B hat keine Spuren definiert – Trigger ignoriert.")
+            return
+        monitor = self.settings.get("monitor_tracks_b", DEFAULT_SETTINGS["monitor_tracks_b"])
+        threading.Thread(target=run_punch_in, args=(tracks, monitor), daemon=True).start()
+
+    def _trigger_export(self):
+        logging.info(">>> EXPORT TRIGGER <<<")
+        export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
+        if not export_tracks:
+            logging.warning("Keine Export-Spuren definiert – Trigger ignoriert.")
+            return
+        threading.Thread(target=run_export, args=(export_tracks, None, self.settings), daemon=True).start()
+
+    def _trigger_import(self):
+        logging.info(">>> IMPORT TRIGGER <<<")
+        threading.Thread(target=run_interplay_import, daemon=True).start()
+
+    def _trigger_rename_sequence(self):
+        logging.info(">>> RENAME SEQUENCE TRIGGER <<<")
+        settings = load_settings()
+        threading.Thread(
+            target=_rename_sequence_in_interplay, args=(settings,), daemon=True
+        ).start()
+
+    def _on_rename_sequence(self, _):
+        self._trigger_rename_sequence()
+
+    def _trigger_export_wav(self):
+        logging.info(">>> WAV EXPORT TRIGGER <<<")
+        export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
+        threading.Thread(target=run_wav_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
+
+    def _trigger_export_aaf(self):
+        logging.info(">>> AAF EXPORT TRIGGER <<<")
+        export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
+        threading.Thread(target=run_aaf_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
+
+    def _trigger_export_interplay(self):
+        logging.info(">>> INTERPLAY EXPORT TRIGGER <<<")
+        export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
+        ws_steps = self.settings.get("interplay_workspace_steps", 17)
+        threading.Thread(target=run_interplay_export, args=(export_tracks, self.settings, ws_steps), daemon=True).start()
+
+    # ── Menü-Callbacks ────────────────────────────────────────────────────
+
+    def _on_start(self, _):
+        logging.info(">>> MENU 'Punch-In A starten' <<<")
+        self._trigger()
+
+    def _on_start_b(self, _):
+        logging.info(">>> MENU 'Punch-In B starten' <<<")
+        self._trigger_b()
+
+    def _on_start_play(self, _):
+        logging.info(">>> MENU 'Play' <<<")
+        self._trigger_play()
+
+    def _on_start_export(self, _):
+        logging.info(">>> MENU 'Export starten' <<<")
+        self._trigger_export()
+
+    def _on_start_import(self, _):
+        logging.info(">>> MENU 'Interplay Import starten' <<<")
+        self._trigger_import()
+
+    def _on_quit(self, _):
+        logging.info(">>> MENU 'Beenden' <<<")
+        _cleanup_watchdog()
+        _close_engine()
+        logging.info("PunchBuddy beendet.")
+        rumps.quit_application()
+
+    def _copy_url(self, path, label="URL"):
+        """Generische Methode: kopiert eine Trigger-URL in die Zwischenablage."""
+        port = getattr(self, '_http_port', 8899)
+        url = f"http://127.0.0.1:{port}{path}"
+        try:
+            subprocess.run(["pbcopy"], input=url, universal_newlines=True)
+            rumps.notification("PunchBuddy", "Kopiert", f"{label}: {url}")
+        except Exception:
+            rumps.alert(label, f"URL:\n{url}")
+
+
+    def _on_unified_settings(self, _):
+        """Öffnet das kombinierte Einstellungs- und Spurenauswahl-Fenster."""
+        _ensure_dock_icon()
+        if not APPKIT_OK:
+            rumps.alert("Fehler", "AppKit nicht verfügbar.")
+            return
+
+        # Spuren aus Pro Tools lesen
+        track_names = []
+        try:
+            engine = _get_engine()
+            if engine is not None:
+                all_tracks = engine.track_list()
+                track_names = [t.name for t in all_tracks]
+        except Exception as e:
+            logging.warning(f"Konnte Spuren nicht aus Pro Tools lesen: {e}")
+
+        try:
+            self._open_unified_settings_window(track_names)
+        except Exception as e:
+            logging.error(f"Fehler beim Oeffnen des Fensters: {e}", exc_info=True)
+            rumps.alert("Fehler", f"Fenster konnte nicht geoeffnet werden:\n{e}")
+
+    def _on_open_log(self, _):
+        logging.info(">>> MENU 'Log File oeffnen' <<<")
+        if os.path.exists(LOG_PATH):
+            subprocess.Popen(["open", LOG_PATH])
+        else:
+            rumps.alert("Hinweis", "Das Logfile wurde noch nicht erstellt.")
+
+    def _on_start_export_wav(self, _):
+        logging.info(">>> MENU 'WAV Export' <<<")
+        self._trigger_export_wav()
+
+    def _on_start_export_aaf(self, _):
+        logging.info(">>> MENU 'AAF Export' <<<")
+        self._trigger_export_aaf()
+
+    def _on_start_export_interplay(self, _):
+        logging.info(">>> MENU 'Interplay Export' <<<")
+        self._trigger_export_interplay()
+
+    def _on_open_general_settings(self, _):
+        _ensure_dock_icon()
+        if not APPKIT_OK:
+            rumps.alert("Fehler", "AppKit nicht verfügbar – natives Fenster kann nicht geöffnet werden.")
+            return
+        
+        try:
+            self._open_settings_window()
+        except Exception as e:
+            logging.error(f"Fehler beim Oeffnen des Einstellungsfensters: {e}", exc_info=True)
+            rumps.alert("Fehler", f"Fenster konnte nicht geoeffnet werden:\n{e}")
+
+    def _open_settings_window(self):
+        NSWindow          = AppKit.NSWindow
+        NSView            = AppKit.NSView
+        NSButton          = AppKit.NSButton
+        NSTextField       = AppKit.NSTextField
+        NSFont            = AppKit.NSFont
+        NSMakeRect        = AppKit.NSMakeRect
+        NSOnState         = AppKit.NSOnState
+        NSOffState        = AppKit.NSOffState
+        NSBezelStyleRounded = AppKit.NSBezelStyleRounded
+
+        WIN_W = 400
+        WIN_H = 580
+        PAD = 20
+
+        rect = NSMakeRect(0, 0, WIN_W, WIN_H)
+        style = (
+            AppKit.NSWindowStyleMaskTitled |
+            AppKit.NSWindowStyleMaskClosable
+        )
+        window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect,
+            style,
+            AppKit.NSBackingStoreBuffered,
+            False
+        )
+        window.setTitle_("Einstellungen PunchBuddy")
+        window.setLevel_(3)
+
+        # Fenster-Icon setzen
+        _win_icon = _load_ns_icon()
+        if _win_icon:
+            _win_icon.setSize_(AppKit.NSMakeSize(32, 32))
+            window.setRepresentedURL_(AppKit.NSURL.URLWithString_("punchbuddy://settings"))
+            window.standardWindowButton_(AppKit.NSWindowDocumentIconButton).setImage_(_win_icon)
+
+        content = window.contentView()
+        content.setWantsLayer_(True)
+
+        target = _SettingsButtonTarget.alloc().init()
+        controls = {}
+
+        # ── Loudness Section ──
+        y = WIN_H - 40
+        lbl = NSTextField.labelWithString_("Lautheitskorrektur (EBU R128):")
+        lbl.setFrame_(NSMakeRect(PAD, y, 200, 20))
+        lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
+        content.addSubview_(lbl)
+
+        y -= 25
+        cb_loudness = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, y, 20, 20))
+        cb_loudness.setButtonType_(AppKit.NSButtonTypeSwitch)
+        cb_loudness.setTitle_("")
+        cb_loudness.setState_(NSOnState if self.settings.get("loudness_enabled", True) else NSOffState)
+        content.addSubview_(cb_loudness)
+        controls["loudness_enabled"] = cb_loudness
+        lbl_cb1 = NSTextField.labelWithString_("Aktivieren")
+        lbl_cb1.setFrame_(NSMakeRect(PAD + 25, y+2, 100, 20))
+        content.addSubview_(lbl_cb1)
+
+        y -= 25
+        lbl_lufs = NSTextField.labelWithString_("Ziel-Lautheit (LUFS):")
+        lbl_lufs.setFrame_(NSMakeRect(PAD, y, 150, 20))
+        content.addSubview_(lbl_lufs)
+        tf_lufs = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 150, y, 80, 22))
+        tf_lufs.setStringValue_(str(self.settings.get("target_lufs", -23.0)))
+        content.addSubview_(tf_lufs)
+        controls["target_lufs"] = tf_lufs
+
+        y -= 25
+        lbl_tp = NSTextField.labelWithString_("Max True Peak (dB):")
+        lbl_tp.setFrame_(NSMakeRect(PAD, y, 150, 20))
+        content.addSubview_(lbl_tp)
+        tf_tp = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 150, y, 80, 22))
+        tf_tp.setStringValue_(str(self.settings.get("max_truepeak", -3.0)))
+        content.addSubview_(tf_tp)
+        controls["max_truepeak"] = tf_tp
+
+        # ── Export Einstellungen Allgemein ──
+        y -= 40
+        lbl_tc = NSTextField.labelWithString_("Export Einstellungen Allgemein:")
+        lbl_tc.setFrame_(NSMakeRect(PAD, y, 250, 20))
+        lbl_tc.setFont_(NSFont.boldSystemFontOfSize_(12))
+        content.addSubview_(lbl_tc)
+
+        y -= 25
+        lbl_vt = NSTextField.labelWithString_("Video-Spurname:")
+        lbl_vt.setFrame_(NSMakeRect(PAD, y, 150, 20))
+        content.addSubview_(lbl_vt)
+        tf_vt = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 150, y, 180, 22))
+        tf_vt.setStringValue_(str(self.settings.get("video_track", "Video 1")))
+        content.addSubview_(tf_vt)
+        controls["video_track"] = tf_vt
+
+        y -= 25
+        lbl_tc2 = NSTextField.labelWithString_("Start-Timecode (HH:MM:SS:FF):")
+        lbl_tc2.setFrame_(NSMakeRect(PAD, y, 200, 20))
+        content.addSubview_(lbl_tc2)
+        tf_tc = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 200, y, 120, 22))
+        tf_tc.setStringValue_(str(self.settings.get("export_start_tc", "10:00:00:00")))
+        content.addSubview_(tf_tc)
+        controls["export_start_tc"] = tf_tc
+
+        y -= 25
+        lbl_ext = NSTextField.labelWithString_("Shift+Ö Anzahl (Spurausdehnung):")
+        lbl_ext.setFrame_(NSMakeRect(PAD, y, 210, 20))
+        content.addSubview_(lbl_ext)
+        tf_ext = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 210, y, 60, 22))
+        tf_ext.setStringValue_(str(self.settings.get("extend_count", 7)))
+        content.addSubview_(tf_ext)
+        controls["extend_count"] = tf_ext
+
+        y -= 25
+        cb_wav = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, y, 20, 20))
+        cb_wav.setButtonType_(AppKit.NSButtonTypeSwitch)
+        cb_wav.setTitle_("")
+        cb_wav.setState_(NSOnState if self.settings.get("wav_export_enabled", False) else NSOffState)
+        content.addSubview_(cb_wav)
+        controls["wav_export_enabled"] = cb_wav
+        lbl_wav = NSTextField.labelWithString_("WAV Export aktivieren")
+        lbl_wav.setFrame_(NSMakeRect(PAD + 25, y+2, 200, 20))
+        content.addSubview_(lbl_wav)
+
+        y -= 25
+        cb_aaf = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, y, 20, 20))
+        cb_aaf.setButtonType_(AppKit.NSButtonTypeSwitch)
+        cb_aaf.setTitle_("")
+        cb_aaf.setState_(NSOnState if self.settings.get("aaf_export_enabled", False) else NSOffState)
+        content.addSubview_(cb_aaf)
+        controls["aaf_export_enabled"] = cb_aaf
+        lbl_aaf = NSTextField.labelWithString_("AAF Export aktivieren (Embedded Audio)")
+        lbl_aaf.setFrame_(NSMakeRect(PAD + 25, y+2, 250, 20))
+        content.addSubview_(lbl_aaf)
+
+        # ── Interplay Section ──
+        y -= 40
+        lbl_ip = NSTextField.labelWithString_("Avid Interplay NEXIS Export:")
+        lbl_ip.setFrame_(NSMakeRect(PAD, y, 200, 20))
+        lbl_ip.setFont_(NSFont.boldSystemFontOfSize_(12))
+        content.addSubview_(lbl_ip)
+
+        y -= 25
+        cb_interplay = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, y, 20, 20))
+        cb_interplay.setButtonType_(AppKit.NSButtonTypeSwitch)
+        cb_interplay.setTitle_("")
+        cb_interplay.setState_(NSOnState if self.settings.get("interplay_enabled", False) else NSOffState)
+        content.addSubview_(cb_interplay)
+        controls["interplay_enabled"] = cb_interplay
+        lbl_cb2 = NSTextField.labelWithString_("Aktivieren")
+        lbl_cb2.setFrame_(NSMakeRect(PAD + 25, y+2, 100, 20))
+        content.addSubview_(lbl_cb2)
+
+        y -= 25
+        lbl_ws = NSTextField.labelWithString_("Workspace Name:")
+        lbl_ws.setFrame_(NSMakeRect(PAD, y, 150, 20))
+        content.addSubview_(lbl_ws)
+        tf_ws = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 150, y, 180, 22))
+        tf_ws.setStringValue_(str(self.settings.get("interplay_workspace", "001-aktuelles [fad-nexis]")))
+        content.addSubview_(tf_ws)
+        controls["interplay_workspace"] = tf_ws
+
+        y -= 25
+        lbl_steps = NSTextField.labelWithString_("Workspace Position (Steps):")
+        lbl_steps.setFrame_(NSMakeRect(PAD, y, 170, 20))
+        content.addSubview_(lbl_steps)
+        tf_steps = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 170, y, 60, 22))
+        tf_steps.setStringValue_(str(self.settings.get("interplay_workspace_steps", 17)))
+        content.addSubview_(tf_steps)
+        controls["interplay_workspace_steps"] = tf_steps
+
+        # ── Buttons ──
+        target.setup(self, controls, window)
+
+        cancel_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, 20, 100, 30))
+        cancel_btn.setTitle_("Abbrechen")
+        cancel_btn.setBezelStyle_(NSBezelStyleRounded)
+        cancel_btn.setTarget_(target)
+        cancel_btn.setAction_(objc.selector(target.onCancel_, signature=b'v@:@'))
+        content.addSubview_(cancel_btn)
+
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(WIN_W - 120, 20, 100, 30))
+        save_btn.setTitle_("Speichern")
+        save_btn.setBezelStyle_(NSBezelStyleRounded)
+        save_btn.setKeyEquivalent_("\r")
+        save_btn.setTarget_(target)
+        save_btn.setAction_(objc.selector(target.onSave_, signature=b'v@:@'))
+        content.addSubview_(save_btn)
+
+        global _config_refs
+        _config_refs = [window, target, controls]
+        window.makeKeyAndOrderFront_(None)
+        window.center()
+
+    # ── Hilfe & Info Callbacks ───────────────────────────────────────────
+    
+    def _on_help_manual(self, _):
+        rumps.alert(
+            title="Bedienungsanleitung",
+            message="PunchBuddy – Punch-In & Export Pipeline\n\n"
+                    "1. StreamDeck-Integration:\n"
+                    "Verwenden Sie die URLs unter 'Einstellungen', um Web-Requests via Stream Deck auszulösen.\n\n"
+                    "2. Punch-In:\n"
+                    "Drücken Sie den Trigger für Profil A oder B. Das Skript überprüft den PT Pre-Roll Status "
+                    "und startet die Aufnahme sicher ohne Beachball-Hänger.\n\n"
+                    "3. Export Workflow:\n"
+                    "Löst den automatisierten Consolidate & Cleanup aus:\n"
+                    "- Blendet DoE/AD ein\n"
+                    "- Konsolidiert alle definierten Export-Spuren\n"
+                    "- Löscht saubere Überhänge\n"
+                    "- Normalisiert die ST-Spur (EBU R128) und benennt den Clip in PT um.\n"
+                    "- Erstellt ein Loudness-Metadaten Log.\n"
+        )
+
+    def _on_help_docs(self, _):
+        rumps.alert(
+            title="Technische Dokumentation",
+            message="Architektur:\n"
+                    "- Python 3.14 mit PyObjC (AppKit/Quartz)\n"
+                    "- PTSL (Pro Tools Scripting Library) via gRPC für Timeline/Clip-Manipulation\n"
+                    "- macOS Quartz Events für native Keyboard-Injektion (Shift+Ö)\n"
+                    "- pyloudnorm & soundfile für EBU R128 Audio-Processing\n"
+                    "- rumps für die native macOS Menüleiste\n\n"
+                    "Lokaler HTTP Server (Port 8899) läuft im Hintergrund für externe Trigger."
+        )
+
+    def _on_help_opensource(self, _):
+        rumps.alert(
+            title="Open Source Lizenzen",
+            message="Diese Software verwendet folgende Open Source Bibliotheken:\n\n"
+                    "• Python 3.14 (PSF License)\n"
+                    "• rumps (BSD 3-Clause License)\n"
+                    "   https://github.com/jaredks/rumps\n\n"
+                    "• pyloudnorm (MIT License)\n"
+                    "   https://github.com/csteinmetz1/pyloudnorm\n\n"
+                    "• soundfile (BSD 3-Clause License)\n"
+                    "   https://github.com/bastibe/python-soundfile\n\n"
+                    "• numpy & scipy (BSD 3-Clause License)\n\n"
+                    "• ptsl - Pro Tools Scripting Library (MIT License)\n"
+                    "   https://github.com/iluvcapra/ptsl\n\n"
+                    "• PyObjC (MIT License)"
+        )
+
+
+
+
+
+    # ── Kombiniertes Einstellungsfenster (Tab-basiert) ─────────────────────
+
+    def _open_unified_settings_window(self, track_names):
+        """Erstellt ein Tab-basiertes Fenster mit Spurenauswahl + Erweiterte Einstellungen."""
+        NSWindow          = AppKit.NSWindow
+        NSView            = AppKit.NSView
+        NSButton          = AppKit.NSButton
+        NSTextField       = AppKit.NSTextField
+        NSScrollView      = AppKit.NSScrollView
+        NSTabView         = AppKit.NSTabView
+        NSTabViewItem     = AppKit.NSTabViewItem
+        NSFont            = AppKit.NSFont
+        NSColor           = AppKit.NSColor
+        NSMakeRect        = AppKit.NSMakeRect
+        NSScreen          = AppKit.NSScreen
+        NSOnState         = AppKit.NSOnState
+        NSOffState        = AppKit.NSOffState
+        NSBezelStyleRounded = AppKit.NSBezelStyleRounded
+
+        WIN_W = 680
+        WIN_H = 650
+        PAD = 20
+        BUTTON_H = 50
+
+        screen = NSScreen.mainScreen().frame()
+        xx = (screen.size.width - WIN_W) / 2
+        yy = (screen.size.height - WIN_H) / 2
+
+        style = AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
+        window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(xx, yy, WIN_W, WIN_H), style, AppKit.NSBackingStoreBuffered, False)
+        window.setTitle_("Einstellungen PunchBuddy")
+        window.setLevel_(3)
+
+        # Fenster-Icon setzen
+        _win_icon = _load_ns_icon()
+        if _win_icon:
+            _win_icon.setSize_(AppKit.NSMakeSize(32, 32))
+            window.setRepresentedURL_(AppKit.NSURL.URLWithString_("punchbuddy://settings"))
+            window.standardWindowButton_(AppKit.NSWindowDocumentIconButton).setImage_(_win_icon)
+
+        content = window.contentView()
+        content.setWantsLayer_(True)
+
+        tab_view = NSTabView.alloc().initWithFrame_(
+            NSMakeRect(10, BUTTON_H + 10, WIN_W - 20, WIN_H - BUTTON_H - 20))
+
+        # ── TAB 1: SPUREN ────────────────────────────────────────────────
+        tab1 = NSTabViewItem.alloc().initWithIdentifier_("Spuren")
+        tab1.setLabel_("Spurenauswahl")
+        t1_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
+        tab1.setView_(t1_view)
+
+        checkboxes = {}
+        preset_popup = AppKit.NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(PAD + 55, t1_view.frame().size.height - 35, 180, 24))
+        load_btn = save_preset_btn = rename_btn = None
+
+        if track_names:
+            rec_a_set  = set(self.settings.get("tracks", []))
+            mon_a_set  = set(self.settings.get("monitor_tracks", []))
+            rec_b_set  = set(self.settings.get("tracks_b", []))
+            mon_b_set  = set(self.settings.get("monitor_tracks_b", []))
+            export_set = set(self.settings.get("export_tracks", []))
+            loud_set   = set(self.settings.get("loudness_tracks", []))
+            play_set   = set(self.settings.get("play_monitor_tracks", []))
+
+            ROW_H = 28; LABEL_W = 180; CB_W = 55; GAP = 10
+            col_a_x      = LABEL_W + 5
+            col_b_x      = col_a_x + CB_W * 2 + GAP
+            col_export_x = col_b_x + CB_W * 2 + GAP + 10
+            col_loud_x   = col_export_x + CB_W + GAP
+            col_play_x   = col_loud_x + CB_W + GAP
+
+            HEADER_H = 85
+            scroll_h = t1_view.frame().size.height - HEADER_H
+
+            # Column Headers
+            for txt, cx, w in [("Trigger A", col_a_x, CB_W*2), ("Trigger B", col_b_x, CB_W*2),
+                                ("Export", col_export_x, CB_W), ("Loud", col_loud_x, CB_W),
+                                ("Play", col_play_x, CB_W)]:
+                lbl = NSTextField.labelWithString_(txt)
+                lbl.setFrame_(NSMakeRect(cx, scroll_h + 35, w, 18))
+                lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
+                lbl.setAlignment_(AppKit.NSTextAlignmentCenter)
+                t1_view.addSubview_(lbl)
+
+            # Sub-Headers Rec/Mon
+            for base_x in [col_a_x, col_b_x]:
+                for stxt, sx, clr in [("Rec", base_x, NSColor.systemRedColor()),
+                                       ("Mon", base_x + CB_W, NSColor.systemGreenColor())]:
+                    s = NSTextField.labelWithString_(stxt)
+                    s.setFrame_(NSMakeRect(sx, scroll_h + 15, CB_W, 16))
+                    s.setFont_(NSFont.boldSystemFontOfSize_(10))
+                    s.setTextColor_(clr)
+                    s.setAlignment_(AppKit.NSTextAlignmentCenter)
+                    t1_view.addSubview_(s)
+            for stxt, sx, clr, bold in [("\u2714", col_export_x, NSColor.systemBlueColor(), False),
+                                         ("\u2714", col_loud_x, NSColor.systemOrangeColor(), False),
+                                         ("Mon",   col_play_x, NSColor.systemGreenColor(), True)]:
+                s = NSTextField.labelWithString_(stxt)
+                s.setFrame_(NSMakeRect(sx, scroll_h + 15, CB_W, 16))
+                s.setFont_(NSFont.boldSystemFontOfSize_(10) if bold else NSFont.systemFontOfSize_(10))
+                s.setTextColor_(clr)
+                s.setAlignment_(AppKit.NSTextAlignmentCenter)
+                t1_view.addSubview_(s)
+
+            lbl_spur = NSTextField.labelWithString_("Spur")
+            lbl_spur.setFrame_(NSMakeRect(PAD, scroll_h + 35, LABEL_W, 18))
+            lbl_spur.setFont_(NSFont.boldSystemFontOfSize_(12))
+            t1_view.addSubview_(lbl_spur)
+
+            # ScrollView
+            scroll_view = NSScrollView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, t1_view.frame().size.width, scroll_h))
+            scroll_view.setHasVerticalScroller_(True)
+            scroll_view.setAutohidesScrollers_(True)
+            scroll_view.setBorderType_(AppKit.NSBezelBorder)
+
+            doc_h = len(track_names) * ROW_H + PAD
+            doc_view = NSView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, t1_view.frame().size.width - 20, doc_h))
+
+            for i, name in enumerate(track_names):
+                row_y = doc_h - (i + 1) * ROW_H
+                lbl = NSTextField.labelWithString_(name)
+                lbl.setFrame_(NSMakeRect(PAD, row_y + 4, LABEL_W - PAD, 20))
+                lbl.setFont_(NSFont.systemFontOfSize_(12))
+                doc_view.addSubview_(lbl)
+                if i % 2 == 0:
+                    stripe = AppKit.NSBox.alloc().initWithFrame_(
+                        NSMakeRect(0, row_y, t1_view.frame().size.width, ROW_H))
+                    stripe.setBoxType_(AppKit.NSBoxCustom)
+                    stripe.setBorderType_(AppKit.NSNoBorder)
+                    stripe.setFillColor_(NSColor.quaternaryLabelColor())
+                    doc_view.addSubview_positioned_relativeTo_(stripe, AppKit.NSWindowBelow, lbl)
+                cbs = {}
+                for key, cx, active_set in [
+                    ("rec_a",    col_a_x,        rec_a_set),
+                    ("mon_a",    col_a_x + CB_W, mon_a_set),
+                    ("rec_b",    col_b_x,        rec_b_set),
+                    ("mon_b",    col_b_x + CB_W, mon_b_set),
+                    ("export",   col_export_x,    export_set),
+                    ("loud",     col_loud_x,      loud_set),
+                    ("play_mon", col_play_x,      play_set),
+                ]:
+                    cb = NSButton.alloc().initWithFrame_(NSMakeRect(cx + 15, row_y + 3, 22, 22))
+                    cb.setButtonType_(AppKit.NSButtonTypeSwitch)
+                    cb.setTitle_("")
+                    cb.setState_(NSOnState if name in active_set else NSOffState)
+                    doc_view.addSubview_(cb)
+                    cbs[key] = cb
+                checkboxes[name] = cbs
+            scroll_view.setDocumentView_(doc_view)
+            t1_view.addSubview_(scroll_view)
+
+            # Presets
+            pby = t1_view.frame().size.height - 35
+            presets = self.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+            lp = NSTextField.labelWithString_("Presets:")
+            lp.setFrame_(NSMakeRect(PAD, pby + 5, 55, 20))
+            lp.setFont_(NSFont.boldSystemFontOfSize_(11))
+            t1_view.addSubview_(lp)
+            preset_popup.removeAllItems()
+            for p in presets:
+                preset_popup.addItemWithTitle_(p.get("name", "Preset"))
+            t1_view.addSubview_(preset_popup)
+            load_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 240, pby + 3, 65, 24))
+            load_btn.setTitle_("Laden"); load_btn.setBezelStyle_(NSBezelStyleRounded)
+            load_btn.setFont_(NSFont.systemFontOfSize_(11)); t1_view.addSubview_(load_btn)
+            save_preset_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 310, pby + 3, 80, 24))
+            save_preset_btn.setTitle_("Speichern"); save_preset_btn.setBezelStyle_(NSBezelStyleRounded)
+            save_preset_btn.setFont_(NSFont.systemFontOfSize_(11)); t1_view.addSubview_(save_preset_btn)
+            rename_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 395, pby + 3, 90, 24))
+            rename_btn.setTitle_("Umbenennen"); rename_btn.setBezelStyle_(NSBezelStyleRounded)
+            rename_btn.setFont_(NSFont.systemFontOfSize_(11)); t1_view.addSubview_(rename_btn)
+        else:
+            nl = NSTextField.labelWithString_("Keine Spuren gefunden (Pro Tools offen?)")
+            nl.setFrame_(NSMakeRect(PAD, t1_view.frame().size.height / 2, WIN_W - 40, 30))
+            t1_view.addSubview_(nl)
+
+        # ── TAB 2: EXPORT-EINSTELLUNGEN ──────────────────────────────────
+        tab2 = NSTabViewItem.alloc().initWithIdentifier_("Export")
+        tab2.setLabel_("Export-Einstellungen")
+        t2_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
+        tab2.setView_(t2_view)
+
+        controls = {}
+        t2_y = t2_view.frame().size.height - 35
+
+        # ── Rubrik 1: Export (komplett) ──
+        h1 = NSTextField.labelWithString_("Export (komplett)")
+        h1.setFrame_(NSMakeRect(PAD, t2_y, 300, 20))
+        h1.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t2_view.addSubview_(h1)
+
+        t2_y -= 28
+        cb_wav = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, 20, 20))
+        cb_wav.setButtonType_(AppKit.NSButtonTypeSwitch); cb_wav.setTitle_("")
+        cb_wav.setState_(NSOnState if self.settings.get("wav_export_enabled", False) else NSOffState)
+        t2_view.addSubview_(cb_wav); controls["wav_export_enabled"] = cb_wav
+        lw = NSTextField.labelWithString_("WAV Export aktivieren")
+        lw.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 250, 20)); t2_view.addSubview_(lw)
+
+        t2_y -= 25
+        cb_aaf = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, 20, 20))
+        cb_aaf.setButtonType_(AppKit.NSButtonTypeSwitch); cb_aaf.setTitle_("")
+        cb_aaf.setState_(NSOnState if self.settings.get("aaf_export_enabled", False) else NSOffState)
+        t2_view.addSubview_(cb_aaf); controls["aaf_export_enabled"] = cb_aaf
+        la = NSTextField.labelWithString_("AAF Export aktivieren (Embedded Audio)")
+        la.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 300, 20)); t2_view.addSubview_(la)
+
+        t2_y -= 25
+        cb_ip = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, 20, 20))
+        cb_ip.setButtonType_(AppKit.NSButtonTypeSwitch); cb_ip.setTitle_("")
+        cb_ip.setState_(NSOnState if self.settings.get("interplay_enabled", False) else NSOffState)
+        t2_view.addSubview_(cb_ip); controls["interplay_enabled"] = cb_ip
+        li = NSTextField.labelWithString_("Avid Interplay NEXIS Export aktivieren")
+        li.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 300, 20)); t2_view.addSubview_(li)
+
+        # ── Trennlinie ──
+        t2_y -= 20
+        sep1 = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, WIN_W - PAD * 2 - 40, 1))
+        sep1.setBoxType_(AppKit.NSBoxSeparator)
+        t2_view.addSubview_(sep1)
+
+        # ── Rubrik 2: Export Einstellungen Allgemein ──
+        t2_y -= 25
+        h2 = NSTextField.labelWithString_("Export Einstellungen Allgemein")
+        h2.setFrame_(NSMakeRect(PAD, t2_y, 350, 20))
+        h2.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t2_view.addSubview_(h2)
+
+        t2_y -= 28
+        ltc = NSTextField.labelWithString_("Start-Timecode (HH:MM:SS:FF):")
+        ltc.setFrame_(NSMakeRect(PAD, t2_y, 220, 20)); t2_view.addSubview_(ltc)
+        tf_tc = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 120, 22))
+        tf_tc.setStringValue_(str(self.settings.get("export_start_tc", "10:00:00:00")))
+        t2_view.addSubview_(tf_tc); controls["export_start_tc"] = tf_tc
+
+        t2_y -= 25
+        lvt = NSTextField.labelWithString_("Video-Spurname:")
+        lvt.setFrame_(NSMakeRect(PAD, t2_y, 220, 20)); t2_view.addSubview_(lvt)
+        tf_vt2 = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 120, 22))
+        tf_vt2.setStringValue_(str(self.settings.get("video_track", "Video 1")))
+        t2_view.addSubview_(tf_vt2); controls["video_track"] = tf_vt2
+
+        t2_y -= 25
+        lext = NSTextField.labelWithString_("Shift+Ö Anzahl (Spurausdehnung):")
+        lext.setFrame_(NSMakeRect(PAD, t2_y, 220, 20)); t2_view.addSubview_(lext)
+        tf_ext2 = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 60, 22))
+        tf_ext2.setStringValue_(str(self.settings.get("extend_count", 7)))
+        t2_view.addSubview_(tf_ext2); controls["extend_count"] = tf_ext2
+
+        t2_y -= 30
+        cb_l = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, 20, 20))
+        cb_l.setButtonType_(AppKit.NSButtonTypeSwitch); cb_l.setTitle_("")
+        cb_l.setState_(NSOnState if self.settings.get("loudness_enabled", True) else NSOffState)
+        t2_view.addSubview_(cb_l); controls["loudness_enabled"] = cb_l
+        ll = NSTextField.labelWithString_("Lautheitskorrektur aktivieren (EBU R128)")
+        ll.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 300, 20)); t2_view.addSubview_(ll)
+
+        t2_y -= 25
+        ll2 = NSTextField.labelWithString_("Ziel-Lautheit (LUFS):")
+        ll2.setFrame_(NSMakeRect(PAD + 25, t2_y, 170, 20)); t2_view.addSubview_(ll2)
+        tf_lufs = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 80, 22))
+        tf_lufs.setStringValue_(str(self.settings.get("target_lufs", -23.0)))
+        t2_view.addSubview_(tf_lufs); controls["target_lufs"] = tf_lufs
+
+        t2_y -= 25
+        ll3 = NSTextField.labelWithString_("Max True Peak (dB):")
+        ll3.setFrame_(NSMakeRect(PAD + 25, t2_y, 170, 20)); t2_view.addSubview_(ll3)
+        tf_tp = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 80, 22))
+        tf_tp.setStringValue_(str(self.settings.get("max_truepeak", -3.0)))
+        t2_view.addSubview_(tf_tp); controls["max_truepeak"] = tf_tp
+
+        # ── Trennlinie ──
+        t2_y -= 20
+        sep2 = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, WIN_W - PAD * 2 - 40, 1))
+        sep2.setBoxType_(AppKit.NSBoxSeparator)
+        t2_view.addSubview_(sep2)
+
+        # ── Rubrik 3: Interplay Export Einstellungen ──
+        t2_y -= 25
+        h3 = NSTextField.labelWithString_("Interplay Export Einstellungen")
+        h3.setFrame_(NSMakeRect(PAD, t2_y, 350, 20))
+        h3.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t2_view.addSubview_(h3)
+
+        t2_y -= 28
+        lws = NSTextField.labelWithString_("Workspace Name:")
+        lws.setFrame_(NSMakeRect(PAD, t2_y, 150, 20)); t2_view.addSubview_(lws)
+        tf_ws = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 200, 22))
+        tf_ws.setStringValue_(str(self.settings.get("interplay_workspace", "001-aktuelles [fad-nexis]")))
+        t2_view.addSubview_(tf_ws); controls["interplay_workspace"] = tf_ws
+
+        t2_y -= 25
+        lst = NSTextField.labelWithString_("Workspace Position (Steps):")
+        lst.setFrame_(NSMakeRect(PAD, t2_y, 200, 20)); t2_view.addSubview_(lst)
+        tf_st = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 60, 22))
+        tf_st.setStringValue_(str(self.settings.get("interplay_workspace_steps", 17)))
+        t2_view.addSubview_(tf_st); controls["interplay_workspace_steps"] = tf_st
+
+        t2_y -= 28
+        l_ekw = NSTextField.labelWithString_("Fehler-Keywords:")
+        l_ekw.setFrame_(NSMakeRect(PAD, t2_y, 145, 20)); t2_view.addSubview_(l_ekw)
+        tf_ekw = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 150, t2_y, 400, 22))
+        tf_ekw.setStringValue_(self.settings.get("export_error_keywords",
+            "error,fail,fehler,unsuccessful,could not,unable,problem,warning,aborted,abgebrochen"))
+        tf_ekw.setToolTip_("Kommagetrennte Schlüsselwörter – bei Treffer wird der Export als fehlgeschlagen gewertet")
+        t2_view.addSubview_(tf_ekw); controls["export_error_keywords"] = tf_ekw
+
+        t2_y -= 25
+        l_skw = NSTextField.labelWithString_("Erfolgs-Keywords:")
+        l_skw.setFrame_(NSMakeRect(PAD, t2_y, 145, 20)); t2_view.addSubview_(l_skw)
+        tf_skw = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 150, t2_y, 400, 22))
+        tf_skw.setStringValue_(self.settings.get("export_success_keywords",
+            "success,complete,finished,done,exported,erfolgreich,abgeschlossen,fertig"))
+        tf_skw.setToolTip_("Kommagetrennte Schlüsselwörter – bei Treffer wird der Export als erfolgreich gewertet")
+        t2_view.addSubview_(tf_skw); controls["export_success_keywords"] = tf_skw
+
+        # ── Trennlinie ──
+        t2_y -= 20
+        sep3 = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, WIN_W - PAD * 2 - 40, 1))
+        sep3.setBoxType_(AppKit.NSBoxSeparator)
+        t2_view.addSubview_(sep3)
+
+        # ── Rubrik 4: Rename Sequence ──
+        t2_y -= 25
+        h4 = NSTextField.labelWithString_("Rename Sequence (nach Interplay Export)")
+        h4.setFrame_(NSMakeRect(PAD, t2_y, 420, 20))
+        h4.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t2_view.addSubview_(h4)
+
+        t2_y -= 28
+        cb_rn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, 20, 20))
+        cb_rn.setButtonType_(AppKit.NSButtonTypeSwitch); cb_rn.setTitle_("")
+        cb_rn.setState_(NSOnState if self.settings.get("interplay_rename_enabled", False) else NSOffState)
+        t2_view.addSubview_(cb_rn); controls["interplay_rename_enabled"] = cb_rn
+        l_rn = NSTextField.labelWithString_("Umbenennung nach Export aktivieren")
+        l_rn.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 350, 20)); t2_view.addSubview_(l_rn)
+
+        t2_y -= 25
+        l_ts2 = NSTextField.labelWithString_("Zeichen am Anfang löschen:")
+        l_ts2.setFrame_(NSMakeRect(PAD + 25, t2_y, 200, 20)); t2_view.addSubview_(l_ts2)
+        tf_ts = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 260, t2_y, 60, 22))
+        tf_ts.setStringValue_(str(self.settings.get("interplay_rename_trim_start", 0)))
+        t2_view.addSubview_(tf_ts); controls["interplay_rename_trim_start"] = tf_ts
+
+        t2_y -= 25
+        l_te2 = NSTextField.labelWithString_("Zeichen am Ende löschen:")
+        l_te2.setFrame_(NSMakeRect(PAD + 25, t2_y, 200, 20)); t2_view.addSubview_(l_te2)
+        tf_te = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 260, t2_y, 60, 22))
+        tf_te.setStringValue_(str(self.settings.get("interplay_rename_trim_end", 0)))
+        t2_view.addSubview_(tf_te); controls["interplay_rename_trim_end"] = tf_te
+
+        t2_y -= 25
+        l_pf2 = NSTextField.labelWithString_("Präfix hinzufügen:")
+        l_pf2.setFrame_(NSMakeRect(PAD + 25, t2_y, 150, 20)); t2_view.addSubview_(l_pf2)
+        tf_pf = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 260, t2_y, 160, 22))
+        tf_pf.setStringValue_(self.settings.get("interplay_rename_prefix", ""))
+        t2_view.addSubview_(tf_pf); controls["interplay_rename_prefix"] = tf_pf
+
+        t2_y -= 25
+        l_sf2 = NSTextField.labelWithString_("Suffix hinzufügen:")
+        l_sf2.setFrame_(NSMakeRect(PAD + 25, t2_y, 150, 20)); t2_view.addSubview_(l_sf2)
+        tf_sf = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 260, t2_y, 160, 22))
+        tf_sf.setStringValue_(self.settings.get("interplay_rename_suffix", ""))
+        t2_view.addSubview_(tf_sf); controls["interplay_rename_suffix"] = tf_sf
+
+        # ── TAB 3: IMPORT-EINSTELLUNGEN ──────────────────────────────────
+        tab3 = NSTabViewItem.alloc().initWithIdentifier_("Import")
+        tab3.setLabel_("Import")
+        t3_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
+        tab3.setView_(t3_view)
+
+        t3_y = t3_view.frame().size.height - 35
+
+        h_imp = NSTextField.labelWithString_("Interplay Import Einstellungen")
+        h_imp.setFrame_(NSMakeRect(PAD, t3_y, 400, 20))
+        h_imp.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t3_view.addSubview_(h_imp)
+
+        t3_y -= 35
+        cb_close = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t3_y, 20, 20))
+        cb_close.setButtonType_(AppKit.NSButtonTypeSwitch); cb_close.setTitle_("")
+        cb_close.setState_(NSOnState if self.settings.get("import_close_session", True) else NSOffState)
+        t3_view.addSubview_(cb_close); controls["import_close_session"] = cb_close
+        l_close = NSTextField.labelWithString_("Offene Session vor Import schließen (speichert automatisch)")
+        l_close.setFrame_(NSMakeRect(PAD + 25, t3_y + 2, 450, 20)); t3_view.addSubview_(l_close)
+
+        t3_y -= 30
+        l_desc = NSTextField.labelWithString_(
+            "Wenn aktiv, wird vor dem Interplay Import geprüft ob eine\n"
+            "Pro Tools Session geöffnet ist. Falls ja, wird sie gespeichert\n"
+            "und geschlossen, bevor der Import gestartet wird.")
+        l_desc.setFrame_(NSMakeRect(PAD + 25, t3_y - 30, 450, 50))
+        l_desc.setFont_(NSFont.systemFontOfSize_(11))
+        l_desc.setTextColor_(NSColor.secondaryLabelColor())
+        l_desc.setBezeled_(False); l_desc.setDrawsBackground_(False)
+        l_desc.setEditable_(False); l_desc.setSelectable_(False)
+        t3_view.addSubview_(l_desc)
+
+        # ── TAB 4: WEBTRIGGER ─────────────────────────────────────────────
+        tab4 = NSTabViewItem.alloc().initWithIdentifier_("Webtrigger")
+        tab4.setLabel_("Webtrigger")
+        t4_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
+        tab4.setView_(t4_view)
+
+        t4_y = t4_view.frame().size.height - 35
+
+        h_wt = NSTextField.labelWithString_("HTTP-Server Konfiguration")
+        h_wt.setFrame_(NSMakeRect(PAD, t4_y, 400, 20))
+        h_wt.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t4_view.addSubview_(h_wt)
+
+        t4_y -= 30
+        l_port = NSTextField.labelWithString_("Port:")
+        l_port.setFrame_(NSMakeRect(PAD, t4_y, 40, 22)); t4_view.addSubview_(l_port)
+        tf_port = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 45, t4_y, 70, 22))
+        tf_port.setStringValue_(str(self.settings.get("http_port", 8899)))
+        t4_view.addSubview_(tf_port); controls["http_port"] = tf_port
+
+        l_port_info = NSTextField.labelWithString_("(Neustart nach Änderung erforderlich)")
+        l_port_info.setFrame_(NSMakeRect(PAD + 125, t4_y + 2, 280, 18))
+        l_port_info.setFont_(NSFont.systemFontOfSize_(11))
+        l_port_info.setTextColor_(NSColor.secondaryLabelColor())
+        t4_view.addSubview_(l_port_info)
+
+        t4_y -= 35
+        h_urls = NSTextField.labelWithString_("Trigger-URLs (Klicken zum Kopieren)")
+        h_urls.setFrame_(NSMakeRect(PAD, t4_y, 400, 20))
+        h_urls.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t4_view.addSubview_(h_urls)
+
+        port = getattr(self, '_http_port', self.settings.get("http_port", 8899))
+        _url_entries = [
+            ("/trigger",           "Punch-In A"),
+            ("/trigger2",          "Punch-In B"),
+            ("/play",              "Play/Stop (Toggle)"),
+            ("/stop",              "Stop (dediziert)"),
+            ("/export",            "Export (komplett)"),
+            ("/export_wav",        "WAV Export"),
+            ("/export_aaf",        "AAF Export"),
+            ("/export_interplay",  "Interplay Export"),
+            ("/import",            "Interplay Import"),
+        ]
+
+        for path, label in _url_entries:
+            t4_y -= 28
+            url = f"http://127.0.0.1:{port}{path}"
+
+            # Label
+            l_url = NSTextField.labelWithString_(f"{label}:")
+            l_url.setFrame_(NSMakeRect(PAD, t4_y + 2, 140, 18))
+            l_url.setFont_(NSFont.systemFontOfSize_(12))
+            t4_view.addSubview_(l_url)
+
+            # URL (selectable text field)
+            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 320, 22))
+            tf_url.setStringValue_(url)
+            tf_url.setEditable_(False); tf_url.setSelectable_(True)
+            tf_url.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.0))
+            t4_view.addSubview_(tf_url)
+
+            # Copy Button
+            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 475, t4_y, 70, 22))
+            copy_btn.setTitle_("Kopieren")
+            copy_btn.setBezelStyle_(NSBezelStyleRounded)
+            copy_btn.setFont_(NSFont.systemFontOfSize_(11))
+            # Tag: wir speichern den URL-Index
+            copy_btn.setTag_(_url_entries.index((path, label)))
+            t4_view.addSubview_(copy_btn)
+
+        # Speichere URL-Liste für den Copy-Handler
+        self._webtrigger_urls = [(f"http://127.0.0.1:{port}{p}", l) for p, l in _url_entries]
+        self._webtrigger_buttons = []
+
+        # Copy-Handler über Target (alle Buttons)
+        _wt_target = _WebtriggerCopyTarget.alloc().init()
+        _wt_target._app = self
+
+        # Nochmal durch die Buttons gehen und Target setzen
+        for sv in t4_view.subviews():
+            if isinstance(sv, NSButton) and sv.title() == "Kopieren":
+                sv.setTarget_(_wt_target)
+                sv.setAction_(objc.selector(_wt_target.onCopy_, signature=b'v@:@'))
+                self._webtrigger_buttons.append(sv)
+
+        self._wt_target = _wt_target  # Prevent GC
+
+        # Tabs hinzufuegen
+        tab_view.addTabViewItem_(tab1)
+        tab_view.addTabViewItem_(tab2)
+        tab_view.addTabViewItem_(tab3)
+        tab_view.addTabViewItem_(tab4)
+        content.addSubview_(tab_view)
+
+        # Target
+        target = _UnifiedSettingsTarget.alloc().init()
+        target.setup(self, window, checkboxes, track_names, controls, preset_popup)
+        if load_btn:
+            load_btn.setTarget_(target)
+            load_btn.setAction_(objc.selector(target.onLoadPreset_, signature=b'v@:@'))
+            save_preset_btn.setTarget_(target)
+            save_preset_btn.setAction_(objc.selector(target.onSavePreset_, signature=b'v@:@'))
+            rename_btn.setTarget_(target)
+            rename_btn.setAction_(objc.selector(target.onRenamePreset_, signature=b'v@:@'))
+
+        cancel_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, 10, 100, 30))
+        cancel_btn.setTitle_("Abbrechen"); cancel_btn.setBezelStyle_(NSBezelStyleRounded)
+        cancel_btn.setTarget_(target)
+        cancel_btn.setAction_(objc.selector(target.onCancel_, signature=b'v@:@'))
+        content.addSubview_(cancel_btn)
+
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(WIN_W - 120, 10, 100, 30))
+        save_btn.setTitle_("Speichern"); save_btn.setBezelStyle_(NSBezelStyleRounded)
+        save_btn.setKeyEquivalent_("\r"); save_btn.setTarget_(target)
+        save_btn.setAction_(objc.selector(target.onSave_, signature=b'v@:@'))
+        content.addSubview_(save_btn)
+
+        global _config_refs
+        _config_refs = [window, target, controls, checkboxes, tab_view,
+                        load_btn, save_preset_btn, rename_btn, preset_popup]
+        window.makeKeyAndOrderFront_(None)
+        window.center()
+
+
+    # ── Spuren-Konfiguration (natives Fenster) ────────────────────────────
+
+    def _on_configure_tracks(self, _):
+        """Liest Spuren aus Pro Tools via PTSL und öffnet Konfigurationsfenster."""
+        _ensure_dock_icon()
+        if not APPKIT_OK:
+            rumps.alert("Fehler", "AppKit nicht verfügbar – natives Fenster kann nicht geöffnet werden.")
+            return
+
+        # Spuren aus Pro Tools lesen
+        try:
+            engine = _get_engine()
+            if engine is None:
+                rumps.alert("Fehler", "PTSL Engine nicht verfügbar.")
+                return
+            all_tracks = engine.track_list()
+            track_names = [t.name for t in all_tracks]
+        except Exception as e:
+            rumps.alert("Fehler", f"Konnte Spuren nicht aus Pro Tools lesen:\n{e}")
+            return
+
+        if not track_names:
+            rumps.alert("Keine Spuren", "Keine Spuren in der aktuellen Pro Tools Session gefunden.")
+            return
+
+        logging.info(f"Spuren aus Pro Tools gelesen: {track_names}")
+        try:
+            self._open_config_window(track_names)
+        except Exception as e:
+            logging.error(f"Fehler beim Oeffnen des Konfigurationsfensters: {e}", exc_info=True)
+            rumps.alert("Fehler", f"Fenster konnte nicht geoeffnet werden:\n{e}")
+
+    def _open_config_window(self, track_names):
+        """Erstellt natives macOS Fenster mit Checkboxen für jede Spur."""
+        NSWindow          = AppKit.NSWindow
+        NSView            = AppKit.NSView
+        NSButton          = AppKit.NSButton
+        NSTextField       = AppKit.NSTextField
+        NSScrollView      = AppKit.NSScrollView
+        NSFont            = AppKit.NSFont
+        NSColor           = AppKit.NSColor
+        NSMakeRect        = AppKit.NSMakeRect
+        NSScreen          = AppKit.NSScreen
+        NSOnState         = AppKit.NSOnState
+        NSOffState        = AppKit.NSOffState
+        NSBezelStyleRounded = AppKit.NSBezelStyleRounded
+
+        # Aktuelle Settings laden
+        rec_a_set = set(self.settings.get("tracks", []))
+        mon_a_set = set(self.settings.get("monitor_tracks", []))
+        rec_b_set = set(self.settings.get("tracks_b", []))
+        mon_b_set = set(self.settings.get("monitor_tracks_b", []))
+        export_set = set(self.settings.get("export_tracks", []))
+        loud_set = set(self.settings.get("loudness_tracks", []))
+        play_set = set(self.settings.get("play_monitor_tracks", []))
+
+        # Layout-Konstanten
+        ROW_H      = 28
+        PAD        = 16
+        LABEL_W    = 180
+        CB_W       = 55
+        GAP        = 20    # Abstand zwischen Trigger-Gruppen
+        EXPORT_GAP = 20    # Abstand vor Export-Spalte
+        LOUD_GAP   = 5     # Abstand vor Loud-Spalte
+        PLAY_GAP   = 5     # Abstand vor Play-Spalte
+        HEADER_H   = 60
+        BUTTON_H   = 50
+        WIN_W      = LABEL_W + CB_W * 4 + GAP + CB_W + EXPORT_GAP + CB_W + LOUD_GAP + CB_W + PLAY_GAP + PAD * 2 + 40
+
+        scroll_h   = min(len(track_names) * ROW_H + PAD, 420)
+        WIN_H      = HEADER_H + scroll_h + BUTTON_H + PAD
+
+        # Fenster erstellen
+        screen = NSScreen.mainScreen().frame()
+        x = (screen.size.width - WIN_W) / 2
+        y = (screen.size.height - WIN_H) / 2
+
+        style = AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
+        window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(x, y, WIN_W, WIN_H),
+            style,
+            AppKit.NSBackingStoreBuffered,
+            False
+        )
+        window.setTitle_("Einstellungen PunchBuddy – Spuren")
+        window.setLevel_(3)  # Floating über anderen Fenstern
+
+        # Fenster-Icon setzen
+        _win_icon = _load_ns_icon()
+        if _win_icon:
+            _win_icon.setSize_(AppKit.NSMakeSize(32, 32))
+            window.setRepresentedURL_(AppKit.NSURL.URLWithString_("punchbuddy://config"))
+            window.standardWindowButton_(AppKit.NSWindowDocumentIconButton).setImage_(_win_icon)
+
+        content = window.contentView()
+        content.setWantsLayer_(True)
+
+        # ── Header-Labels ─────────────────────────────────────────────────
+        col_a_x = LABEL_W + PAD + 10
+        col_b_x = col_a_x + CB_W * 2 + GAP
+        col_export_x = col_b_x + CB_W * 2 + EXPORT_GAP
+        col_loud_x   = col_export_x + CB_W + LOUD_GAP
+        col_play_x   = col_loud_x + CB_W + PLAY_GAP
+
+        # "Trigger A" Header
+        lbl_a = NSTextField.labelWithString_("Trigger A")
+        lbl_a.setFrame_(NSMakeRect(col_a_x, WIN_H - 30, CB_W * 2, 18))
+        lbl_a.setFont_(NSFont.boldSystemFontOfSize_(12))
+        lbl_a.setAlignment_(AppKit.NSTextAlignmentCenter)
+        content.addSubview_(lbl_a)
+
+        # "Trigger B" Header
+        lbl_b = NSTextField.labelWithString_("Trigger B")
+        lbl_b.setFrame_(NSMakeRect(col_b_x, WIN_H - 30, CB_W * 2, 18))
+        lbl_b.setFont_(NSFont.boldSystemFontOfSize_(12))
+        lbl_b.setAlignment_(AppKit.NSTextAlignmentCenter)
+        content.addSubview_(lbl_b)
+
+        # "Export" Header
+        lbl_export = NSTextField.labelWithString_("Export")
+        lbl_export.setFrame_(NSMakeRect(col_export_x, WIN_H - 30, CB_W, 18))
+        lbl_export.setFont_(NSFont.boldSystemFontOfSize_(12))
+        lbl_export.setAlignment_(AppKit.NSTextAlignmentCenter)
+        content.addSubview_(lbl_export)
+
+        # Sub-Header: Rec (rot) / Mon (grün) – farbige Labels statt dynamischer Hintergründe
+        for base_x in [col_a_x, col_b_x]:
+            sub_rec = NSTextField.labelWithString_("Rec")
+            sub_rec.setFrame_(NSMakeRect(base_x, WIN_H - 48, CB_W, 16))
+            sub_rec.setFont_(NSFont.boldSystemFontOfSize_(10))
+            sub_rec.setTextColor_(NSColor.systemRedColor())
+            sub_rec.setAlignment_(AppKit.NSTextAlignmentCenter)
+            content.addSubview_(sub_rec)
+
+            sub_mon = NSTextField.labelWithString_("Mon")
+            sub_mon.setFrame_(NSMakeRect(base_x + CB_W, WIN_H - 48, CB_W, 16))
+            sub_mon.setFont_(NSFont.boldSystemFontOfSize_(10))
+            sub_mon.setTextColor_(NSColor.systemGreenColor())
+            sub_mon.setAlignment_(AppKit.NSTextAlignmentCenter)
+            content.addSubview_(sub_mon)
+
+        # Export Sub-Header (blau)
+        sub_export = NSTextField.labelWithString_("✔")
+        sub_export.setFrame_(NSMakeRect(col_export_x, WIN_H - 48, CB_W, 16))
+        sub_export.setFont_(NSFont.systemFontOfSize_(10))
+        sub_export.setTextColor_(NSColor.systemBlueColor())
+        sub_export.setAlignment_(AppKit.NSTextAlignmentCenter)
+        content.addSubview_(sub_export)
+
+        # "Loud" Header (orange)
+        lbl_loud = NSTextField.labelWithString_("Loud")
+        lbl_loud.setFrame_(NSMakeRect(col_loud_x, WIN_H - 30, CB_W, 18))
+        lbl_loud.setFont_(NSFont.boldSystemFontOfSize_(12))
+        lbl_loud.setAlignment_(AppKit.NSTextAlignmentCenter)
+        content.addSubview_(lbl_loud)
+
+        sub_loud = NSTextField.labelWithString_("✔")
+        sub_loud.setFrame_(NSMakeRect(col_loud_x, WIN_H - 48, CB_W, 16))
+        sub_loud.setFont_(NSFont.systemFontOfSize_(10))
+        sub_loud.setTextColor_(NSColor.systemOrangeColor())
+        sub_loud.setAlignment_(AppKit.NSTextAlignmentCenter)
+        content.addSubview_(sub_loud)
+
+        # "Play" Header
+        lbl_play = NSTextField.labelWithString_("Play")
+        lbl_play.setFrame_(NSMakeRect(col_play_x, WIN_H - 30, CB_W, 18))
+        lbl_play.setFont_(NSFont.boldSystemFontOfSize_(12))
+        lbl_play.setAlignment_(AppKit.NSTextAlignmentCenter)
+        content.addSubview_(lbl_play)
+
+        sub_play = NSTextField.labelWithString_("Mon")
+        sub_play.setFrame_(NSMakeRect(col_play_x, WIN_H - 48, CB_W, 16))
+        sub_play.setFont_(NSFont.boldSystemFontOfSize_(10))
+        sub_play.setTextColor_(NSColor.systemGreenColor())
+        sub_play.setAlignment_(AppKit.NSTextAlignmentCenter)
+        content.addSubview_(sub_play)
+
+        # "Spur" Header
+        lbl_spur = NSTextField.labelWithString_("Spur")
+        lbl_spur.setFrame_(NSMakeRect(PAD, WIN_H - 30, LABEL_W, 18))
+        lbl_spur.setFont_(NSFont.boldSystemFontOfSize_(12))
+        content.addSubview_(lbl_spur)
+
+        # ── ScrollView mit Track-Zeilen ───────────────────────────────────
+        PRESET_H = 35  # Platz fuer Preset-Leiste
+        scroll_frame = NSMakeRect(0, BUTTON_H, WIN_W, scroll_h)
+        scroll_view = NSScrollView.alloc().initWithFrame_(scroll_frame)
+        scroll_view.setHasVerticalScroller_(True)
+        scroll_view.setAutohidesScrollers_(True)
+        scroll_view.setBorderType_(AppKit.NSBezelBorder)
+
+        doc_h = len(track_names) * ROW_H + PAD
+        doc_view = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, WIN_W - 20, doc_h)
+        )
+
+        # Wir verwenden _ConfigButtonTarget als ObjC Action-Target
+        target = _ConfigButtonTarget.alloc().init()
+        
+        checkboxes = {}  # {track_name: {rec_a, mon_a, rec_b, mon_b, export}}
+
+        for i, name in enumerate(track_names):
+            # In AppKit: y=0 ist unten, wir zaehlen von oben
+            row_y = doc_h - (i + 1) * ROW_H
+
+            # Track-Name Label
+            lbl = NSTextField.labelWithString_(name)
+            lbl.setFrame_(NSMakeRect(PAD, row_y + 4, LABEL_W - PAD, 20))
+            lbl.setFont_(NSFont.systemFontOfSize_(12))
+            doc_view.addSubview_(lbl)
+
+            # Zebra-Streifen (abwechselnd) - NSBox statt layer/CGColor
+            if i % 2 == 0:
+                stripe = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(0, row_y, WIN_W - 20, ROW_H))
+                stripe.setBoxType_(AppKit.NSBoxCustom)
+                stripe.setBorderType_(AppKit.NSNoBorder)
+                stripe.setFillColor_(NSColor.quaternaryLabelColor())
+                doc_view.addSubview_positioned_relativeTo_(stripe, AppKit.NSWindowBelow, lbl)
+
+            cbs = {}
+            col_positions = [
+                ("rec_a",    col_a_x,          rec_a_set),
+                ("mon_a",    col_a_x + CB_W,   mon_a_set),
+                ("rec_b",    col_b_x,          rec_b_set),
+                ("mon_b",    col_b_x + CB_W,   mon_b_set),
+                ("export",   col_export_x,      export_set),
+                ("loud",     col_loud_x,        loud_set),
+                ("play_mon", col_play_x,        play_set),
+            ]
+
+            for key, cx, active_set in col_positions:
+                cb = NSButton.alloc().initWithFrame_(NSMakeRect(cx + 15, row_y + 3, 22, 22))
+                cb.setButtonType_(AppKit.NSButtonTypeSwitch)
+                cb.setTitle_("")
+                is_on = name in active_set
+                cb.setState_(NSOnState if is_on else NSOffState)
+                cb.setIdentifier_(key)
+                doc_view.addSubview_(cb)
+                cbs[key] = cb
+
+            checkboxes[name] = cbs
+
+        scroll_view.setDocumentView_(doc_view)
+        content.addSubview_(scroll_view)
+
+        # ── Preset-Leiste (unterhalb der Buttons, ueber Scroll) ──────────
+        preset_y = BUTTON_H + scroll_h + 2
+        # Header-Bereich bleibt bestehen, Presets kommen zwischen Header und Scroll
+
+        # Stattdessen: Presets am unteren Rand, zwischen ScrollView und Buttons
+        # Verschiebe ScrollView nach oben und fuege Preset-Leiste darunter ein
+        # → Einfacher: Preset-Leiste ins Fenster als eigene Zeile einbauen
+        # Die Preset-Leiste kommt UNTERHALB der ScrollView, OBERHALB der Buttons.
+        
+        # Fenster vergroessern fuer Presets
+        new_win_h = WIN_H + PRESET_H
+        window.setFrame_display_(NSMakeRect(
+            window.frame().origin.x, window.frame().origin.y - PRESET_H,
+            WIN_W, new_win_h), True)
+        
+        # ScrollView nach oben verschieben
+        sv_frame = scroll_view.frame()
+        scroll_view.setFrame_(NSMakeRect(sv_frame.origin.x, sv_frame.origin.y + PRESET_H,
+                                          sv_frame.size.width, sv_frame.size.height))
+        
+        # Header-Elemente nach oben verschieben
+        for subview in list(content.subviews()):
+            if subview != scroll_view:
+                f = subview.frame()
+                if f.origin.y > BUTTON_H + scroll_h - 5:  # Header-Bereich
+                    subview.setFrame_(NSMakeRect(f.origin.x, f.origin.y + PRESET_H,
+                                                  f.size.width, f.size.height))
+
+        # Preset-Leiste zeichnen
+        preset_base_y = BUTTON_H + 4
+        presets = self.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+
+        lbl_preset = NSTextField.labelWithString_("Presets:")
+        lbl_preset.setFrame_(NSMakeRect(PAD, preset_base_y + 5, 55, 20))
+        lbl_preset.setFont_(NSFont.boldSystemFontOfSize_(11))
+        content.addSubview_(lbl_preset)
+
+        # Popup-Button fuer Preset-Auswahl
+        preset_popup = AppKit.NSPopUpButton.alloc().initWithFrame_(NSMakeRect(PAD + 55, preset_base_y + 3, 180, 24))
+        preset_popup.removeAllItems()
+        for p in presets:
+            preset_popup.addItemWithTitle_(p.get("name", "Preset"))
+        content.addSubview_(preset_popup)
+
+        # Laden-Button
+        load_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 240, preset_base_y + 3, 65, 24))
+        load_btn.setTitle_("Laden")
+        load_btn.setBezelStyle_(NSBezelStyleRounded)
+        load_btn.setFont_(NSFont.systemFontOfSize_(11))
+        content.addSubview_(load_btn)
+
+        # Speichern-Button
+        save_preset_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 310, preset_base_y + 3, 80, 24))
+        save_preset_btn.setTitle_("Speichern")
+        save_preset_btn.setBezelStyle_(NSBezelStyleRounded)
+        save_preset_btn.setFont_(NSFont.systemFontOfSize_(11))
+        content.addSubview_(save_preset_btn)
+
+        # Umbenennen-Button
+        rename_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 395, preset_base_y + 3, 90, 24))
+        rename_btn.setTitle_("Umbenennen")
+        rename_btn.setBezelStyle_(NSBezelStyleRounded)
+        rename_btn.setFont_(NSFont.systemFontOfSize_(11))
+        content.addSubview_(rename_btn)
+
+        # ── Buttons ───────────────────────────────────────────────────────
+        target.setup(self, checkboxes, track_names, window, preset_popup)
+
+        # Preset-Button Actions setzen
+        load_btn.setTarget_(target)
+        load_btn.setAction_(objc.selector(target.onLoadPreset_, signature=b'v@:@'))
+        save_preset_btn.setTarget_(target)
+        save_preset_btn.setAction_(objc.selector(target.onSavePreset_, signature=b'v@:@'))
+        rename_btn.setTarget_(target)
+        rename_btn.setAction_(objc.selector(target.onRenamePreset_, signature=b'v@:@'))
+
+        cancel_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, 12, 100, 30))
+        cancel_btn.setTitle_("Abbrechen")
+        cancel_btn.setBezelStyle_(NSBezelStyleRounded)
+        cancel_btn.setTarget_(target)
+        cancel_btn.setAction_(objc.selector(target.onCancel_, signature=b'v@:@'))
+        content.addSubview_(cancel_btn)
+
+        play_btn = NSButton.alloc().initWithFrame_(NSMakeRect(WIN_W // 2 - 60, 12, 120, 30))
+        play_btn.setTitle_("Play / Stop Testen")
+        play_btn.setBezelStyle_(NSBezelStyleRounded)
+        play_btn.setTarget_(target)
+        play_btn.setAction_(objc.selector(target.onPlay_, signature=b'v@:@'))
+        content.addSubview_(play_btn)
+
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(WIN_W - 120, 12, 100, 30))
+        save_btn.setTitle_("Speichern")
+        save_btn.setBezelStyle_(NSBezelStyleRounded)
+        save_btn.setKeyEquivalent_("\r")  # Enter = Speichern
+        save_btn.setTarget_(target)
+        save_btn.setAction_(objc.selector(target.onSave_, signature=b'v@:@'))
+        content.addSubview_(save_btn)
+
+        # Referenzen in globaler Liste halten (NICHT als Instanz-Attribute!)
+        # Python-Attribut-Assignments auf ObjC-Proxies loesen Deallokations-
+        # kaskaden aus die in PyObjC/Python 3.14 crashen (SIGBUS/SIGSEGV).
+        global _config_refs
+        _config_refs = [window, target, checkboxes, doc_view, scroll_view, preset_popup,
+                        load_btn, save_preset_btn, rename_btn, play_btn]
+        window.makeKeyAndOrderFront_(None)
+        window.center()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ObjC Helper-Klasse für Button-Actions im Konfigurationsfenster
+# ─────────────────────────────────────────────────────────────────────────────
+if APPKIT_OK:
+    class _ConfigButtonTarget(AppKit.NSObject):
+        """ObjC-kompatibles Target fuer Save/Cancel/Preset Buttons."""
+
+        @objc.python_method
+        def setup(self, app_ref, checkboxes, track_names, window, preset_popup=None):
+            self._app = app_ref
+            self._checkboxes = checkboxes
+            self._track_names = track_names
+            self._window = window
+            self._preset_popup = preset_popup
+
+        def onCheckboxToggle_(self, sender):
+            pass
+
+        @objc.python_method
+        def _read_current_config(self):
+            rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list = [], [], [], [], [], [], []
+            for name in self._track_names:
+                cbs = self._checkboxes.get(name)
+                if not cbs:
+                    continue
+                if cbs["rec_a"].state() == AppKit.NSOnState:
+                    rec_a.append(name)
+                if cbs["mon_a"].state() == AppKit.NSOnState:
+                    mon_a.append(name)
+                if cbs["rec_b"].state() == AppKit.NSOnState:
+                    rec_b.append(name)
+                if cbs["mon_b"].state() == AppKit.NSOnState:
+                    mon_b.append(name)
+                if cbs["export"].state() == AppKit.NSOnState:
+                    export_list.append(name)
+                if cbs["loud"].state() == AppKit.NSOnState:
+                    loud_list.append(name)
+                if cbs.get("play_mon") and cbs["play_mon"].state() == AppKit.NSOnState:
+                    play_list.append(name)
+            return rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list
+
+        @objc.python_method
+        def _apply_config(self, rec_a, mon_a, rec_b, mon_b, export_list, loud_list=None, play_list=None):
+            ra, ma, rb, mb, ex = set(rec_a), set(mon_a), set(rec_b), set(mon_b), set(export_list)
+            lo = set(loud_list) if loud_list else set()
+            pl = set(play_list) if play_list else set()
+            for name in self._track_names:
+                cbs = self._checkboxes.get(name)
+                if not cbs:
+                    continue
+                cbs["rec_a"].setState_(AppKit.NSOnState if name in ra else AppKit.NSOffState)
+                cbs["mon_a"].setState_(AppKit.NSOnState if name in ma else AppKit.NSOffState)
+                cbs["rec_b"].setState_(AppKit.NSOnState if name in rb else AppKit.NSOffState)
+                cbs["mon_b"].setState_(AppKit.NSOnState if name in mb else AppKit.NSOffState)
+                cbs["export"].setState_(AppKit.NSOnState if name in ex else AppKit.NSOffState)
+                cbs["loud"].setState_(AppKit.NSOnState if name in lo else AppKit.NSOffState)
+                if "play_mon" in cbs:
+                    cbs["play_mon"].setState_(AppKit.NSOnState if name in pl else AppKit.NSOffState)
+
+        def onLoadPreset_(self, sender):
+            idx = self._preset_popup.indexOfSelectedItem()
+            presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+            if 0 <= idx < len(presets):
+                p = presets[idx]
+                self._apply_config(
+                    p.get("rec_a", []), p.get("mon_a", []),
+                    p.get("rec_b", []), p.get("mon_b", []),
+                    p.get("export", [])
+                )
+                logging.info(f"Preset {p.get('name')} geladen.")
+
+        def onSavePreset_(self, sender):
+            idx = self._preset_popup.indexOfSelectedItem()
+            presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+            if 0 <= idx < len(presets):
+                rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list = self._read_current_config()
+                presets[idx]["rec_a"] = rec_a
+                presets[idx]["mon_a"] = mon_a
+                presets[idx]["rec_b"] = rec_b
+                presets[idx]["mon_b"] = mon_b
+                presets[idx]["export"] = export_list
+                presets[idx]["loudness_tracks"] = loud_list
+                self._app.settings["track_presets"] = presets
+                save_settings(self._app.settings)
+                name = presets[idx].get("name", f"Preset {idx+1}")
+                logging.info(f"Preset {name} gespeichert.")
+                rumps.alert("Preset gespeichert", f"{name} wurde gespeichert.")
+
+        def onRenamePreset_(self, sender):
+            idx = self._preset_popup.indexOfSelectedItem()
+            presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+            if 0 <= idx < len(presets):
+                old_name = presets[idx].get("name", f"Preset {idx+1}")
+                response = rumps.Window(
+                    title="Preset umbenennen",
+                    message=f"Neuer Name fuer {old_name}:",
+                    default_text=old_name,
+                    ok="Umbenennen",
+                    cancel="Abbrechen"
+                ).run()
+                if response.clicked:
+                    new_name = response.text.strip()
+                    if new_name:
+                        presets[idx]["name"] = new_name
+                        self._app.settings["track_presets"] = presets
+                        save_settings(self._app.settings)
+                        self._preset_popup.itemAtIndex_(idx).setTitle_(new_name)
+                        logging.info(f"Preset umbenannt: {old_name} -> {new_name}")
+
+        def onSave_(self, sender):
+            rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list = self._read_current_config()
+            self._app.settings["tracks"] = rec_a
+            self._app.settings["monitor_tracks"] = mon_a
+            self._app.settings["tracks_b"] = rec_b
+            self._app.settings["monitor_tracks_b"] = mon_b
+            self._app.settings["export_tracks"] = export_list
+            self._app.settings["loudness_tracks"] = loud_list
+            self._app.settings["play_monitor_tracks"] = play_list
+            save_settings(self._app.settings)
+            self._window.orderOut_(None)
+            logging.info(f"Spuren-Konfiguration gespeichert:")
+            logging.info(f"  Trigger A: Rec={rec_a}, Mon={mon_a}")
+            logging.info(f"  Trigger B: Rec={rec_b}, Mon={mon_b}")
+            logging.info(f"  Export: {export_list}")
+            logging.info(f"  Loudness: {loud_list}")
+            logging.info(f"  Play Mon: {play_list}")
+            rumps.alert("Gespeichert",
+                f"Trigger A: {len(rec_a)} Rec, {len(mon_a)} Mon\n"
+                f"Trigger B: {len(rec_b)} Rec, {len(mon_b)} Mon\n"
+                f"Export: {len(export_list)} Spuren\n"
+                f"Loudness: {len(loud_list)} Spuren\n"
+                f"Play Mon: {len(play_list)} Spuren")
+
+        def onCancel_(self, sender):
+            self._window.orderOut_(None)
+
+
+
+    class _SettingsButtonTarget(AppKit.NSObject):
+        """ObjC-kompatibles Target für Settings Save/Cancel Buttons."""
+
+        @objc.python_method
+        def setup(self, app_ref, controls, window):
+            self._app = app_ref
+            self._controls = controls
+            self._window = window
+
+        def onSave_(self, sender):
+            # Lese Werte aus den Textfeldern und Checkboxen
+            try:
+                l_enabled = (self._controls["loudness_enabled"].state() == AppKit.NSOnState)
+                t_lufs = float(self._controls["target_lufs"].stringValue().replace(",", "."))
+                m_tp = float(self._controls["max_truepeak"].stringValue().replace(",", "."))
+                i_enabled = (self._controls["interplay_enabled"].state() == AppKit.NSOnState)
+                i_ws = self._controls["interplay_workspace"].stringValue()
+                i_steps = int(self._controls["interplay_workspace_steps"].stringValue())
+
+                e_tc = self._controls["export_start_tc"].stringValue().strip()
+                # TC Format validieren: HH:MM:SS:FF
+                tc_parts = e_tc.split(":")
+                if len(tc_parts) != 4 or not all(p.isdigit() for p in tc_parts):
+                    raise ValueError(f"Ungültiger Timecode: '{e_tc}'\nFormat: HH:MM:SS:FF (z.B. 10:00:00:00)")
+
+                if i_steps < 0:
+                    raise ValueError("Steps muss >= 0 sein")
+
+                w_enabled = (self._controls["wav_export_enabled"].state() == AppKit.NSOnState)
+                a_enabled = (self._controls["aaf_export_enabled"].state() == AppKit.NSOnState)
+
+                self._app.settings["export_start_tc"] = e_tc
+                self._app.settings["wav_export_enabled"] = w_enabled
+                self._app.settings["aaf_export_enabled"] = a_enabled
+                self._app.settings["loudness_enabled"] = l_enabled
+                self._app.settings["target_lufs"] = t_lufs
+                self._app.settings["max_truepeak"] = m_tp
+                self._app.settings["interplay_enabled"] = i_enabled
+                self._app.settings["interplay_workspace"] = i_ws
+                self._app.settings["interplay_workspace_steps"] = i_steps
+                
+                save_settings(self._app.settings)
+                logging.info(f"Einstellungen gespeichert: TC={e_tc}, WAV={w_enabled}, AAF={a_enabled}, Loudness={l_enabled}, Interplay={i_enabled}")
+                
+                self._window.close()
+                rumps.alert("Gespeichert", "Erweiterte Einstellungen wurden erfolgreich gespeichert.")
+            except ValueError as e:
+                AppKit.NSAlert.alertWithMessageText_defaultButton_alternateButton_otherButton_informativeTextWithFormat_(
+                    "Eingabefehler", "OK", None, None, f"Bitte ueberpruefe die Eingaben:\n{e}"
+                ).runModal()
+
+        def onCancel_(self, sender):
+            self._window.close()
+
+class _WebtriggerCopyTarget(AppKit.NSObject):
+    """ObjC Target für die Kopieren-Buttons im Webtrigger-Tab."""
+
+    @objc.python_method
+    def _do_copy(self, sender):
+        tag = sender.tag()
+        if hasattr(self, '_app') and hasattr(self._app, '_webtrigger_urls'):
+            urls = self._app._webtrigger_urls
+            if 0 <= tag < len(urls):
+                url, label = urls[tag]
+                try:
+                    subprocess.run(["pbcopy"], input=url, universal_newlines=True)
+                    rumps.notification("PunchBuddy", "Kopiert", f"{label}: {url}")
+                except Exception:
+                    pass
+
+    def onCopy_(self, sender):
+        self._do_copy(sender)
+
+class _UnifiedSettingsTarget(AppKit.NSObject):
+    """ObjC-kompatibles Target fuer das kombinierte Einstellungsfenster."""
+
+    @objc.python_method
+    def setup(self, app_ref, window, checkboxes, track_names, controls, preset_popup):
+        self._app = app_ref
+        self._window = window
+        self._checkboxes = checkboxes
+        self._track_names = track_names
+        self._controls = controls
+        self._preset_popup = preset_popup
+
+    @objc.python_method
+    def _read_current_config(self):
+        rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list = [], [], [], [], [], [], []
+        for name in self._track_names:
+            cbs = self._checkboxes.get(name)
+            if not cbs:
+                continue
+            if cbs["rec_a"].state() == AppKit.NSOnState: rec_a.append(name)
+            if cbs["mon_a"].state() == AppKit.NSOnState: mon_a.append(name)
+            if cbs["rec_b"].state() == AppKit.NSOnState: rec_b.append(name)
+            if cbs["mon_b"].state() == AppKit.NSOnState: mon_b.append(name)
+            if cbs["export"].state() == AppKit.NSOnState: export_list.append(name)
+            if cbs["loud"].state() == AppKit.NSOnState: loud_list.append(name)
+            if cbs.get("play_mon") and cbs["play_mon"].state() == AppKit.NSOnState: play_list.append(name)
+        return rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list
+
+    @objc.python_method
+    def _apply_config(self, rec_a, mon_a, rec_b, mon_b, export_list, loud_list=None, play_list=None):
+        ra, ma, rb, mb, ex = set(rec_a), set(mon_a), set(rec_b), set(mon_b), set(export_list)
+        lo = set(loud_list) if loud_list else set()
+        pl = set(play_list) if play_list else set()
+        for name in self._track_names:
+            cbs = self._checkboxes.get(name)
+            if not cbs:
+                continue
+            cbs["rec_a"].setState_(AppKit.NSOnState if name in ra else AppKit.NSOffState)
+            cbs["mon_a"].setState_(AppKit.NSOnState if name in ma else AppKit.NSOffState)
+            cbs["rec_b"].setState_(AppKit.NSOnState if name in rb else AppKit.NSOffState)
+            cbs["mon_b"].setState_(AppKit.NSOnState if name in mb else AppKit.NSOffState)
+            cbs["export"].setState_(AppKit.NSOnState if name in ex else AppKit.NSOffState)
+            cbs["loud"].setState_(AppKit.NSOnState if name in lo else AppKit.NSOffState)
+            if "play_mon" in cbs:
+                cbs["play_mon"].setState_(AppKit.NSOnState if name in pl else AppKit.NSOffState)
+
+    def onLoadPreset_(self, sender):
+        idx = self._preset_popup.indexOfSelectedItem()
+        presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+        if 0 <= idx < len(presets):
+            p = presets[idx]
+            self._apply_config(
+                p.get("rec_a", []), p.get("mon_a", []),
+                p.get("rec_b", []), p.get("mon_b", []),
+                p.get("export", []), p.get("loudness_tracks", []))
+            logging.info(f"Preset {p.get('name')} geladen.")
+
+    def onSavePreset_(self, sender):
+        idx = self._preset_popup.indexOfSelectedItem()
+        presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+        if 0 <= idx < len(presets):
+            rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list = self._read_current_config()
+            presets[idx]["rec_a"] = rec_a
+            presets[idx]["mon_a"] = mon_a
+            presets[idx]["rec_b"] = rec_b
+            presets[idx]["mon_b"] = mon_b
+            presets[idx]["export"] = export_list
+            presets[idx]["loudness_tracks"] = loud_list
+            self._app.settings["track_presets"] = presets
+            save_settings(self._app.settings)
+            name = presets[idx].get("name", f"Preset {idx+1}")
+            logging.info(f"Preset {name} gespeichert.")
+            rumps.alert("Preset gespeichert", f"{name} wurde gespeichert.")
+
+    def onRenamePreset_(self, sender):
+        idx = self._preset_popup.indexOfSelectedItem()
+        presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+        if 0 <= idx < len(presets):
+            old_name = presets[idx].get("name", f"Preset {idx+1}")
+            response = rumps.Window(
+                title="Preset umbenennen", message=f"Neuer Name fuer {old_name}:",
+                default_text=old_name, ok="Umbenennen", cancel="Abbrechen").run()
+            if response.clicked:
+                new_name = response.text.strip()
+                if new_name:
+                    presets[idx]["name"] = new_name
+                    self._app.settings["track_presets"] = presets
+                    save_settings(self._app.settings)
+                    self._preset_popup.itemAtIndex_(idx).setTitle_(new_name)
+                    logging.info(f"Preset umbenannt: {old_name} -> {new_name}")
+
+    def onSave_(self, sender):
+        try:
+            # 1. Spuren speichern
+            rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list = self._read_current_config()
+            self._app.settings["tracks"] = rec_a
+            self._app.settings["monitor_tracks"] = mon_a
+            self._app.settings["tracks_b"] = rec_b
+            self._app.settings["monitor_tracks_b"] = mon_b
+            self._app.settings["export_tracks"] = export_list
+            self._app.settings["loudness_tracks"] = loud_list
+            self._app.settings["play_monitor_tracks"] = play_list
+
+            # 2. Erweiterte Einstellungen speichern
+            l_enabled = (self._controls["loudness_enabled"].state() == AppKit.NSOnState)
+            t_lufs = float(self._controls["target_lufs"].stringValue().replace(",", "."))
+            m_tp = float(self._controls["max_truepeak"].stringValue().replace(",", "."))
+            i_enabled = (self._controls["interplay_enabled"].state() == AppKit.NSOnState)
+            i_ws = self._controls["interplay_workspace"].stringValue()
+            i_steps = int(self._controls["interplay_workspace_steps"].stringValue())
+            e_tc = self._controls["export_start_tc"].stringValue().strip()
+
+            tc_parts = e_tc.split(":")
+            if len(tc_parts) != 4 or not all(p.isdigit() for p in tc_parts):
+                raise ValueError(f"Ungueltiger Timecode: '{e_tc}'\nFormat: HH:MM:SS:FF")
+            if i_steps < 0:
+                raise ValueError("Steps muss >= 0 sein")
+
+            w_enabled = (self._controls["wav_export_enabled"].state() == AppKit.NSOnState)
+            a_enabled = (self._controls["aaf_export_enabled"].state() == AppKit.NSOnState)
+
+            v_track = self._controls["video_track"].stringValue().strip()
+            if not v_track:
+                raise ValueError("Video-Spurname darf nicht leer sein")
+
+            self._app.settings["video_track"] = v_track
+            self._app.settings["export_start_tc"] = e_tc
+            self._app.settings["wav_export_enabled"] = w_enabled
+            self._app.settings["aaf_export_enabled"] = a_enabled
+            self._app.settings["loudness_enabled"] = l_enabled
+            self._app.settings["target_lufs"] = t_lufs
+            self._app.settings["max_truepeak"] = m_tp
+            self._app.settings["interplay_enabled"] = i_enabled
+            self._app.settings["interplay_workspace"] = i_ws
+            self._app.settings["interplay_workspace_steps"] = i_steps
+
+            if "export_error_keywords" in self._controls:
+                self._app.settings["export_error_keywords"] = (
+                    self._controls["export_error_keywords"].stringValue().strip())
+            if "export_success_keywords" in self._controls:
+                self._app.settings["export_success_keywords"] = (
+                    self._controls["export_success_keywords"].stringValue().strip())
+
+            ext_count = int(self._controls["extend_count"].stringValue())
+            if ext_count < 0:
+                raise ValueError("Shift+Ö Anzahl muss >= 0 sein")
+            self._app.settings["extend_count"] = ext_count
+
+            # 3. Import-Einstellungen speichern
+            if "import_close_session" in self._controls:
+                imp_close = (self._controls["import_close_session"].state() == AppKit.NSOnState)
+                self._app.settings["import_close_session"] = imp_close
+
+            # 4. Rename Sequence Einstellungen
+            if "interplay_rename_enabled" in self._controls:
+                self._app.settings["interplay_rename_enabled"] = (
+                    self._controls["interplay_rename_enabled"].state() == AppKit.NSOnState)
+                try:
+                    self._app.settings["interplay_rename_trim_start"] = max(0, int(
+                        self._controls["interplay_rename_trim_start"].stringValue()))
+                    self._app.settings["interplay_rename_trim_end"] = max(0, int(
+                        self._controls["interplay_rename_trim_end"].stringValue()))
+                except ValueError:
+                    pass
+                self._app.settings["interplay_rename_prefix"] = (
+                    self._controls["interplay_rename_prefix"].stringValue())
+                self._app.settings["interplay_rename_suffix"] = (
+                    self._controls["interplay_rename_suffix"].stringValue())
+
+            # 5. Webtrigger-Port speichern
+            if "http_port" in self._controls:
+                try:
+                    new_port = int(self._controls["http_port"].stringValue())
+                    if not (1024 <= new_port <= 65535):
+                        raise ValueError("Port muss zwischen 1024 und 65535 liegen.")
+                    self._app.settings["http_port"] = new_port
+                except ValueError as ve:
+                    raise ValueError(f"Ungültiger Port: {ve}")
+
+            save_settings(self._app.settings)
+            self._window.orderOut_(None)
+            logging.info("Alle Einstellungen gespeichert.")
+            rumps.alert("Gespeichert", "Alle Einstellungen wurden gespeichert.")
+        except ValueError as e:
+            rumps.alert("Fehler", str(e))
+
+    def onCancel_(self, sender):
+        self._window.orderOut_(None)
+
+    def onPlay_(self, sender):
+        self._app._trigger_play()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry Point
+# ─────────────────────────────────────────────────────────────────────────────
+_watchdog_proc = None
+
+def _cleanup_watchdog():
+    """Beendet den Watchdog-Prozess beim Schließen von PunchBuddy."""
+    global _watchdog_proc
+    import sys
+    import subprocess as _sp
+    
+    if getattr(sys, 'frozen', False):
+        logging.info("Beende Watchdog App via pkill...")
+        try:
+            _sp.run(["pkill", "-x", "PunchBuddy_Watchdog"], capture_output=True)
+            _sp.run(["pkill", "-f", "MacOS/PunchBuddy_Watchdog$"], capture_output=True)
+            logging.info("Watchdog App beendet.")
+        except Exception as e:
+            logging.debug(f"pkill Watchdog fehlgeschlagen: {e}")
+    else:
+        if _watchdog_proc is not None:
+            logging.info(f"Watchdog Script beenden (PID={_watchdog_proc.pid})...")
+            try:
+                _watchdog_proc.terminate()
+                _watchdog_proc.wait(timeout=3)
+                logging.info("Watchdog beendet.")
+            except Exception:
+                try:
+                    _watchdog_proc.kill()
+                except Exception:
+                    pass
+            _watchdog_proc = None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Keep-Alive Thread (PTSL)
+# ─────────────────────────────────────────────────────────────────────────────
+def _keepalive_loop():
+    """Wird einmal pro Minute ausgefuehrt. Pingt die PTSL Engine an, 
+    falls diese gerade nicht verwendet wird (niedrige Priorität)."""
+    while True:
+        time.sleep(60)
+        if _ptsl_lock.acquire(blocking=False):
+            try:
+                if _engine_instance is not None:
+                    _engine_instance.ptsl_version()
+            except Exception as e:
+                logging.debug(f"Keepalive ping fehlgeschlagen: {e}")
+            finally:
+                _ptsl_lock.release()
+
+if __name__ == "__main__":
+    import threading
+    t_keep = threading.Thread(target=_keepalive_loop, daemon=True, name="PTSLKeepalive")
+    t_keep.start()
+
+    import sys
+    import subprocess as _sp
+    if getattr(sys, 'frozen', False):
+        # Wir laufen als kompilierte PunchBuddy.app
+        my_app_dir = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
+        parent_dir = os.path.dirname(my_app_dir)
+        target_app = os.path.join(parent_dir, "PunchBuddy_Watchdog.app")
+        
+        if os.path.exists(target_app):
+            try:
+                # -g startet die App im Hintergrund ohne Fokus zu stehlen
+                _sp.Popen(["open", "-n", "-g", target_app])
+                logging.info(f"Watchdog App gestartet: {target_app}")
+            except Exception as e:
+                logging.error(f"Konnte Watchdog App nicht starten: {e}")
+        else:
+            try:
+                _sp.Popen(["open", "-n", "-g", "-a", "PunchBuddy_Watchdog"])
+                logging.info("Watchdog App via Spotlight gestartet.")
+            except Exception as e:
+                logging.error(f"Watchdog App Fallback gescheitert: {e}")
+    else:
+        _watchdog_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchdog.py")
+        if os.path.exists(_watchdog_path):
+            try:
+                _watchdog_proc = _sp.Popen(
+                    [sys.executable, _watchdog_path],
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    stdout=_sp.DEVNULL,
+                    stderr=_sp.DEVNULL,
+                )
+                logging.info(f"Watchdog Script gestartet (💀) PID={_watchdog_proc.pid}")
+            except Exception as _we:
+                logging.warning(f"Watchdog konnte nicht gestartet werden: {_we}")
+
+    # Signal-Handler: SIGTERM/SIGINT → Watchdog beenden + App stoppen
+    import signal
+
+    def _signal_handler(signum, frame):
+        logging.info(f"Signal {signum} empfangen – Watchdog beenden...")
+        _cleanup_watchdog()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+    atexit.register(_cleanup_watchdog)
+
+    PunchBuddyApp().run()
