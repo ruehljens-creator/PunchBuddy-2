@@ -94,6 +94,39 @@ if pt_log:
 else:
     lines.append("[Keine Pro Tools Log-Datei gefunden – Pro Tools muss nach Session beendet werden]")
 
+# ── 3b. Interplay / MediaCentral Export-Analyse ───────────────────────────
+lines.append(SEP + "3b. INTERPLAY / MEDIACENTRAL EXPORT – PT Log-Analyse")
+if pt_log:
+    lines.append("--- Interplay/Export-Einträge im PT Log ---")
+    export_patterns = [
+        "interplay", "mediacentral", "media central", "nexis", "mpm",
+        "media production", "export", "progress:", "dfw:", "send",
+        "transfer", "avid link", "avidlink", "publish", "complete",
+        "success", "fail", "error", "dialog", "alert", "notification"
+    ]
+    lines.append(read_grep(pt_log, export_patterns, lines=500))
+else:
+    lines.append("[Kein PT Log gefunden]")
+
+lines.append("\n--- Avid Link / AvidControlDesktop Logs ---")
+avid_link_log = newest_file("~/Library/Logs/Avid/AvidControlDesktop/*.txt")
+if avid_link_log:
+    lines.append(f"Datei: {avid_link_log}")
+    lines.append(read_tail(avid_link_log, 100))
+else:
+    lines.append("[Kein AvidControlDesktop Log gefunden]")
+
+lines.append("\n--- macOS Unified Log: Avid/Interplay Prozesse (letzte 30 Min) ---")
+unified_avid = run(
+    "log show --predicate '"
+    "process CONTAINS \"Avid\" OR process CONTAINS \"Interplay\" "
+    "OR process CONTAINS \"MediaCentral\" OR process CONTAINS \"AvidLink\" "
+    "OR eventMessage CONTAINS \"interplay\" OR eventMessage CONTAINS \"mediacentral\"' "
+    "--last 30m --style compact 2>/dev/null | tail -150",
+    timeout=30
+)
+lines.append(unified_avid or "[Keine Einträge oder Berechtigung fehlt]")
+
 # ── 4. Alle Pro Tools Logs auflisten ──────────────────────────────────────
 lines.append(SEP + "4. VERFÜGBARE PRO TOOLS LOG-DATEIEN")
 lines.append(run("ls -lth ~/Library/Logs/Avid/Pro_Tools_*.txt 2>/dev/null | head -10"))
