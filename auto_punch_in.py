@@ -1336,15 +1336,42 @@ def run_interplay_import():
 
         logging.info("  Import Schritt 1: Interplay Access – Sequenzname kopieren...")
         _activate_app("interplayAccess")
+        try:
+            _run_applescript(
+                'tell application "System Events" to '
+                'set frontmost of (first process whose name contains "Interplay") to true'
+            )
+        except Exception:
+            pass
         time.sleep(0.8)
+
+        # Clipboard leeren damit wir sicher erkennen ob der Copy geklappt hat
+        try:
+            subprocess.run(["pbcopy"], input="", text=True, timeout=2)
+        except Exception:
+            pass
+
         _send_key_to_app(_VK_F2, "interplayAccess")        # Rename-Modus öffnen
-        time.sleep(0.4)
+        time.sleep(0.5)
         _send_key_to_app(_VK_A, "interplayAccess", cmd=True)  # Alles selektieren
-        time.sleep(0.2)
+        time.sleep(0.3)
         _send_key_to_app(_VK_C, "interplayAccess", cmd=True)  # Kopieren
         time.sleep(0.5)
         _send_key_to_app(_VK_ESC, "interplayAccess")       # Rename-Modus verlassen
-        time.sleep(0.5)
+        time.sleep(0.4)
+
+        # Prüfen ob Clipboard befüllt wurde
+        try:
+            copied_name = subprocess.run(
+                ["pbpaste"], capture_output=True, text=True, timeout=2
+            ).stdout.strip()
+            if copied_name:
+                logging.info(f"  Import Schritt 1: Sequenzname im Clipboard: '{copied_name}'")
+            else:
+                logging.warning("  Import Schritt 1: Clipboard leer – F2/Copy hat möglicherweise nicht funktioniert.")
+        except Exception:
+            copied_name = ""
+
         _send_key_to_app(_VK_P, "interplayAccess", cmd=True, shift=True)  # An PT senden
         logging.info("  Import Schritt 1 OK.")
         time.sleep(1.0)
