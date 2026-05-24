@@ -75,6 +75,11 @@ mkdir -p "$DMG_STAGE"
 cp -r /tmp/dist_ap/PunchBuddy.app           "$DMG_STAGE/"
 cp -r /tmp/dist_ap/PunchBuddy_Diagnose.app  "$DMG_STAGE/"
 cp -r /tmp/dist_ap/PunchBuddy_Watchdog.app  "$DMG_STAGE/"
+cp    "$SCRIPT_DIR/PunchBuddy_Setup.command" "$DMG_STAGE/"
+chmod +x "$DMG_STAGE/PunchBuddy_Setup.command"
+# Dokumentation mitkopieren (falls vorhanden)
+[ -f "$SCRIPT_DIR/BEDIENUNGSANLEITUNG.md" ]      && cp "$SCRIPT_DIR/BEDIENUNGSANLEITUNG.md"      "$DMG_STAGE/"
+[ -f "$SCRIPT_DIR/TECHNISCHE_DOKUMENTATION.md" ] && cp "$SCRIPT_DIR/TECHNISCHE_DOKUMENTATION.md" "$DMG_STAGE/"
 
 # ── 5. DMG erstellen ──────────────────────────────────────────────────────
 echo "=== DMG erstellen ==="
@@ -91,4 +96,5 @@ rm -f "/tmp/PunchBuddy_raw.dmg"
 
 echo ""
 echo "✅ Fertig: PunchBuddy_Release.dmg"
-echo "   Enthält: PunchBuddy.app + PunchBuddy_Diagnose.app + PunchBuddy_Watchdog.app"
+echo "   Enthält: PunchBuddy.app + PunchBuddy_Diagnose.app + PunchBuddy_Watchdog.app + PunchBuddy_Setup.command"
+echo "            + BEDIENUNGSANLEITUNG.md + TECHNISCHE_DOKUMENTATION.md"

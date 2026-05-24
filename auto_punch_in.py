@@ -26,6 +26,7 @@ import subprocess
 import sys
 import atexit
 import gc
+import select
 import shutil
 import glob
 
@@ -201,6 +202,7 @@ DEFAULT_SETTINGS = {
     ],
     "import_close_session": True,
     "http_port": 8899,
+    "http_bind_host": "127.0.0.1",
 }
 
 # ── Migration: ~/.autopunchin → ~/.punchbuddy ─────────────────────────────
@@ -1074,12 +1076,26 @@ def run_stop():
         logging.info("Stop: Sende Stop (toggle_play_state)...")
         _ptsl_call(engine.toggle_play_state, label="StopToggle", timeout=6.0)
 
-        # Kurz warten bis PT wirklich gestoppt ist (max 5s)
-        for _ in range(50):
-            time.sleep(0.1)
-            ok2, ts2 = _ptsl_call(engine.transport_state, label="StopWait", timeout=6.0)
-            if ok2 and str(ts2) in ("TS_TransportStopped", "TS_TransportIsStopping"):
-                break
+        # Kurze Pause: PT braucht Zeit für den NEXIS-Write ohne PTSL-Unterbrechung
+        time.sleep(1.0)
+        # Warten bis PT gestoppt – bei 2 aufeinanderfolgenden Fehlern Abbruch (PT hängt)
+        consecutive_errors = 0
+        for _ in range(20):
+            time.sleep(0.5)
+            ok2, ts2 = _ptsl_call(engine.transport_state, label="StopWait", timeout=3.0)
+            if ok2:
+                consecutive_errors = 0
+                if str(ts2) in ("TS_TransportStopped", "TS_TransportIsStopping"):
+                    break
+            else:
+                err_str = str(ts2).lower() if ts2 else ""
+                if "closed channel" in err_str or "connection refused" in err_str:
+                    logging.warning("Stop: PTSL-Kanal geschlossen – PT nicht mehr erreichbar.")
+                    break
+                consecutive_errors += 1
+                if consecutive_errors >= 2:
+                    logging.warning("Stop: 2x PTSL-Fehler – PT möglicherweise hängend, Abbruch.")
+                    break
 
         # Play-Monitor zurücksetzen falls ein /play aktiv war
         if _play_monitor_tracks:
@@ -1160,6 +1176,160 @@ _VK_DOWN   = 125  # Arrow Down
 # ─────────────────────────────────────────────────────────────────────────────
 # Interplay Export (UI-Automation)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _find_newest_pt_log():
+    """Returns path to the newest Pro Tools log file, or None."""
+    import glob as _glob
+    files = _glob.glob(os.path.expanduser("~/Library/Logs/Avid/Pro_Tools_*.txt"))
+    return max(files, key=os.path.getmtime) if files else None
+
+
+def _poll_pt_log_for_export(log_path, start_pos, timeout=90):
+    """
+    Watches PT log for MediaCentral export result.
+    Uses kqueue (instant file-write notification on macOS) with 0.3s polling as fallback.
+    Returns (success: True/False/None, message: str).
+    """
+    SUCCESS_MARKER = "The selected tracks were successfully placed into the Pro Tools sequence"
+    ERROR_MARKER   = "SLnk_MachineMgr::SendDialogOnScreen: 108846091"
+
+    if not log_path:
+        return None, "PT Log nicht verfügbar"
+
+    def _check(chunk):
+        if SUCCESS_MARKER in chunk:
+            return True, "Export erfolgreich (PT Log)"
+        if ERROR_MARKER in chunk:
+            idx = chunk.find(ERROR_MARKER)
+            end = chunk.find("\n", idx)
+            line = chunk[idx : end if end > idx else idx + 300]
+            if "successfully" in line.lower():
+                return True, "Export erfolgreich (PT Log)"
+            return False, f"Export-Dialog: {line.strip()[:120]}"
+        return None, None
+
+    deadline = time.time() + timeout
+    active_log, cur_pos = log_path, start_pos
+
+    # ── kqueue: sofortige Datei-Event-Benachrichtigung (macOS) ───────────────
+    try:
+        fd = os.open(active_log, os.O_RDONLY | os.O_NONBLOCK)
+        kq = select.kqueue()
+        try:
+            ke = select.kevent(fd,
+                               filter=select.KQ_FILTER_VNODE,
+                               flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
+                               fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND)
+            while time.time() < deadline:
+                remaining = deadline - time.time()
+                events = kq.control([ke], 4, min(remaining, 2.0))
+
+                # Log-Rotation prüfen (PT startet neues Log)
+                newest = _find_newest_pt_log()
+                if newest and newest != active_log:
+                    logging.debug(f"  kqueue: neues PT-Log → {newest}")
+                    os.close(fd); kq.close()
+                    active_log, cur_pos = newest, 0
+                    fd = os.open(active_log, os.O_RDONLY | os.O_NONBLOCK)
+                    kq = select.kqueue()
+                    ke = select.kevent(fd,
+                                       filter=select.KQ_FILTER_VNODE,
+                                       flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
+                                       fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND)
+                    continue
+
+                if not events:
+                    continue
+
+                try:
+                    sz = os.path.getsize(active_log)
+                    if sz > cur_pos:
+                        with open(active_log, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(cur_pos)
+                            chunk = f.read()
+                            cur_pos = f.tell()
+                        ok, msg = _check(chunk)
+                        if ok is not None:
+                            return ok, msg
+                except Exception as e:
+                    logging.debug(f"  kqueue read: {e}")
+        finally:
+            try: os.close(fd)
+            except: pass
+            try: kq.close()
+            except: pass
+        return None, "PT Log Timeout – Ergebnis unbekannt"
+
+    except Exception as e:
+        logging.debug(f"  kqueue nicht verfügbar ({e}) – nutze Polling")
+
+    # ── Polling-Fallback (0.3s Intervall) ────────────────────────────────────
+    while time.time() < deadline:
+        try:
+            newest = _find_newest_pt_log()
+            if newest and newest != active_log:
+                active_log, cur_pos = newest, 0
+            if active_log and os.path.exists(active_log) and os.path.getsize(active_log) > cur_pos:
+                with open(active_log, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(cur_pos)
+                    chunk = f.read()
+                    cur_pos = f.tell()
+                ok, msg = _check(chunk)
+                if ok is not None:
+                    return ok, msg
+        except Exception as e:
+            logging.debug(f"  PT Log Poll: {e}")
+        time.sleep(0.3)
+
+    return None, "PT Log Timeout – Ergebnis unbekannt"
+
+
+def _wait_for_pt_modal_dismissed(log_path, log_pos, timeout=5.0):
+    """
+    Wartet via kqueue bis PT den Modal-Dialog vollständig verarbeitet hat.
+    PT schreibt 'SLnk_MachineMgr::SendDialogOnScreen: 108846044' ins Log
+    genau dann wenn der Modal-Dialog geschlossen und der Event-Loop wieder frei ist.
+    Zuverlässiger als CGWindowList (funktioniert auch bei Sheets/Panel-Dialogen).
+    """
+    DISMISS_MARKER = "SLnk_MachineMgr::SendDialogOnScreen: 108846044"
+    if not log_path or not os.path.exists(log_path):
+        time.sleep(1.0)
+        return
+
+    deadline = time.time() + timeout
+    cur_pos = log_pos
+    try:
+        fd = os.open(log_path, os.O_RDONLY | os.O_NONBLOCK)
+        kq = select.kqueue()
+        try:
+            ke = select.kevent(fd,
+                               filter=select.KQ_FILTER_VNODE,
+                               flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
+                               fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND)
+            while time.time() < deadline:
+                remaining = deadline - time.time()
+                events = kq.control([ke], 4, min(remaining, 1.0))
+                if events:
+                    sz = os.path.getsize(log_path)
+                    if sz > cur_pos:
+                        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(cur_pos)
+                            chunk = f.read()
+                            cur_pos = f.tell()
+                        if DISMISS_MARKER in chunk:
+                            logging.info("  Interplay: Modal geschlossen (PT Log)")
+                            time.sleep(0.1)
+                            return
+        finally:
+            try: os.close(fd)
+            except: pass
+            try: kq.close()
+            except: pass
+    except Exception as e:
+        logging.debug(f"  PT Modal-Dismiss kqueue: {e}")
+
+    logging.debug("  Interplay: Modal-Dismiss Timeout – weiter")
+    time.sleep(0.3)
 def _run_applescript(script):
     """Fuehrt ein AppleScript aus und gibt (returncode, stdout, stderr) zurueck."""
     proc = subprocess.run(
@@ -1295,10 +1465,13 @@ def run_interplay_import():
             logging.warning("Import laeuft bereits – ignoriert.")
             return
         _import_running = True
+    prog = None
     _set_busy(True)
 
     try:
         logging.info("=== INTERPLAY IMPORT START ===")
+        prog = _show_progress_win("PunchBuddy – Interplay Import")
+        prog["update"](0.03, "Session prüfen…")
 
         # ── Schritt 0: Offene Session schließen (falls aktiviert) ─────
         settings = load_settings()
@@ -1310,6 +1483,7 @@ def run_interplay_import():
                     try:
                         sess_name = engine.session_name()
                         if sess_name:
+                            prog["update"](0.08, f"Session '{sess_name}' schließen…")
                             logging.info(f"  Session '{sess_name}' ist offen – wird gespeichert und geschlossen...")
                             engine.save_session()
                             logging.info(f"  Session '{sess_name}' gespeichert.")
@@ -1334,6 +1508,7 @@ def run_interplay_import():
         _VK_RETURN = 36   # Return (lokal, da nur hier gebraucht)
         _VK_1      = 18   # '1'
 
+        prog["update"](0.15, "Sequenzname aus Interplay kopieren…")
         logging.info("  Import Schritt 1: Interplay Access – Sequenzname kopieren...")
         _activate_app("interplayAccess")
         try:
@@ -1345,34 +1520,46 @@ def run_interplay_import():
             pass
         time.sleep(0.8)
 
-        # Clipboard leeren damit wir sicher erkennen ob der Copy geklappt hat
-        try:
-            subprocess.run(["pbcopy"], input="", text=True, timeout=2)
-        except Exception:
-            pass
-
-        _send_key_to_app(_VK_F2, "interplayAccess")        # Rename-Modus öffnen
-        time.sleep(0.5)
-        _send_key_to_app(_VK_A, "interplayAccess", cmd=True)  # Alles selektieren
+        # F2 → Cmd+A → Cmd+C (via AppleScript System Events, damit Java-Clipboard
+        # mit macOS-Systemclipboard synchronisiert wird) → ESC
+        _run_applescript(
+            'tell application "System Events" to tell process "interplayAccess" '
+            'to key code 120'  # F2
+        )
+        time.sleep(0.6)
+        _run_applescript(
+            'tell application "System Events" to tell process "interplayAccess" '
+            'to keystroke "a" using command down'
+        )
         time.sleep(0.3)
-        _send_key_to_app(_VK_C, "interplayAccess", cmd=True)  # Kopieren
+        _run_applescript(
+            'tell application "System Events" to tell process "interplayAccess" '
+            'to keystroke "c" using command down'
+        )
         time.sleep(0.5)
-        _send_key_to_app(_VK_ESC, "interplayAccess")       # Rename-Modus verlassen
-        time.sleep(0.4)
+        _run_applescript(
+            'tell application "System Events" to tell process "interplayAccess" '
+            'to key code 53'  # ESC
+        )
+        time.sleep(0.3)
 
-        # Prüfen ob Clipboard befüllt wurde
         try:
-            copied_name = subprocess.run(
+            seq_name = subprocess.run(
                 ["pbpaste"], capture_output=True, text=True, timeout=2
             ).stdout.strip()
-            if copied_name:
-                logging.info(f"  Import Schritt 1: Sequenzname im Clipboard: '{copied_name}'")
+            if seq_name:
+                logging.info(f"  Import Schritt 1: Sequenzname: '{seq_name}'")
             else:
-                logging.warning("  Import Schritt 1: Clipboard leer – F2/Copy hat möglicherweise nicht funktioniert.")
+                logging.warning("  Import Schritt 1: Clipboard leer – F2/Cmd+C hat nicht funktioniert.")
         except Exception:
-            copied_name = ""
+            seq_name = ""
 
-        _send_key_to_app(_VK_P, "interplayAccess", cmd=True, shift=True)  # An PT senden
+        # Cmd+Shift+P via AppleScript: Java-Menüaktion wird so zuverlässig ausgelöst
+        prog["update"](0.35, "Sequenz an Pro Tools senden…")
+        _run_applescript(
+            'tell application "System Events" to tell process "interplayAccess" '
+            'to keystroke "p" using {command down, shift down}'
+        )
         logging.info("  Import Schritt 1 OK.")
         time.sleep(1.0)
 
@@ -1380,12 +1567,14 @@ def run_interplay_import():
         # Pro Tools öffnet nach Cmd+Shift+P aus Interplay ein Fenster dessen
         # Titel sich mit jedem PT-Update ändert ("ProTools Ultimate 2026.4 (offline)").
         # "(offline)" ist der versionsstabile Substring – darauf warten statt blind schlafen.
+        prog["update"](0.43, "Warte auf Pro Tools Dialog…")
         logging.info("  Import Schritt 2: Warte auf Pro Tools '(offline)'-Dialog...")
         _activate_app("Pro Tools")
         if _wait_for_pt_window("offline", timeout=30):
             logging.info("  Import Schritt 2: Fenster gefunden.")
         else:
             logging.warning("  Import Schritt 2: '(offline)'-Fenster nach 30s nicht erschienen – versuche trotzdem.")
+        prog["update"](0.55, "Session-Pfad einfügen…")
         time.sleep(0.3)
         _send_key(_VK_V, cmd=True)  # Sequenzname einfügen
         time.sleep(0.3)
@@ -1393,6 +1582,7 @@ def run_interplay_import():
         logging.info("  Import Schritt 2 OK.")
 
         # ── Schritt 3: Auf "Import Session Data" Fenster warten ───────
+        prog["update"](0.62, "Warte auf Import Session Data…")
         logging.info("  Import Schritt 3: Warte auf 'Import Session Data'...")
         if not _wait_for_pt_window("Import Session Data", timeout=60):
             logging.error("  Import Schritt 3 FEHLER: 'Import Session Data' nicht erschienen.")
@@ -1402,6 +1592,7 @@ def run_interplay_import():
 
         # ── Schritt 4: Match All + Playlist-Option setzen ─────────────
         # (Button-Clicks via AppleScript – braucht KEIN keystroke-Permission)
+        prog["update"](0.70, "Import-Optionen setzen…")
         logging.info("  Import Schritt 4: Match All + Playlist-Option...")
         ok, out = _run_applescript_safe('''
             try
@@ -1537,6 +1728,7 @@ def run_interplay_import():
             logging.warning(f"  Import Schritt 5a (Choose): {out}")
 
         # Warte auf Track Data Fenster
+        prog["update"](0.80, "Choose + Track Data Preset…")
         logging.info("  Import Schritt 5: Warte auf Track Data Fenster...")
         if _wait_for_pt_window("Track Data to Import", timeout=15):
             time.sleep(0.3)
@@ -1550,12 +1742,14 @@ def run_interplay_import():
         time.sleep(1.0)
 
         # ── Schritt 6: Import bestätigen (CGEvent) ────────────────────
+        prog["update"](0.87, "Import bestätigen…")
         logging.info("  Import Schritt 6: Import bestätigen...")
         time.sleep(0.3)
         _send_key(_VK_RETURN)
         logging.info("  Import Schritt 6 OK – Import gestartet.")
 
         # ── Schritt 7: Warte bis Import Session Data Fenster weg ──────
+        prog["update"](0.90, "Import läuft…")
         logging.info("  Import Schritt 7: Warte auf Abschluss (max 120s)...")
         if _wait_for_pt_window("Import Session Data", timeout=120, gone=True):
             logging.info("  Import Schritt 7 OK – Import Session Data geschlossen.")
@@ -1563,6 +1757,7 @@ def run_interplay_import():
             logging.warning("  Import Schritt 7: Fenster nach 120s noch offen.")
 
         # ── Schritt 8: Warte bis Pro Tools fertig geladen hat ─────────
+        prog["update"](0.95, "Pro Tools lädt Session…")
         logging.info("  Import Schritt 8: Warte bis Pro Tools bereit ist...")
         time.sleep(2.0)
         for i in range(180):
@@ -1596,20 +1791,14 @@ def run_interplay_import():
             time.sleep(1.0)
         logging.info("  Import Schritt 8 OK – Pro Tools bereit.")
 
-        # ── Schritt 9: Numpad ,1, senden ──────────────────────────────
-        time.sleep(3.0)
-        logging.info("  Import Schritt 9: Numpad ,1, senden...")
-        _send_key(65)   # Numpad Komma
-        time.sleep(0.1)
-        _send_key(83)   # Numpad 1
-        time.sleep(0.1)
-        _send_key(65)   # Numpad Komma
-        logging.info("  Import Schritt 9 OK.")
-
+        prog["update"](1.0, "Import abgeschlossen.")
+        time.sleep(0.8)
         logging.info("=== INTERPLAY IMPORT ENDE ===")
     except Exception as e:
         logging.error(f"Import Fehler: {e}", exc_info=True)
+        if prog: prog["update"](1.0, f"Fehler: {e}")
     finally:
+        if prog: prog["close"]()
         # Engine nach Import schließen: Pro Tools hat jetzt eine neue Session,
         # der alte Singleton ist ungültig. Nächster Aufruf verbindet sich frisch.
         _close_engine()
@@ -1631,9 +1820,12 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
     _VK_UP = 126  # Arrow Up
     _VK_RETURN = 36
 
+    prog = None
     _set_busy(True)
     try:
         logging.info("=== INTERPLAY EXPORT START ===")
+        prog = _show_progress_win("PunchBuddy – Interplay Export")
+        prog["update"](0.03, "Verbindung zu Pro Tools…")
 
         engine = _get_engine()
         if engine is None:
@@ -1642,8 +1834,13 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
 
         session_path = engine.session_path()
         session_dir = os.path.dirname(session_path)
+        # PT liefert nach PTSL-Reconnect manchmal den Backup-Pfad
+        if os.path.basename(session_dir) == "Session File Backups":
+            session_dir = os.path.dirname(session_dir)
+            logging.debug(f"  session_dir korrigiert (Session File Backups entfernt): {session_dir}")
 
         # ── Versteckte Spuren einblenden ─────────────────────────────
+        prog["update"](0.06, "Spuren vorbereiten…")
         logging.info("  Interplay: DoE und AD einblenden...")
         try:
             engine.set_track_hidden_state(["DoE", "AD"], False)
@@ -1656,6 +1853,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
 
         # Video-Ende ermitteln
+        prog["update"](0.10, "Video-Ende ermitteln…")
         logging.info(f"  Interplay: Spuren selektieren: {export_tracks}")
         engine.select_tracks_by_name(export_tracks)
         time.sleep(0.3)
@@ -1685,25 +1883,28 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             time.sleep(0.3)
 
             # Consolidate
+            prog["update"](0.15, "Consolidate…")
             logging.info("  Interplay: Consolidate...")
             engine.consolidate_clip()
             time.sleep(1.0)
             logging.info("  Interplay: Consolidate OK")
 
             # Überhänge trimmen
+            prog["update"](0.25, "Überhänge trimmen…")
             _trim_overhangs(engine, export_tracks, in_time, video_end)
 
             # Loudness-Korrektur
             if settings.get("loudness_enabled", True):
+                prog["update"](0.30, "Lautheitskorrektur…")
                 loud_tracks = settings.get("loudness_tracks", ["ST"])
                 target_lufs = settings.get("target_lufs", -23.0)
                 max_tp = settings.get("max_truepeak", -3.0)
-                for lt in loud_tracks:
-                    normalize_track(engine, session_dir, lt, target_lufs, max_tp)
+                _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
 
             logging.info("  Interplay: Vorbereitung (Consolidate+Loudness) abgeschlossen.")
 
         # ── DMGs auswerfen (verschieben den Workspace-Count) ─────────
+        prog["update"](0.62, "DMGs auswerfen…")
         try:
             result = subprocess.run(
                 ["hdiutil", "info", "-plist"],
@@ -1736,10 +1937,17 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         engine.select_tracks_by_name(export_tracks)
         time.sleep(0.3)
 
+        # PT-Log Position merken – wird nach Export für Ergebnis-Erkennung genutzt
+        pt_log_path  = _find_newest_pt_log()
+        pt_log_start = os.path.getsize(pt_log_path) if pt_log_path and os.path.exists(pt_log_path) else 0
+        logging.info(f"  Interplay: PT Log Snapshot: {pt_log_path} @ {pt_log_start:,} Bytes")
+
+        prog["update"](0.67, "Export starten…")
         logging.info("  Interplay: F13 senden...")
         _send_key(_VK_F13)
 
         # ── 1. Export Comment Fenster ─────────────────────────────────
+        prog["update"](0.70, "Warte auf Export Comment…")
         logging.info("  Interplay: Warte auf 'Export Comment'...")
         if not _wait_for_pt_window("Export Comment", timeout=10):
             logging.warning("  Interplay: 'Export Comment' nicht erschienen – Abbruch.")
@@ -1749,6 +1957,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         logging.info("  Interplay: Export Comment bestaetigt.")
 
         # ── 2. Export Options Fenster ─────────────────────────────────
+        prog["update"](0.73, "Export Options: Workspace wählen…")
         logging.info("  Interplay: Warte auf 'Export Options'...")
         if not _wait_for_pt_window("Export Options", timeout=10):
             logging.warning("  Interplay: 'Export Options' nicht erschienen – Abbruch.")
@@ -1878,65 +2087,57 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         _send_key(_VK_RETURN)
         logging.info("  Interplay: Export Options bestaetigt.")
 
-        # ── 3. Processing Audio abwarten ──────────────────────────────
-        logging.info("  Interplay: Warte auf Processing...")
-        processing_found = False
-        for title_part in ["Processing", "Bouncing", "Exporting"]:
-            if _wait_for_pt_window(title_part, timeout=10):
-                processing_found = True
-                logging.info(f"  Interplay: '{title_part}' Fenster gefunden, warte...")
-                _wait_for_pt_window(title_part, timeout=300, gone=True)
-                logging.info(f"  Interplay: '{title_part}' abgeschlossen.")
-                break
-
-        if not processing_found:
-            logging.info("  Interplay: Kein Processing-Fenster – vermutlich bereits fertig.")
-
-        # ── 4. Bestaetigungsmeldung auslesen und bestaetigen ─────────
-        logging.info("  Interplay: Warte auf Bestaetigungsfenster...")
-        win_title, win_text, export_ok = _read_pt_export_result(timeout=12, settings=settings)
-
-        if win_title:
-            logging.info(f"  Interplay: Bestaetigungsfenster: '{win_title}'")
-            if win_text:
-                logging.info(f"  Interplay: Fensterinhalt: {win_text[:200]}")
-        else:
-            logging.warning("  Interplay: Kein Bestaetigungsfenster gefunden (Timeout).")
+        # ── 3. Export-Ergebnis aus PT Log lesen, dann Bestätigung sofort senden ──
+        prog["update"](0.80, "Export läuft…")
+        logging.info("  Interplay: Warte auf Export-Ergebnis im PT Log...")
+        export_ok, log_msg = _poll_pt_log_for_export(pt_log_path, pt_log_start, timeout=90)
 
         if export_ok is True:
-            logging.info("  Interplay: Export ERFOLGREICH.")
+            logging.info(f"  Interplay: Export ERFOLGREICH – {log_msg}")
+            prog["update"](0.93, "Export erfolgreich – Bestätigung…")
         elif export_ok is False:
-            logging.error("  Interplay: Export FEHLGESCHLAGEN!")
+            logging.error(f"  Interplay: Export FEHLGESCHLAGEN – {log_msg}")
+            prog["update"](0.93, "Export fehlgeschlagen!")
         else:
-            logging.info("  Interplay: Export-Ergebnis unklar (keine Schluesselwoerter).")
+            logging.warning(f"  Interplay: Export-Ergebnis unklar – {log_msg}")
+            prog["update"](0.93, "Export abgeschlossen…")
 
-        time.sleep(2.0)   # 2s anzeigen bevor Return
+        pt_dismiss_pos = os.path.getsize(pt_log_path) if pt_log_path and os.path.exists(pt_log_path) else 0
         _send_key(_VK_RETURN)
         logging.info("  Interplay: Bestaetigungsfenster bestaetigt.")
-        time.sleep(0.5)
+        _wait_for_pt_modal_dismissed(pt_log_path, pt_dismiss_pos)
 
         # ── 5. Sequence umbenennen – nur bei Erfolg oder unklarem Ergebnis ──
         if settings.get("interplay_rename_enabled", False):
             if export_ok is False:
                 logging.warning("  Interplay: Umbenennung uebersprungen – Export war fehlerhaft.")
             else:
+                prog["update"](0.97, "Sequenz umbenennen…")
                 logging.info("  Interplay: Starte Sequence-Umbenennung...")
+                _run_applescript('tell application "interplayAccess" to activate')
+                time.sleep(0.3)
                 _rename_sequence_in_interplay(settings)
 
+        prog["update"](1.0, "Export abgeschlossen.")
+        time.sleep(0.8)
         logging.info("=== INTERPLAY EXPORT ENDE ===")
         return export_ok is not False   # False nur bei erkanntem Fehler
 
     except Exception as e:
         logging.error(f"Interplay Export Fehler: {e}", exc_info=True)
+        if prog: prog["update"](1.0, f"Fehler: {e}")
         return False
     finally:
+        if prog: prog["close"]()
         _set_busy(False)
 
 
 def _rename_sequence_in_interplay(settings):
-    """Benennt die aktuell selektierte Sequenz in Interplay Access um.
-    Liest Clipboard-Namen nach F2 → Cmd+A → Cmd+C → ESC,
-    wendet trim_start / trim_end / prefix / suffix an, schreibt zurück."""
+    """Benennt die Sequenz in Interplay Access um.
+    Vollständig CGEvent-basiert (kein AppleScript, kein System Events).
+    Blockiert nicht auf PT's Accessibility-Layer – kann sofort nach Export starten.
+    Typing via CGEventKeyboardSetUnicodeString umgeht Cmd+V-Versagen bei Java-Apps."""
+    import Quartz as _Q
     trim_start = max(0, int(settings.get("interplay_rename_trim_start", 0)))
     trim_end   = max(0, int(settings.get("interplay_rename_trim_end", 0)))
     prefix     = settings.get("interplay_rename_prefix", "")
@@ -1946,23 +2147,33 @@ def _rename_sequence_in_interplay(settings):
         logging.info("  Rename: Keine Änderungen konfiguriert – überspringe.")
         return
 
-    # ── Schritt 1: aktuellen Namen lesen ────────────────────────────
-    _activate_app("interplayAccess")
-    try:
-        _run_applescript(
-            'tell application "System Events" to '
-            'set frontmost of (first process whose name contains "Interplay") to true'
-        )
-    except Exception:
-        pass
-    time.sleep(0.5)
-    _send_key_to_app(_VK_F2, "interplayAccess")            # Rename-Dialog öffnen
-    time.sleep(0.4)
-    _send_key_to_app(_VK_A, "interplayAccess", cmd=True)   # Alles selektieren
-    time.sleep(0.2)
-    _send_key_to_app(_VK_C, "interplayAccess", cmd=True)   # Kopieren
-    time.sleep(0.3)
-    _send_key_to_app(_VK_ESC, "interplayAccess")           # Abbrechen ohne Änderung
+    pid = _app_pid("interplayAccess")
+    if not pid:
+        logging.warning("  Rename: Interplay Access nicht gefunden.")
+        return
+
+    src = _Q.CGEventSourceCreate(_Q.kCGEventSourceStateHIDSystemState)
+
+    def _key(vk, cmd=False):
+        ev_dn = _Q.CGEventCreateKeyboardEvent(src, vk, True)
+        ev_up = _Q.CGEventCreateKeyboardEvent(src, vk, False)
+        if cmd:
+            _Q.CGEventSetFlags(ev_dn, _Q.kCGEventFlagMaskCommand)
+            _Q.CGEventSetFlags(ev_up, _Q.kCGEventFlagMaskCommand)
+        _Q.CGEventPostToPid(pid, ev_dn)
+        _Q.CGEventPostToPid(pid, ev_up)
+
+    # ── Schritt 1: F2 → Rename-Feld öffnen, Namen per Clipboard lesen ──────
+    _key(_VK_F2)
+    time.sleep(0.7)
+    # Cmd+A + Cmd+C in einem einzigen osascript-Aufruf (halbe Subprocess-Overhead)
+    _run_applescript(
+        'tell application "System Events" to tell process "interplayAccess"\n'
+        '  keystroke "a" using command down\n'
+        '  delay 0.15\n'
+        '  keystroke "c" using command down\n'
+        'end tell'
+    )
     time.sleep(0.3)
 
     try:
@@ -1970,54 +2181,50 @@ def _rename_sequence_in_interplay(settings):
             ["pbpaste"], capture_output=True, text=True, timeout=2
         ).stdout.strip()
     except Exception as e:
-        logging.warning(f"  Rename: Clipboard lesen fehlgeschlagen: {e}")
+        logging.warning(f"  Rename: pbpaste fehlgeschlagen: {e}")
+        _key(_VK_ESC)
         return
 
     if not current_name:
-        logging.warning("  Rename: Clipboard leer – überspringe Umbenennung.")
+        logging.warning("  Rename: Clipboard leer – Rename-Feld nicht erreichbar.")
+        _key(_VK_ESC)
         return
 
     logging.info(f"  Rename: Aktueller Name: '{current_name}'")
 
-    # ── Schritt 2: neuen Namen berechnen ────────────────────────────
-    end_idx = len(current_name) - trim_end if trim_end > 0 else len(current_name)
-    end_idx = max(trim_start, end_idx)          # Sicherstellen: nicht negativ
+    # ── Schritt 2: neuen Namen berechnen ──────────────────────────────────
+    end_idx = max(trim_start, len(current_name) - trim_end if trim_end > 0 else len(current_name))
     new_name = prefix + current_name[trim_start:end_idx] + suffix
 
     if not new_name:
         logging.warning("  Rename: Berechneter Name ist leer – überspringe.")
+        _key(_VK_ESC)
         return
 
     if new_name == current_name:
         logging.info("  Rename: Name unverändert – überspringe.")
+        _key(_VK_ESC)
         return
 
     logging.info(f"  Rename: Neuer Name: '{new_name}'")
 
-    # ── Schritt 3: neuen Namen in Clipboard, dann einfügen ──────────
-    try:
-        subprocess.run(["pbcopy"], input=new_name, text=True, timeout=2)
-    except Exception as e:
-        logging.warning(f"  Rename: Clipboard schreiben fehlgeschlagen: {e}")
-        return
+    # ── Schritt 3: Cmd+A (alten Text löschen), dann Namen Zeichen für Zeichen tippen ──
+    _run_applescript(
+        'tell application "System Events" to tell process "interplayAccess" to keystroke "a" using command down'
+    )
+    time.sleep(0.1)
 
-    _activate_app("interplayAccess")
-    try:
-        _run_applescript(
-            'tell application "System Events" to '
-            'set frontmost of (first process whose name contains "Interplay") to true'
-        )
-    except Exception:
-        pass
-    time.sleep(0.4)
-    _send_key_to_app(_VK_F2, "interplayAccess")            # Rename-Dialog öffnen
-    time.sleep(0.4)
-    _send_key_to_app(_VK_A, "interplayAccess", cmd=True)   # Alles selektieren
-    time.sleep(0.2)
-    _send_key_to_app(_VK_V, "interplayAccess", cmd=True)   # Neuen Namen einfügen
-    time.sleep(0.3)
-    _send_key_to_app(_VK_RETURN, "interplayAccess")        # Bestätigen
-    time.sleep(0.5)
+    for ch in new_name:
+        ev_dn = _Q.CGEventCreateKeyboardEvent(src, 0, True)
+        ev_up = _Q.CGEventCreateKeyboardEvent(src, 0, False)
+        _Q.CGEventKeyboardSetUnicodeString(ev_dn, 1, ch)
+        _Q.CGEventKeyboardSetUnicodeString(ev_up, 1, ch)
+        _Q.CGEventPostToPid(pid, ev_dn)
+        _Q.CGEventPostToPid(pid, ev_up)
+        time.sleep(0.008)   # 8 ms zwischen Tastenanschlägen
+
+    time.sleep(0.05)
+    _key(_VK_RETURN)
     logging.info("  Rename: Umbenennung abgeschlossen.")
 
 
@@ -2114,8 +2321,7 @@ def run_export(export_tracks, video_track=None, settings=None):
                 session_dir = os.path.dirname(session_path)
                 target_lufs = settings.get("target_lufs", -23.0)
                 max_tp = settings.get("max_truepeak", -3.0)
-                for lt in loud_tracks:
-                    normalize_track(engine, session_dir, lt, target_lufs, max_tp)
+                _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
             except Exception as e:
                 logging.error(f"  Normalisierung fehlgeschlagen: {e}")
         else:
@@ -2258,9 +2464,12 @@ def _do_wav_export(export_tracks, session_dir):
 
 def run_wav_export_standalone(export_tracks, settings):
     """Standalone WAV Export – mit vorgelagertem Consolidate."""
+    prog = None
     try:
         logging.info("=== WAV EXPORT (Standalone) START ===")
         _set_busy(True)
+        prog = _show_progress_win("PunchBuddy – WAV Export")
+        prog["update"](0.03, "Verbindung zu Pro Tools…")
         engine = _get_engine()
         if engine is None:
             logging.error("PTSL Engine nicht verfuegbar.")
@@ -2269,11 +2478,13 @@ def run_wav_export_standalone(export_tracks, settings):
         session_dir = os.path.dirname(session_path)
 
         # Spuren selektieren
+        prog["update"](0.08, "Spuren vorbereiten…")
         logging.info(f"  Spuren selektieren: {export_tracks}")
         engine.select_tracks_by_name(export_tracks)
         time.sleep(0.3)
 
         # Video-Ende ermitteln (wie im Haupt-Export)
+        prog["update"](0.13, "Video-Ende ermitteln…")
         in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
         video_track = _detect_video_track(engine, settings)
         video_end = None
@@ -2303,27 +2514,34 @@ def run_wav_export_standalone(export_tracks, settings):
         time.sleep(0.3)
 
         # Consolidate
+        prog["update"](0.20, "Consolidate…")
         logging.info("  Consolidate...")
         engine.consolidate_clip()
         time.sleep(1.0)
         logging.info("  Consolidate OK")
 
         # Überhänge pro Spur löschen (Pre/Post-Material abschneiden)
+        prog["update"](0.32, "Überhänge trimmen…")
         _trim_overhangs(engine, export_tracks, in_time, video_end)
 
         # Loudness-Korrektur
         if settings.get("loudness_enabled", True):
+            prog["update"](0.40, "Lautheitskorrektur…")
             loud_tracks = settings.get("loudness_tracks", ["ST"])
             target_lufs = settings.get("target_lufs", -23.0)
             max_tp = settings.get("max_truepeak", -3.0)
-            for lt in loud_tracks:
-                normalize_track(engine, session_dir, lt, target_lufs, max_tp)
+            _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
 
+        prog["update"](0.88, "WAV-Dateien kopieren…")
         _do_wav_export(export_tracks, session_dir)
+        prog["update"](1.0, "WAV Export abgeschlossen.")
+        time.sleep(0.8)
         logging.info("=== WAV EXPORT (Standalone) ENDE ===")
     except Exception as e:
         logging.error(f"WAV Export Fehler: {e}", exc_info=True)
+        if prog: prog["update"](1.0, f"Fehler: {e}")
     finally:
+        if prog: prog["close"]()
         _set_busy(False)
 
 
@@ -2598,9 +2816,12 @@ def _do_aaf_export(session_name, session_dir):
 
 def run_aaf_export_standalone(export_tracks, settings):
     """Standalone AAF Export – mit vorgelagertem Consolidate."""
+    prog = None
     try:
         logging.info("=== AAF EXPORT (Standalone) START ===")
         _set_busy(True)
+        prog = _show_progress_win("PunchBuddy – AAF Export")
+        prog["update"](0.03, "Verbindung zu Pro Tools…")
         engine = _get_engine()
         if engine is None:
             logging.error("PTSL Engine nicht verfuegbar.")
@@ -2610,11 +2831,13 @@ def run_aaf_export_standalone(export_tracks, settings):
         session_name = os.path.splitext(os.path.basename(session_path))[0]
 
         # Spuren selektieren
+        prog["update"](0.08, "Spuren vorbereiten…")
         logging.info(f"  Spuren selektieren: {export_tracks}")
         engine.select_tracks_by_name(export_tracks)
         time.sleep(0.3)
 
         # Video-Ende ermitteln (wie im Haupt-Export)
+        prog["update"](0.13, "Video-Ende ermitteln…")
         in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
         video_track = _detect_video_track(engine, settings)
         video_end = None
@@ -2644,37 +2867,44 @@ def run_aaf_export_standalone(export_tracks, settings):
         time.sleep(0.3)
 
         # Consolidate
+        prog["update"](0.20, "Consolidate…")
         logging.info("  Consolidate...")
         engine.consolidate_clip()
         time.sleep(1.0)
         logging.info("  Consolidate OK")
 
         # Überhänge pro Spur löschen (Pre/Post-Material abschneiden)
+        prog["update"](0.32, "Überhänge trimmen…")
         _trim_overhangs(engine, export_tracks, in_time, video_end)
 
         # Loudness-Korrektur
         if settings.get("loudness_enabled", True):
+            prog["update"](0.40, "Lautheitskorrektur…")
             loud_tracks = settings.get("loudness_tracks", ["ST"])
             target_lufs = settings.get("target_lufs", -23.0)
             max_tp = settings.get("max_truepeak", -3.0)
-            for lt in loud_tracks:
-                normalize_track(engine, session_dir, lt, target_lufs, max_tp)
+            _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
 
         # Spuren erneut selektieren für AAF-Export
+        prog["update"](0.85, "AAF exportieren…")
         engine.select_tracks_by_name(export_tracks)
         time.sleep(0.2)
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
         time.sleep(0.2)
 
         _do_aaf_export(session_name, session_dir)
+        prog["update"](1.0, "AAF Export abgeschlossen.")
+        time.sleep(0.8)
         logging.info("=== AAF EXPORT (Standalone) ENDE ===")
     except Exception as e:
         logging.error(f"AAF Export Fehler: {e}", exc_info=True)
+        if prog: prog["update"](1.0, f"Fehler: {e}")
     finally:
+        if prog: prog["close"]()
         _set_busy(False)
 
 
-def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max_truepeak=-3.0):
+def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max_truepeak=-3.0, progress_cb=None):
     """
     Normalisiert die konsolidierte Audiodatei einer Spur nach EBU R128.
     1. Findet die neueste '<track_name>*' .wav im Audio Files Ordner
@@ -2683,7 +2913,13 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
     4. Ueberschreibt die Datei
     5. Aktualisiert Pro Tools (refresh)
     """
+    def _prog(frac, msg):
+        if progress_cb:
+            try: progress_cb(frac, msg)
+            except Exception: pass
+
     logging.info(f"  Loudness-Korrektur fuer Spur '{track_name}'...")
+    _prog(0.05, f"Spur '{track_name}': Suche Audiodatei…")
     try:
         import soundfile as sf
         import pyloudnorm as pyln
@@ -2718,10 +2954,12 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
     logging.info(f"  Datei: {target_name} ({st_files[0][1] / 1024 / 1024:.1f} MB)")
 
     # Audio lesen
+    _prog(0.15, f"'{target_name}': Lese Audio…")
     data, rate = sf.read(target_file)
     logging.info(f"  Sample-Rate: {rate} Hz, Dauer: {len(data)/rate:.1f}s, Kanaele: {data.ndim}")
 
     # Lautheit messen
+    _prog(0.35, f"'{target_name}': Messe Lautheit…")
     meter = pyln.Meter(rate)
     current_lufs = meter.integrated_loudness(data)
     logging.info(f"  Aktuelle Lautheit: {current_lufs:.1f} LUFS (Ziel: {target_lufs} LUFS)")
@@ -2736,6 +2974,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
     logging.info(f"  Gain-Korrektur: {gain_db:+.1f} dB")
 
     # Gain anwenden
+    _prog(0.55, f"'{target_name}': Wende Gain {gain_db:+.1f} dB an…")
     normalized = data * gain_linear
 
     # True Peak pruefen und limitieren
@@ -2755,6 +2994,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
         logging.info(f"  True Peak OK – kein Limiting noetig")
 
     # Datei ueberschreiben
+    _prog(0.70, f"'{target_name}': Schreibe Datei…")
     sf.write(target_file, normalized, rate)
     logging.info(f"  Datei ueberschrieben: {target_name}")
 
@@ -2808,6 +3048,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
         logging.warning(f"  Metadata schreiben: {e}")
 
     # Pro Tools aktualisieren und Clip umbenennen
+    _prog(0.85, f"'{target_name}': Pro Tools aktualisiert…")
     try:
         engine.refresh_all_modified_audio_files()
         time.sleep(3.0)  # PT braucht Zeit um die Datei neu einzulesen
@@ -2836,6 +3077,181 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
                 logging.warning("  Clip konnte nicht umbenannt werden")
     except Exception as e:
         logging.warning(f"  PT Rename/Refresh: {e}")
+
+    _prog(0.98, f"Spur '{track_name}': Fertig.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lautheits-Fortschrittsfenster
+# ─────────────────────────────────────────────────────────────────────────────
+
+_loudness_win_refs = []  # Hält ObjC-Referenzen am Leben (verhindert PyObjC-Dealloc-Crash)
+
+
+def _dispatch_main(fn):
+    """Schedult fn() auf dem Haupt-Run-Loop (fire-and-forget)."""
+    try:
+        import Foundation as _F
+        _F.NSRunLoop.mainRunLoop().performBlock_(fn)
+    except Exception:
+        pass
+
+
+def _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp):
+    """Ruft normalize_track für jede Spur auf und zeigt dabei ein Fortschrittsfenster."""
+    import AppKit as _AK
+
+    win_ref   = [None]
+    bar_ref   = [None]
+    phase_ref = [None]
+    WIN_W, WIN_H = 360, 100
+
+    def _make_window():
+        try:
+            rect  = _AK.NSMakeRect(0, 0, WIN_W, WIN_H)
+            win   = _AK.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                rect, _AK.NSWindowStyleMaskTitled, _AK.NSBackingStoreBuffered, False)
+            win.setTitle_("PunchBuddy Lautheitskorrektur")
+            win.setLevel_(3)
+            win.center()
+
+            cv = win.contentView()
+
+            lbl = _AK.NSTextField.alloc().initWithFrame_(
+                _AK.NSMakeRect(20, WIN_H - 38, WIN_W - 40, 18))
+            lbl.setStringValue_("Initialisierung…")
+            lbl.setBezeled_(False)
+            lbl.setEditable_(False)
+            lbl.setDrawsBackground_(False)
+            lbl.setFont_(_AK.NSFont.systemFontOfSize_(12))
+            cv.addSubview_(lbl)
+
+            bar = _AK.NSProgressIndicator.alloc().initWithFrame_(
+                _AK.NSMakeRect(20, WIN_H - 66, WIN_W - 40, 16))
+            bar.setStyle_(0)  # 0 = NSProgressIndicatorBarStyle (Balken)
+            bar.setIndeterminate_(False)
+            bar.setMinValue_(0.0)
+            bar.setMaxValue_(1.0)
+            bar.setDoubleValue_(0.0)
+            cv.addSubview_(bar)
+
+            win_ref[0]   = win
+            bar_ref[0]   = bar
+            phase_ref[0] = lbl
+            _loudness_win_refs.extend([win, bar, lbl])
+            win.makeKeyAndOrderFront_(None)
+        except Exception as e:
+            logging.debug(f"  Loudness-Fortschrittsfenster: {e}")
+
+    def _update(frac, msg):
+        def _do():
+            try:
+                if bar_ref[0]:   bar_ref[0].setDoubleValue_(frac)
+                if phase_ref[0]: phase_ref[0].setStringValue_(msg)
+            except Exception:
+                pass
+        _dispatch_main(_do)
+
+    def _close():
+        def _do():
+            try:
+                if win_ref[0]:
+                    win_ref[0].orderOut_(None)
+                    win_ref[0] = None
+            except Exception:
+                pass
+        _dispatch_main(_do)
+
+    _dispatch_main(_make_window)
+    time.sleep(0.15)
+
+    n = max(len(loud_tracks), 1)
+    for i, lt in enumerate(loud_tracks):
+        base, span = i / n, 1.0 / n
+        def _cb(frac, msg, _b=base, _s=span):
+            _update(_b + frac * _s, msg)
+        normalize_track(engine, session_dir, lt, target_lufs, max_tp, progress_cb=_cb)
+
+    _update(1.0, "Lautheitskorrektur abgeschlossen.")
+    time.sleep(0.8)
+    _close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fortschrittsfenster für Import / Export
+# ─────────────────────────────────────────────────────────────────────────────
+_prog_win_refs = []  # Hält ObjC-Referenzen am Leben
+
+def _show_progress_win(title):
+    """
+    Öffnet ein schwebendes Fortschrittsfenster ohne Fokus-Diebstahl.
+    Gibt {"update": fn(frac, msg), "close": fn()} zurück.
+    orderFront_ statt makeKeyAndOrderFront_ → Fokus bleibt beim aktiven Fenster.
+    """
+    import AppKit as _AK
+    WIN_W, WIN_H = 320, 76
+
+    win_ref = [None]
+    lbl_ref = [None]
+    bar_ref = [None]
+
+    def _make():
+        try:
+            rect = _AK.NSMakeRect(0, 0, WIN_W, WIN_H)
+            win = _AK.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                rect, _AK.NSWindowStyleMaskTitled, _AK.NSBackingStoreBuffered, False
+            )
+            win.setTitle_(title)
+            win.setLevel_(3)  # NSFloatingWindowLevel – immer sichtbar, kein Fokus
+            win.setIgnoresMouseEvents_(True)
+            screen = _AK.NSScreen.mainScreen()
+            if screen:
+                sf = screen.frame()
+                win.setFrameOrigin_(_AK.NSMakePoint(
+                    sf.size.width - WIN_W - 20,
+                    sf.size.height - WIN_H - 56
+                ))
+            cv = win.contentView()
+            lbl = _AK.NSTextField.alloc().initWithFrame_(
+                _AK.NSMakeRect(12, WIN_H - 36, WIN_W - 24, 16)
+            )
+            lbl.setStringValue_("Starte…")
+            lbl.setBezeled_(False); lbl.setEditable_(False); lbl.setDrawsBackground_(False)
+            lbl.setFont_(_AK.NSFont.systemFontOfSize_(11))
+            cv.addSubview_(lbl)
+            bar = _AK.NSProgressIndicator.alloc().initWithFrame_(
+                _AK.NSMakeRect(12, WIN_H - 58, WIN_W - 24, 12)
+            )
+            bar.setStyle_(0)
+            bar.setIndeterminate_(False)
+            bar.setMinValue_(0.0); bar.setMaxValue_(1.0); bar.setDoubleValue_(0.0)
+            cv.addSubview_(bar)
+            win_ref[0] = win; lbl_ref[0] = lbl; bar_ref[0] = bar
+            _prog_win_refs.extend([win, lbl, bar])
+            win.orderFront_(None)  # kein makeKeyAndOrderFront_ → kein Fokus-Diebstahl
+        except Exception as e:
+            logging.debug(f"  Fortschrittsfenster: {e}")
+
+    def update(frac, msg):
+        def _do():
+            try:
+                if lbl_ref[0]: lbl_ref[0].setStringValue_(msg)
+                if bar_ref[0]: bar_ref[0].setDoubleValue_(frac)
+            except Exception: pass
+        _dispatch_main(_do)
+
+    def close():
+        def _do():
+            try:
+                if win_ref[0]:
+                    win_ref[0].orderOut_(None)
+                    win_ref[0] = None
+            except Exception: pass
+        _dispatch_main(_do)
+
+    _dispatch_main(_make)
+    time.sleep(0.1)
+    return {"update": update, "close": close}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2909,6 +3325,30 @@ def _ensure_dock_icon():
         logging.warning(f"Dock-Icon/Name setzen fehlgeschlagen: {e}")
 
 _resolve_icon_path()  # Beim Import einmal auflösen
+
+
+def _get_network_interfaces():
+    """Returns [(display_label, ip), ...] for all active network interfaces."""
+    result = [("Localhost (127.0.0.1)", "127.0.0.1")]
+    try:
+        import subprocess as _sp
+        out = _sp.run(["ifconfig"], capture_output=True, text=True, timeout=3).stdout
+        current_iface = None
+        for line in out.splitlines():
+            if line and not line[0].isspace():
+                current_iface = line.split(":")[0].strip()
+            elif current_iface and "inet " in line and "inet6" not in line:
+                parts = line.strip().split()
+                try:
+                    ip = parts[parts.index("inet") + 1]
+                    if ip and ip != "127.0.0.1":
+                        result.append((f"{current_iface}  ({ip})", ip))
+                except (ValueError, IndexError):
+                    pass
+    except Exception:
+        pass
+    return result
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Menüleisten-App
@@ -3097,20 +3537,23 @@ class PunchBuddyApp(rumps.App):
         try:
             socketserver.TCPServer.allow_reuse_address = True
             port = self.settings.get("http_port", 8899)
+            bind_host = self.settings.get("http_bind_host", "127.0.0.1")
+            actual_bind = "127.0.0.1" if bind_host == "127.0.0.1" else "0.0.0.0"
             try:
-                self.httpd = socketserver.TCPServer(("127.0.0.1", port), Handler)
+                self.httpd = socketserver.TCPServer((actual_bind, port), Handler)
             except OSError:
                 # Port belegt – freien Port automatisch ermitteln
                 logging.warning(f"Port {port} belegt – suche freien Port...")
-                self.httpd = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+                self.httpd = socketserver.TCPServer((actual_bind, 0), Handler)
                 port = self.httpd.server_address[1]
                 self.settings["http_port"] = port
                 save_settings(self.settings)
                 logging.info(f"Freier Port gefunden und gespeichert: {port}")
             self._http_port = port
+            self._http_bind_host_display = bind_host
             threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
             atexit.register(self.httpd.shutdown)
-            logging.info(f"Stream Deck HTTP-Server lauscht auf Port {port}")
+            logging.info(f"Stream Deck HTTP-Server lauscht auf {actual_bind}:{port} (Anzeige: {bind_host})")
             logging.info(f"  /trigger  → Profil A")
             logging.info(f"  /trigger2 → Profil B")
             logging.info(f"  /export   → Export (komplett)")
@@ -3121,9 +3564,18 @@ class PunchBuddyApp(rumps.App):
             logging.info(f"  /stop       → Stop (dediziert)")
         except Exception as e:
             self._http_port = 8899  # Fallback für URL-Anzeige
+            self._http_bind_host_display = self.settings.get("http_bind_host", "127.0.0.1")
             logging.error(f"HTTP-Server Start fehlgeschlagen: {e}")
 
-
+    def _restart_http(self):
+        if hasattr(self, 'httpd') and self.httpd:
+            try:
+                self.httpd.shutdown()
+                self.httpd.server_close()
+            except Exception:
+                pass
+            self.httpd = None
+        self._start_http()
 
     def _trigger(self):
         logging.info(">>> TRIGGER A <<<")
@@ -3172,16 +3624,19 @@ class PunchBuddyApp(rumps.App):
 
     def _trigger_export_wav(self):
         logging.info(">>> WAV EXPORT TRIGGER <<<")
+        _dispatch_main(lambda: _set_busy(True))
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
         threading.Thread(target=run_wav_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
 
     def _trigger_export_aaf(self):
         logging.info(">>> AAF EXPORT TRIGGER <<<")
+        _dispatch_main(lambda: _set_busy(True))
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
         threading.Thread(target=run_aaf_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
 
     def _trigger_export_interplay(self):
         logging.info(">>> INTERPLAY EXPORT TRIGGER <<<")
+        _dispatch_main(lambda: _set_busy(True))  # sofort sichtbar, noch vor Thread-Start
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
         ws_steps = self.settings.get("interplay_workspace_steps", 17)
         threading.Thread(target=run_interplay_export, args=(export_tracks, self.settings, ws_steps), daemon=True).start()
@@ -3475,35 +3930,44 @@ class PunchBuddyApp(rumps.App):
 
     # ── Hilfe & Info Callbacks ───────────────────────────────────────────
     
+    @objc.python_method
+    def _doc_path(self, filename):
+        """Sucht eine Dokumentationsdatei neben der App oder neben dem Skript."""
+        import sys as _sys
+        candidates = []
+        if getattr(_sys, 'frozen', False):
+            # Neben PunchBuddy.app (im DMG-Ordner)
+            app_dir = os.path.dirname(os.path.dirname(os.path.dirname(_sys.executable)))
+            candidates.append(os.path.join(os.path.dirname(app_dir), filename))
+        candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), filename))
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return None
+
     def _on_help_manual(self, _):
-        rumps.alert(
-            title="Bedienungsanleitung",
-            message="PunchBuddy – Punch-In & Export Pipeline\n\n"
-                    "1. StreamDeck-Integration:\n"
-                    "Verwenden Sie die URLs unter 'Einstellungen', um Web-Requests via Stream Deck auszulösen.\n\n"
-                    "2. Punch-In:\n"
-                    "Drücken Sie den Trigger für Profil A oder B. Das Skript überprüft den PT Pre-Roll Status "
-                    "und startet die Aufnahme sicher ohne Beachball-Hänger.\n\n"
-                    "3. Export Workflow:\n"
-                    "Löst den automatisierten Consolidate & Cleanup aus:\n"
-                    "- Blendet DoE/AD ein\n"
-                    "- Konsolidiert alle definierten Export-Spuren\n"
-                    "- Löscht saubere Überhänge\n"
-                    "- Normalisiert die ST-Spur (EBU R128) und benennt den Clip in PT um.\n"
-                    "- Erstellt ein Loudness-Metadaten Log.\n"
-        )
+        import subprocess as _sp
+        _doc = self._doc_path("BEDIENUNGSANLEITUNG.md")
+        if _doc:
+            try:
+                _sp.Popen(["open", _doc]); return
+            except Exception:
+                pass
+        rumps.alert(title="Bedienungsanleitung",
+                    message="BEDIENUNGSANLEITUNG.md nicht gefunden.\n"
+                            "Bitte die Datei neben PunchBuddy.app ablegen.")
 
     def _on_help_docs(self, _):
-        rumps.alert(
-            title="Technische Dokumentation",
-            message="Architektur:\n"
-                    "- Python 3.14 mit PyObjC (AppKit/Quartz)\n"
-                    "- PTSL (Pro Tools Scripting Library) via gRPC für Timeline/Clip-Manipulation\n"
-                    "- macOS Quartz Events für native Keyboard-Injektion (Shift+Ö)\n"
-                    "- pyloudnorm & soundfile für EBU R128 Audio-Processing\n"
-                    "- rumps für die native macOS Menüleiste\n\n"
-                    "Lokaler HTTP Server (Port 8899) läuft im Hintergrund für externe Trigger."
-        )
+        import subprocess as _sp
+        _doc = self._doc_path("TECHNISCHE_DOKUMENTATION.md")
+        if _doc:
+            try:
+                _sp.Popen(["open", _doc]); return
+            except Exception:
+                pass
+        rumps.alert(title="Technische Dokumentation",
+                    message="TECHNISCHE_DOKUMENTATION.md nicht gefunden.\n"
+                            "Bitte die Datei neben PunchBuddy.app ablegen.")
 
     def _on_help_opensource(self, _):
         rumps.alert(
@@ -3580,9 +4044,6 @@ class PunchBuddyApp(rumps.App):
         tab1.setView_(t1_view)
 
         checkboxes = {}
-        preset_popup = AppKit.NSPopUpButton.alloc().initWithFrame_(
-            NSMakeRect(PAD + 55, t1_view.frame().size.height - 35, 180, 24))
-        load_btn = save_preset_btn = rename_btn = None
 
         if track_names:
             rec_a_set  = set(self.settings.get("tracks", []))
@@ -3595,47 +4056,27 @@ class PunchBuddyApp(rumps.App):
 
             ROW_H = 28; LABEL_W = 180; CB_W = 55; GAP = 10
             col_a_x      = LABEL_W + 5
-            col_b_x      = col_a_x + CB_W * 2 + GAP
-            col_export_x = col_b_x + CB_W * 2 + GAP + 10
+            col_b_x      = col_a_x + CB_W + GAP
+            col_export_x = col_b_x + CB_W + GAP + 10
             col_loud_x   = col_export_x + CB_W + GAP
             col_play_x   = col_loud_x + CB_W + GAP
 
-            HEADER_H = 85
+            HEADER_H = 65
             scroll_h = t1_view.frame().size.height - HEADER_H
 
             # Column Headers
-            for txt, cx, w in [("Trigger A", col_a_x, CB_W*2), ("Trigger B", col_b_x, CB_W*2),
+            for txt, cx, w in [("Trigger A", col_a_x, CB_W), ("Trigger B", col_b_x, CB_W),
                                 ("Export", col_export_x, CB_W), ("Loud", col_loud_x, CB_W),
                                 ("Play", col_play_x, CB_W)]:
                 lbl = NSTextField.labelWithString_(txt)
-                lbl.setFrame_(NSMakeRect(cx, scroll_h + 35, w, 18))
-                lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
+                lbl.setFrame_(NSMakeRect(cx, scroll_h + 15, w, 18))
+                lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
                 lbl.setAlignment_(AppKit.NSTextAlignmentCenter)
                 t1_view.addSubview_(lbl)
 
-            # Sub-Headers Rec/Mon
-            for base_x in [col_a_x, col_b_x]:
-                for stxt, sx, clr in [("Rec", base_x, NSColor.systemRedColor()),
-                                       ("Mon", base_x + CB_W, NSColor.systemGreenColor())]:
-                    s = NSTextField.labelWithString_(stxt)
-                    s.setFrame_(NSMakeRect(sx, scroll_h + 15, CB_W, 16))
-                    s.setFont_(NSFont.boldSystemFontOfSize_(10))
-                    s.setTextColor_(clr)
-                    s.setAlignment_(AppKit.NSTextAlignmentCenter)
-                    t1_view.addSubview_(s)
-            for stxt, sx, clr, bold in [("\u2714", col_export_x, NSColor.systemBlueColor(), False),
-                                         ("\u2714", col_loud_x, NSColor.systemOrangeColor(), False),
-                                         ("Mon",   col_play_x, NSColor.systemGreenColor(), True)]:
-                s = NSTextField.labelWithString_(stxt)
-                s.setFrame_(NSMakeRect(sx, scroll_h + 15, CB_W, 16))
-                s.setFont_(NSFont.boldSystemFontOfSize_(10) if bold else NSFont.systemFontOfSize_(10))
-                s.setTextColor_(clr)
-                s.setAlignment_(AppKit.NSTextAlignmentCenter)
-                t1_view.addSubview_(s)
-
             lbl_spur = NSTextField.labelWithString_("Spur")
-            lbl_spur.setFrame_(NSMakeRect(PAD, scroll_h + 35, LABEL_W, 18))
-            lbl_spur.setFont_(NSFont.boldSystemFontOfSize_(12))
+            lbl_spur.setFrame_(NSMakeRect(PAD, scroll_h + 15, LABEL_W, 18))
+            lbl_spur.setFont_(NSFont.boldSystemFontOfSize_(11))
             t1_view.addSubview_(lbl_spur)
 
             # ScrollView
@@ -3664,11 +4105,9 @@ class PunchBuddyApp(rumps.App):
                     doc_view.addSubview_positioned_relativeTo_(stripe, AppKit.NSWindowBelow, lbl)
                 cbs = {}
                 for key, cx, active_set in [
-                    ("rec_a",    col_a_x,        rec_a_set),
-                    ("mon_a",    col_a_x + CB_W, mon_a_set),
-                    ("rec_b",    col_b_x,        rec_b_set),
-                    ("mon_b",    col_b_x + CB_W, mon_b_set),
-                    ("export",   col_export_x,    export_set),
+                    ("rec_a",    col_a_x,     rec_a_set),
+                    ("rec_b",    col_b_x,     rec_b_set),
+                    ("export",   col_export_x, export_set),
                     ("loud",     col_loud_x,      loud_set),
                     ("play_mon", col_play_x,      play_set),
                 ]:
@@ -3681,27 +4120,6 @@ class PunchBuddyApp(rumps.App):
                 checkboxes[name] = cbs
             scroll_view.setDocumentView_(doc_view)
             t1_view.addSubview_(scroll_view)
-
-            # Presets
-            pby = t1_view.frame().size.height - 35
-            presets = self.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
-            lp = NSTextField.labelWithString_("Presets:")
-            lp.setFrame_(NSMakeRect(PAD, pby + 5, 55, 20))
-            lp.setFont_(NSFont.boldSystemFontOfSize_(11))
-            t1_view.addSubview_(lp)
-            preset_popup.removeAllItems()
-            for p in presets:
-                preset_popup.addItemWithTitle_(p.get("name", "Preset"))
-            t1_view.addSubview_(preset_popup)
-            load_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 240, pby + 3, 65, 24))
-            load_btn.setTitle_("Laden"); load_btn.setBezelStyle_(NSBezelStyleRounded)
-            load_btn.setFont_(NSFont.systemFontOfSize_(11)); t1_view.addSubview_(load_btn)
-            save_preset_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 310, pby + 3, 80, 24))
-            save_preset_btn.setTitle_("Speichern"); save_preset_btn.setBezelStyle_(NSBezelStyleRounded)
-            save_preset_btn.setFont_(NSFont.systemFontOfSize_(11)); t1_view.addSubview_(save_preset_btn)
-            rename_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 395, pby + 3, 90, 24))
-            rename_btn.setTitle_("Umbenennen"); rename_btn.setBezelStyle_(NSBezelStyleRounded)
-            rename_btn.setFont_(NSFont.systemFontOfSize_(11)); t1_view.addSubview_(rename_btn)
         else:
             nl = NSTextField.labelWithString_("Keine Spuren gefunden (Pro Tools offen?)")
             nl.setFrame_(NSMakeRect(PAD, t1_view.frame().size.height / 2, WIN_W - 40, 30))
@@ -3955,6 +4373,44 @@ class PunchBuddyApp(rumps.App):
         l_port_info.setTextColor_(NSColor.secondaryLabelColor())
         t4_view.addSubview_(l_port_info)
 
+        # ── Netzwerk-Interface ──────────────────────────────────────────
+        t4_y -= 30
+        sep_iface = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t4_y, WIN_W - PAD * 2 - 40, 1))
+        sep_iface.setBoxType_(AppKit.NSBoxSeparator)
+        t4_view.addSubview_(sep_iface)
+
+        t4_y -= 28
+        h_iface = NSTextField.labelWithString_("Netzwerk-Interface")
+        h_iface.setFrame_(NSMakeRect(PAD, t4_y, 300, 20))
+        h_iface.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t4_view.addSubview_(h_iface)
+
+        t4_y -= 30
+        l_iface = NSTextField.labelWithString_("Interface:")
+        l_iface.setFrame_(NSMakeRect(PAD, t4_y + 2, 80, 20))
+        l_iface.setFont_(NSFont.systemFontOfSize_(12))
+        t4_view.addSubview_(l_iface)
+
+        _iface_list = _get_network_interfaces()
+        saved_host = self.settings.get("http_bind_host", "127.0.0.1")
+        iface_popup = AppKit.NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(PAD + 85, t4_y, 260, 24))
+        iface_popup.removeAllItems()
+        _selected_iface_idx = 0
+        for _ii, (_dn, _ip) in enumerate(_iface_list):
+            iface_popup.addItemWithTitle_(_dn)
+            if _ip == saved_host:
+                _selected_iface_idx = _ii
+        iface_popup.selectItemAtIndex_(_selected_iface_idx)
+        t4_view.addSubview_(iface_popup)
+        controls["http_bind_host"] = iface_popup
+
+        l_iface_note = NSTextField.labelWithString_("(Neustart nach Änderung erforderlich)")
+        l_iface_note.setFrame_(NSMakeRect(PAD + 355, t4_y + 2, 240, 18))
+        l_iface_note.setFont_(NSFont.systemFontOfSize_(11))
+        l_iface_note.setTextColor_(NSColor.secondaryLabelColor())
+        t4_view.addSubview_(l_iface_note)
+
         t4_y -= 35
         h_urls = NSTextField.labelWithString_("Trigger-URLs (Klicken zum Kopieren)")
         h_urls.setFrame_(NSMakeRect(PAD, t4_y, 400, 20))
@@ -3962,6 +4418,8 @@ class PunchBuddyApp(rumps.App):
         t4_view.addSubview_(h_urls)
 
         port = getattr(self, '_http_port', self.settings.get("http_port", 8899))
+        display_host = getattr(self, '_http_bind_host_display',
+                               self.settings.get("http_bind_host", "127.0.0.1"))
         _url_entries = [
             ("/trigger",           "Punch-In A"),
             ("/trigger2",          "Punch-In B"),
@@ -3976,64 +4434,141 @@ class PunchBuddyApp(rumps.App):
 
         for path, label in _url_entries:
             t4_y -= 28
-            url = f"http://127.0.0.1:{port}{path}"
+            url = f"http://{display_host}:{port}{path}"
 
-            # Label
             l_url = NSTextField.labelWithString_(f"{label}:")
             l_url.setFrame_(NSMakeRect(PAD, t4_y + 2, 140, 18))
             l_url.setFont_(NSFont.systemFontOfSize_(12))
             t4_view.addSubview_(l_url)
 
-            # URL (selectable text field)
             tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 320, 22))
             tf_url.setStringValue_(url)
             tf_url.setEditable_(False); tf_url.setSelectable_(True)
             tf_url.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.0))
             t4_view.addSubview_(tf_url)
 
-            # Copy Button
             copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 475, t4_y, 70, 22))
             copy_btn.setTitle_("Kopieren")
             copy_btn.setBezelStyle_(NSBezelStyleRounded)
             copy_btn.setFont_(NSFont.systemFontOfSize_(11))
-            # Tag: wir speichern den URL-Index
             copy_btn.setTag_(_url_entries.index((path, label)))
             t4_view.addSubview_(copy_btn)
 
-        # Speichere URL-Liste für den Copy-Handler
-        self._webtrigger_urls = [(f"http://127.0.0.1:{port}{p}", l) for p, l in _url_entries]
+        self._webtrigger_urls = [(f"http://{display_host}:{port}{p}", l) for p, l in _url_entries]
         self._webtrigger_buttons = []
 
-        # Copy-Handler über Target (alle Buttons)
         _wt_target = _WebtriggerCopyTarget.alloc().init()
         _wt_target._app = self
-
-        # Nochmal durch die Buttons gehen und Target setzen
         for sv in t4_view.subviews():
             if isinstance(sv, NSButton) and sv.title() == "Kopieren":
                 sv.setTarget_(_wt_target)
                 sv.setAction_(objc.selector(_wt_target.onCopy_, signature=b'v@:@'))
                 self._webtrigger_buttons.append(sv)
+        self._wt_target = _wt_target
 
-        self._wt_target = _wt_target  # Prevent GC
+        # ── TAB 5: PRESETS ──────────────────────────────────────────────────
+        tab5 = NSTabViewItem.alloc().initWithIdentifier_("Presets")
+        tab5.setLabel_("Presets")
+        t5_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
+        tab5.setView_(t5_view)
+
+        t5_y = t5_view.frame().size.height - 35
+
+        h_pr = NSTextField.labelWithString_("Presets")
+        h_pr.setFrame_(NSMakeRect(PAD, t5_y, 400, 20))
+        h_pr.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t5_view.addSubview_(h_pr)
+
+        t5_y -= 12
+        sep_pr0 = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t5_y, WIN_W - PAD * 2 - 40, 1))
+        sep_pr0.setBoxType_(AppKit.NSBoxSeparator)
+        t5_view.addSubview_(sep_pr0)
+
+        t5_y -= 35
+        l_psel = NSTextField.labelWithString_("Preset auswählen:")
+        l_psel.setFrame_(NSMakeRect(PAD, t5_y + 3, 130, 20))
+        l_psel.setFont_(NSFont.systemFontOfSize_(12))
+        t5_view.addSubview_(l_psel)
+
+        presets_tab_popup = AppKit.NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(PAD + 135, t5_y, 220, 24))
+        presets_tab_popup.removeAllItems()
+        _cur_presets = self.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+        for _pp in _cur_presets:
+            presets_tab_popup.addItemWithTitle_(_pp.get("name", "Preset"))
+        t5_view.addSubview_(presets_tab_popup)
+
+        t5_y -= 40
+        btn_load_pr  = NSButton.alloc().initWithFrame_(NSMakeRect(PAD,        t5_y, 75, 28))
+        btn_load_pr.setTitle_("Laden");      btn_load_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_load_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_load_pr)
+
+        btn_save_pr  = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 85,   t5_y, 90, 28))
+        btn_save_pr.setTitle_("Speichern");  btn_save_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_save_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_save_pr)
+
+        btn_rename_pr = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 185, t5_y, 105, 28))
+        btn_rename_pr.setTitle_("Umbenennen"); btn_rename_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_rename_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_rename_pr)
+
+        btn_new_pr   = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 300,  t5_y, 60, 28))
+        btn_new_pr.setTitle_("Neu");         btn_new_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_new_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_new_pr)
+
+        btn_del_pr   = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 370,  t5_y, 80, 28))
+        btn_del_pr.setTitle_("Löschen");     btn_del_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_del_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_del_pr)
+
+        t5_y -= 35
+        sep_pr2 = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t5_y, WIN_W - PAD * 2 - 40, 1))
+        sep_pr2.setBoxType_(AppKit.NSBoxSeparator)
+        t5_view.addSubview_(sep_pr2)
+
+        t5_y -= 28
+        h_pr_info = NSTextField.labelWithString_("Enthaltene Einstellungen:")
+        h_pr_info.setFrame_(NSMakeRect(PAD, t5_y, 300, 20))
+        h_pr_info.setFont_(NSFont.boldSystemFontOfSize_(12))
+        t5_view.addSubview_(h_pr_info)
+
+        _info_text = (
+            "• Spurenzuweisungen (Trigger A, Trigger B, Export, Lautheit, Play)\n"
+            "• Monitor-Spuren (Trigger A Mon, Trigger B Mon)\n"
+            "• Export-Einstellungen (WAV, AAF, Interplay, Lautheitskorrektur)\n"
+            "• Interplay Workspace, Fehler-/Erfolgs-Keywords, Umbenennung\n"
+            "• Import-Einstellungen\n"
+            "• Webtrigger-Port und Netzwerk-Interface"
+        )
+        t5_y -= 95
+        l_info = NSTextField.labelWithString_(_info_text)
+        l_info.setFrame_(NSMakeRect(PAD + 15, t5_y, WIN_W - PAD * 2 - 55, 90))
+        l_info.setFont_(NSFont.systemFontOfSize_(11))
+        l_info.setTextColor_(NSColor.secondaryLabelColor())
+        l_info.setBezeled_(False); l_info.setDrawsBackground_(False)
+        l_info.setEditable_(False); l_info.setSelectable_(False)
+        t5_view.addSubview_(l_info)
 
         # Tabs hinzufuegen
         tab_view.addTabViewItem_(tab1)
         tab_view.addTabViewItem_(tab2)
         tab_view.addTabViewItem_(tab3)
         tab_view.addTabViewItem_(tab4)
+        tab_view.addTabViewItem_(tab5)
         content.addSubview_(tab_view)
 
         # Target
         target = _UnifiedSettingsTarget.alloc().init()
-        target.setup(self, window, checkboxes, track_names, controls, preset_popup)
-        if load_btn:
-            load_btn.setTarget_(target)
-            load_btn.setAction_(objc.selector(target.onLoadPreset_, signature=b'v@:@'))
-            save_preset_btn.setTarget_(target)
-            save_preset_btn.setAction_(objc.selector(target.onSavePreset_, signature=b'v@:@'))
-            rename_btn.setTarget_(target)
-            rename_btn.setAction_(objc.selector(target.onRenamePreset_, signature=b'v@:@'))
+        target.setup(self, window, checkboxes, track_names, controls, presets_tab_popup,
+                     iface_list=_iface_list)
+        btn_load_pr.setTarget_(target)
+        btn_load_pr.setAction_(objc.selector(target.onLoadPreset_, signature=b'v@:@'))
+        btn_save_pr.setTarget_(target)
+        btn_save_pr.setAction_(objc.selector(target.onSavePreset_, signature=b'v@:@'))
+        btn_rename_pr.setTarget_(target)
+        btn_rename_pr.setAction_(objc.selector(target.onRenamePreset_, signature=b'v@:@'))
+        btn_new_pr.setTarget_(target)
+        btn_new_pr.setAction_(objc.selector(target.onNewPreset_, signature=b'v@:@'))
+        btn_del_pr.setTarget_(target)
+        btn_del_pr.setAction_(objc.selector(target.onDeletePreset_, signature=b'v@:@'))
 
         cancel_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, 10, 100, 30))
         cancel_btn.setTitle_("Abbrechen"); cancel_btn.setBezelStyle_(NSBezelStyleRounded)
@@ -4049,7 +4584,8 @@ class PunchBuddyApp(rumps.App):
 
         global _config_refs
         _config_refs = [window, target, controls, checkboxes, tab_view,
-                        load_btn, save_preset_btn, rename_btn, preset_popup]
+                        presets_tab_popup, btn_load_pr, btn_save_pr, btn_rename_pr,
+                        btn_new_pr, btn_del_pr, iface_popup]
         window.makeKeyAndOrderFront_(None)
         window.center()
 
@@ -4622,47 +5158,116 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
     """ObjC-kompatibles Target fuer das kombinierte Einstellungsfenster."""
 
     @objc.python_method
-    def setup(self, app_ref, window, checkboxes, track_names, controls, preset_popup):
+    def setup(self, app_ref, window, checkboxes, track_names, controls, preset_popup,
+              iface_list=None):
         self._app = app_ref
         self._window = window
         self._checkboxes = checkboxes
         self._track_names = track_names
         self._controls = controls
         self._preset_popup = preset_popup
+        self._iface_list = iface_list or [("Localhost (127.0.0.1)", "127.0.0.1")]
 
     @objc.python_method
     def _read_current_config(self):
-        rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list = [], [], [], [], [], [], []
+        rec_a, rec_b, export_list, loud_list, play_list = [], [], [], [], []
         for name in self._track_names:
             cbs = self._checkboxes.get(name)
             if not cbs:
                 continue
-            if cbs["rec_a"].state() == AppKit.NSOnState: rec_a.append(name)
-            if cbs["mon_a"].state() == AppKit.NSOnState: mon_a.append(name)
-            if cbs["rec_b"].state() == AppKit.NSOnState: rec_b.append(name)
-            if cbs["mon_b"].state() == AppKit.NSOnState: mon_b.append(name)
-            if cbs["export"].state() == AppKit.NSOnState: export_list.append(name)
-            if cbs["loud"].state() == AppKit.NSOnState: loud_list.append(name)
+            if cbs.get("rec_a") and cbs["rec_a"].state() == AppKit.NSOnState: rec_a.append(name)
+            if cbs.get("rec_b") and cbs["rec_b"].state() == AppKit.NSOnState: rec_b.append(name)
+            if cbs.get("export") and cbs["export"].state() == AppKit.NSOnState: export_list.append(name)
+            if cbs.get("loud") and cbs["loud"].state() == AppKit.NSOnState: loud_list.append(name)
             if cbs.get("play_mon") and cbs["play_mon"].state() == AppKit.NSOnState: play_list.append(name)
-        return rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list
+        return rec_a, rec_b, export_list, loud_list, play_list
 
     @objc.python_method
-    def _apply_config(self, rec_a, mon_a, rec_b, mon_b, export_list, loud_list=None, play_list=None):
-        ra, ma, rb, mb, ex = set(rec_a), set(mon_a), set(rec_b), set(mon_b), set(export_list)
+    def _apply_config(self, rec_a, rec_b, export_list, loud_list=None, play_list=None):
+        ra, rb, ex = set(rec_a), set(rec_b), set(export_list)
         lo = set(loud_list) if loud_list else set()
         pl = set(play_list) if play_list else set()
         for name in self._track_names:
             cbs = self._checkboxes.get(name)
             if not cbs:
                 continue
-            cbs["rec_a"].setState_(AppKit.NSOnState if name in ra else AppKit.NSOffState)
-            cbs["mon_a"].setState_(AppKit.NSOnState if name in ma else AppKit.NSOffState)
-            cbs["rec_b"].setState_(AppKit.NSOnState if name in rb else AppKit.NSOffState)
-            cbs["mon_b"].setState_(AppKit.NSOnState if name in mb else AppKit.NSOffState)
-            cbs["export"].setState_(AppKit.NSOnState if name in ex else AppKit.NSOffState)
-            cbs["loud"].setState_(AppKit.NSOnState if name in lo else AppKit.NSOffState)
-            if "play_mon" in cbs:
+            if cbs.get("rec_a"):
+                cbs["rec_a"].setState_(AppKit.NSOnState if name in ra else AppKit.NSOffState)
+            if cbs.get("rec_b"):
+                cbs["rec_b"].setState_(AppKit.NSOnState if name in rb else AppKit.NSOffState)
+            if cbs.get("export"):
+                cbs["export"].setState_(AppKit.NSOnState if name in ex else AppKit.NSOffState)
+            if cbs.get("loud"):
+                cbs["loud"].setState_(AppKit.NSOnState if name in lo else AppKit.NSOffState)
+            if cbs.get("play_mon"):
                 cbs["play_mon"].setState_(AppKit.NSOnState if name in pl else AppKit.NSOffState)
+
+    @objc.python_method
+    def _read_all_controls(self):
+        """Returns a dict of all current control values (for preset saving)."""
+        d = {}
+        bool_keys = ["wav_export_enabled", "aaf_export_enabled", "interplay_enabled",
+                     "loudness_enabled", "interplay_rename_enabled", "import_close_session"]
+        for key in bool_keys:
+            if key in self._controls:
+                d[key] = (self._controls[key].state() == AppKit.NSOnState)
+        str_keys = ["export_start_tc", "video_track", "interplay_workspace",
+                    "export_error_keywords", "export_success_keywords",
+                    "interplay_rename_prefix", "interplay_rename_suffix"]
+        for key in str_keys:
+            if key in self._controls:
+                d[key] = self._controls[key].stringValue()
+        int_keys = ["extend_count", "interplay_workspace_steps",
+                    "interplay_rename_trim_start", "interplay_rename_trim_end", "http_port"]
+        for key in int_keys:
+            if key in self._controls:
+                try:
+                    d[key] = int(self._controls[key].stringValue())
+                except ValueError:
+                    pass
+        float_keys = ["target_lufs", "max_truepeak"]
+        for key in float_keys:
+            if key in self._controls:
+                try:
+                    d[key] = float(self._controls[key].stringValue().replace(",", "."))
+                except ValueError:
+                    pass
+        if "http_bind_host" in self._controls:
+            idx_iface = self._controls["http_bind_host"].indexOfSelectedItem()
+            if 0 <= idx_iface < len(self._iface_list):
+                d["http_bind_host"] = self._iface_list[idx_iface][1]
+        return d
+
+    @objc.python_method
+    def _apply_all_controls(self, p):
+        """Applies preset dict p to all UI controls."""
+        bool_keys = ["wav_export_enabled", "aaf_export_enabled", "interplay_enabled",
+                     "loudness_enabled", "interplay_rename_enabled", "import_close_session"]
+        for key in bool_keys:
+            if key in self._controls and key in p:
+                self._controls[key].setState_(
+                    AppKit.NSOnState if p[key] else AppKit.NSOffState)
+        str_keys = ["export_start_tc", "video_track", "interplay_workspace",
+                    "export_error_keywords", "export_success_keywords",
+                    "interplay_rename_prefix", "interplay_rename_suffix"]
+        for key in str_keys:
+            if key in self._controls and key in p:
+                self._controls[key].setStringValue_(str(p[key]))
+        int_keys = ["extend_count", "interplay_workspace_steps",
+                    "interplay_rename_trim_start", "interplay_rename_trim_end", "http_port"]
+        for key in int_keys:
+            if key in self._controls and key in p:
+                self._controls[key].setStringValue_(str(p[key]))
+        float_keys = ["target_lufs", "max_truepeak"]
+        for key in float_keys:
+            if key in self._controls and key in p:
+                self._controls[key].setStringValue_(str(p[key]))
+        if "http_bind_host" in self._controls and "http_bind_host" in p:
+            target_ip = p["http_bind_host"]
+            for i, (_, ip) in enumerate(self._iface_list):
+                if ip == target_ip:
+                    self._controls["http_bind_host"].selectItemAtIndex_(i)
+                    break
 
     def onLoadPreset_(self, sender):
         idx = self._preset_popup.indexOfSelectedItem()
@@ -4670,25 +5275,34 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
         if 0 <= idx < len(presets):
             p = presets[idx]
             self._apply_config(
-                p.get("rec_a", []), p.get("mon_a", []),
-                p.get("rec_b", []), p.get("mon_b", []),
-                p.get("export", []), p.get("loudness_tracks", []))
+                p.get("rec_a", []),
+                p.get("rec_b", []),
+                p.get("export_tracks", p.get("export", [])),
+                p.get("loudness_tracks", []),
+                p.get("play_monitor_tracks", []))
+            # mon_a/mon_b are no longer in the UI — store directly in settings
+            self._app.settings["monitor_tracks"] = p.get("mon_a", [])
+            self._app.settings["monitor_tracks_b"] = p.get("mon_b", [])
+            self._apply_all_controls(p)
             logging.info(f"Preset {p.get('name')} geladen.")
 
     def onSavePreset_(self, sender):
         idx = self._preset_popup.indexOfSelectedItem()
         presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
         if 0 <= idx < len(presets):
-            rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list = self._read_current_config()
-            presets[idx]["rec_a"] = rec_a
-            presets[idx]["mon_a"] = mon_a
-            presets[idx]["rec_b"] = rec_b
-            presets[idx]["mon_b"] = mon_b
-            presets[idx]["export"] = export_list
-            presets[idx]["loudness_tracks"] = loud_list
+            rec_a, rec_b, export_list, loud_list, play_list = self._read_current_config()
+            p = presets[idx]
+            p["rec_a"] = rec_a
+            p["mon_a"] = self._app.settings.get("monitor_tracks", [])
+            p["rec_b"] = rec_b
+            p["mon_b"] = self._app.settings.get("monitor_tracks_b", [])
+            p["export_tracks"] = export_list
+            p["loudness_tracks"] = loud_list
+            p["play_monitor_tracks"] = play_list
+            p.update(self._read_all_controls())
             self._app.settings["track_presets"] = presets
             save_settings(self._app.settings)
-            name = presets[idx].get("name", f"Preset {idx+1}")
+            name = p.get("name", f"Preset {idx+1}")
             logging.info(f"Preset {name} gespeichert.")
             rumps.alert("Preset gespeichert", f"{name} wurde gespeichert.")
 
@@ -4709,14 +5323,44 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                     self._preset_popup.itemAtIndex_(idx).setTitle_(new_name)
                     logging.info(f"Preset umbenannt: {old_name} -> {new_name}")
 
+    def onNewPreset_(self, sender):
+        response = rumps.Window(
+            title="Neues Preset", message="Name für das neue Preset:",
+            default_text="Neues Preset", ok="Erstellen", cancel="Abbrechen").run()
+        if response.clicked:
+            new_name = response.text.strip() or "Neues Preset"
+            presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+            new_preset = {"name": new_name, "rec_a": [], "mon_a": [], "rec_b": [], "mon_b": [],
+                          "export_tracks": [], "loudness_tracks": [], "play_monitor_tracks": []}
+            presets.append(new_preset)
+            self._app.settings["track_presets"] = presets
+            save_settings(self._app.settings)
+            self._preset_popup.addItemWithTitle_(new_name)
+            self._preset_popup.selectItemAtIndex_(len(presets) - 1)
+            logging.info(f"Preset {new_name} erstellt.")
+
+    def onDeletePreset_(self, sender):
+        idx = self._preset_popup.indexOfSelectedItem()
+        presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+        if len(presets) <= 1:
+            rumps.alert("Löschen nicht möglich", "Mindestens ein Preset muss vorhanden sein.")
+            return
+        if 0 <= idx < len(presets):
+            name = presets[idx].get("name", f"Preset {idx+1}")
+            presets.pop(idx)
+            self._app.settings["track_presets"] = presets
+            save_settings(self._app.settings)
+            self._preset_popup.removeItemAtIndex_(idx)
+            new_idx = min(idx, len(presets) - 1)
+            self._preset_popup.selectItemAtIndex_(new_idx)
+            logging.info(f"Preset {name} gelöscht.")
+
     def onSave_(self, sender):
         try:
-            # 1. Spuren speichern
-            rec_a, mon_a, rec_b, mon_b, export_list, loud_list, play_list = self._read_current_config()
+            # 1. Spuren speichern (ohne monitor_tracks — nur via Presets steuerbar)
+            rec_a, rec_b, export_list, loud_list, play_list = self._read_current_config()
             self._app.settings["tracks"] = rec_a
-            self._app.settings["monitor_tracks"] = mon_a
             self._app.settings["tracks_b"] = rec_b
-            self._app.settings["monitor_tracks_b"] = mon_b
             self._app.settings["export_tracks"] = export_list
             self._app.settings["loudness_tracks"] = loud_list
             self._app.settings["play_monitor_tracks"] = play_list
@@ -4787,20 +5431,40 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                 self._app.settings["interplay_rename_suffix"] = (
                     self._controls["interplay_rename_suffix"].stringValue())
 
-            # 5. Webtrigger-Port speichern
+            # 5. Webtrigger-Port und Interface speichern
+            need_http_restart = False
             if "http_port" in self._controls:
                 try:
                     new_port = int(self._controls["http_port"].stringValue())
                     if not (1024 <= new_port <= 65535):
                         raise ValueError("Port muss zwischen 1024 und 65535 liegen.")
+                    old_port = self._app.settings.get("http_port", 8899)
                     self._app.settings["http_port"] = new_port
+                    if new_port != old_port:
+                        need_http_restart = True
                 except ValueError as ve:
                     raise ValueError(f"Ungültiger Port: {ve}")
+
+            if "http_bind_host" in self._controls:
+                idx_iface = self._controls["http_bind_host"].indexOfSelectedItem()
+                if 0 <= idx_iface < len(self._iface_list):
+                    new_host = self._iface_list[idx_iface][1]
+                    old_host = self._app.settings.get("http_bind_host", "127.0.0.1")
+                    self._app.settings["http_bind_host"] = new_host
+                    if new_host != old_host:
+                        need_http_restart = True
 
             save_settings(self._app.settings)
             self._window.orderOut_(None)
             logging.info("Alle Einstellungen gespeichert.")
-            rumps.alert("Gespeichert", "Alle Einstellungen wurden gespeichert.")
+
+            if need_http_restart:
+                import threading as _thr
+                _thr.Thread(target=self._app._restart_http, daemon=True).start()
+                rumps.alert("Gespeichert", "Alle Einstellungen wurden gespeichert.\n"
+                                           "HTTP-Server wird mit neuen Netzwerkeinstellungen neugestartet.")
+            else:
+                rumps.alert("Gespeichert", "Alle Einstellungen wurden gespeichert.")
         except ValueError as e:
             rumps.alert("Fehler", str(e))
 
@@ -4869,11 +5533,20 @@ if __name__ == "__main__":
     import sys
     import subprocess as _sp
     if getattr(sys, 'frozen', False):
+        # Vorher laufende Watchdog-Instanz beenden
+        logging.info("Beende ggf. laufende Watchdog-Instanz...")
+        try:
+            _sp.run(["pkill", "-x", "PunchBuddy_Watchdog"], capture_output=True)
+            _sp.run(["pkill", "-f", "MacOS/PunchBuddy_Watchdog$"], capture_output=True)
+        except Exception as _ke:
+            logging.debug(f"pkill Watchdog (pre-start): {_ke}")
+        import time as _t; _t.sleep(0.5)  # kurz warten damit der Prozess weg ist
+
         # Wir laufen als kompilierte PunchBuddy.app
         my_app_dir = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
         parent_dir = os.path.dirname(my_app_dir)
         target_app = os.path.join(parent_dir, "PunchBuddy_Watchdog.app")
-        
+
         if os.path.exists(target_app):
             try:
                 # -g startet die App im Hintergrund ohne Fokus zu stehlen
@@ -4888,6 +5561,11 @@ if __name__ == "__main__":
             except Exception as e:
                 logging.error(f"Watchdog App Fallback gescheitert: {e}")
     else:
+        # Vorher laufende watchdog.py-Instanz beenden (Script-Modus)
+        try:
+            _sp.run(["pkill", "-f", "watchdog.py"], capture_output=True)
+        except Exception:
+            pass
         _watchdog_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchdog.py")
         if os.path.exists(_watchdog_path):
             try:
