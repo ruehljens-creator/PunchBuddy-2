@@ -1841,10 +1841,10 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
 
         # ── Versteckte Spuren einblenden ─────────────────────────────
         prog["update"](0.06, "Spuren vorbereiten…")
-        logging.info("  Interplay: DoE und AD einblenden...")
+        logging.info(f"  Interplay: Spuren einblenden: {export_tracks}...")
         try:
-            engine.set_track_hidden_state(["DoE", "AD"], False)
-            time.sleep(0.2)
+            engine.set_track_hidden_state(export_tracks, False)
+            time.sleep(0.25)
         except Exception as e:
             logging.warning(f"  Spuren einblenden: {e}")
 
@@ -2268,10 +2268,10 @@ def run_export(export_tracks, video_track=None, settings=None):
             return
 
         # ── 1. Versteckte Spuren einblenden ──────────────────────────
-        logging.info("Schritt 1: DoE und AD einblenden...")
+        logging.info(f"Schritt 1: Spuren einblenden: {export_tracks}...")
         try:
-            engine.set_track_hidden_state(["DoE", "AD"], False)
-            time.sleep(0.2)
+            engine.set_track_hidden_state(export_tracks, False)
+            time.sleep(0.25)
         except Exception as e:
             logging.warning(f"  Spuren einblenden: {e}")
 
@@ -2536,6 +2536,15 @@ def run_wav_export_standalone(export_tracks, settings):
             return
         session_path = engine.session_path()
         session_dir = os.path.dirname(session_path)
+
+        # Spuren einblenden
+        prog["update"](0.06, "Spuren vorbereiten…")
+        logging.info(f"  Spuren einblenden: {export_tracks}...")
+        try:
+            engine.set_track_hidden_state(export_tracks, False)
+            time.sleep(0.25)
+        except Exception as e:
+            logging.warning(f"  Spuren einblenden: {e}")
 
         # Spuren selektieren
         prog["update"](0.08, "Spuren vorbereiten…")
@@ -2887,6 +2896,15 @@ def run_aaf_export_standalone(export_tracks, settings):
         session_path = engine.session_path()
         session_dir = os.path.dirname(session_path)
         session_name = os.path.splitext(os.path.basename(session_path))[0]
+
+        # Spuren einblenden
+        prog["update"](0.06, "Spuren vorbereiten…")
+        logging.info(f"  Spuren einblenden: {export_tracks}...")
+        try:
+            engine.set_track_hidden_state(export_tracks, False)
+            time.sleep(0.25)
+        except Exception as e:
+            logging.warning(f"  Spuren einblenden: {e}")
 
         # Spuren selektieren
         prog["update"](0.08, "Spuren vorbereiten…")
