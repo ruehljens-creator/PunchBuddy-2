@@ -1875,15 +1875,14 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             prog["update"](0.15, "Überhänge trimmen…")
             _trim_overhangs(engine, export_tracks, in_time, video_end)
 
-            # Export-Spuren selektieren
-            engine.select_tracks_by_name(export_tracks)
+            # Videospur selektieren und Timeline setzen für Consolidate
+            engine.select_tracks_by_name([video_track])
             time.sleep(0.25)
-
-            # Timeline setzen für Consolidate
             logging.info(f"  Interplay: Timeline: {in_time} -> {video_end}")
             engine.set_timeline_selection(in_time=in_time, out_time=video_end)
             time.sleep(0.25)
-            _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT))
+            # Auswahl auf die Export-Spuren ausdehnen
+            engine.extend_selection_to_target_tracks(export_tracks)
             time.sleep(0.3)
 
             # Consolidate
@@ -2301,12 +2300,12 @@ def run_export(export_tracks, video_track=None, settings=None):
         _trim_overhangs(engine, export_tracks, in_time, video_end)
 
         # ── 4. Timeline + Selection ausdehnen für Consolidate ────────
-        logging.info(f"Schritt 4: Timeline {in_time} -> {video_end} + {_EXTEND_COUNT}x Shift+Ö")
-        engine.select_tracks_by_name(export_tracks)
+        logging.info(f"Schritt 4: Timeline {in_time} -> {video_end}")
+        engine.select_tracks_by_name([video_track])
         time.sleep(0.25)
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
         time.sleep(0.25)
-        _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT) if settings else _EXTEND_COUNT)
+        engine.extend_selection_to_target_tracks(export_tracks)
         time.sleep(0.3)
 
         # ── 5. Consolidate (alle Spuren auf einmal) ──────────────────
@@ -2566,14 +2565,14 @@ def run_wav_export_standalone(export_tracks, settings):
         prog["update"](0.20, "Überhänge trimmen…")
         _trim_overhangs(engine, export_tracks, in_time, video_end)
 
-        # Export-Spuren erneut selektieren und Range für Consolidate setzen
-        engine.select_tracks_by_name(export_tracks)
+        # Videospur selektieren und Range für Consolidate setzen
+        engine.select_tracks_by_name([video_track])
         time.sleep(0.25)
         logging.info(f"  Timeline: {in_time} -> {video_end}")
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
         time.sleep(0.25)
-        # Selection auf Export-Spuren ausdehnen
-        _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT))
+        # Auswahl auf die Export-Spuren ausdehnen
+        engine.extend_selection_to_target_tracks(export_tracks)
         time.sleep(0.3)
 
         # Consolidate
@@ -2917,14 +2916,14 @@ def run_aaf_export_standalone(export_tracks, settings):
         prog["update"](0.20, "Überhänge trimmen…")
         _trim_overhangs(engine, export_tracks, in_time, video_end)
 
-        # Export-Spuren erneut selektieren und Range für Consolidate setzen
-        engine.select_tracks_by_name(export_tracks)
+        # Videospur selektieren und Range für Consolidate setzen
+        engine.select_tracks_by_name([video_track])
         time.sleep(0.25)
         logging.info(f"  Timeline: {in_time} -> {video_end}")
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
         time.sleep(0.25)
-        # Selection auf Export-Spuren ausdehnen
-        _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT))
+        # Auswahl auf die Export-Spuren ausdehnen
+        engine.extend_selection_to_target_tracks(export_tracks)
         time.sleep(0.3)
 
         # Consolidate
