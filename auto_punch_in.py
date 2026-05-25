@@ -1878,8 +1878,8 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             prog["update"](0.15, "Überhänge trimmen…")
             _trim_overhangs(engine, export_tracks, in_time, video_end)
 
-            # Videospur selektieren und Timeline setzen für Consolidate
-            engine.select_tracks_by_name([video_track])
+            # Export-Spuren selektieren und Timeline setzen für Consolidate
+            engine.select_tracks_by_name(export_tracks)
             time.sleep(0.25)
             logging.info(f"  Interplay: Timeline: {in_time} -> {video_end}")
             engine.set_timeline_selection(in_time=in_time, out_time=video_end)
@@ -2307,7 +2307,7 @@ def run_export(export_tracks, video_track=None, settings=None):
 
         # ── 4. Timeline + Selection ausdehnen für Consolidate ────────
         logging.info(f"Schritt 4: Timeline {in_time} -> {video_end}")
-        engine.select_tracks_by_name([video_track])
+        engine.select_tracks_by_name(export_tracks)
         time.sleep(0.25)
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
         time.sleep(0.25)
@@ -2609,8 +2609,8 @@ def run_wav_export_standalone(export_tracks, settings):
         prog["update"](0.20, "Überhänge trimmen…")
         _trim_overhangs(engine, export_tracks, in_time, video_end)
 
-        # Videospur selektieren und Range für Consolidate setzen
-        engine.select_tracks_by_name([video_track])
+        # Export-Spuren selektieren und Range für Consolidate setzen
+        engine.select_tracks_by_name(export_tracks)
         time.sleep(0.25)
         logging.info(f"  Timeline: {in_time} -> {video_end}")
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
@@ -2972,8 +2972,8 @@ def run_aaf_export_standalone(export_tracks, settings):
         prog["update"](0.20, "Überhänge trimmen…")
         _trim_overhangs(engine, export_tracks, in_time, video_end)
 
-        # Videospur selektieren und Range für Consolidate setzen
-        engine.select_tracks_by_name([video_track])
+        # Export-Spuren selektieren und Range für Consolidate setzen
+        engine.select_tracks_by_name(export_tracks)
         time.sleep(0.25)
         logging.info(f"  Timeline: {in_time} -> {video_end}")
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
