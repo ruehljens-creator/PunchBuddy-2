@@ -1871,6 +1871,9 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         if not video_end or video_end == "00:00:00:00.00":
             logging.error("  Interplay: Video-Ende nicht ermittelt – überspringe Consolidate.")
         else:
+            # Pro Tools Selection State vorbereiten (Selector-Tool + Link Timeline/Edit)
+            _prepare_protools_selection_state(engine)
+
             # Überhänge trimmen (vor dem Consolidate, damit der Clip danach ein physischer Haupt-Clip bleibt)
             prog["update"](0.15, "Überhänge trimmen…")
             _trim_overhangs(engine, export_tracks, in_time, video_end)
@@ -2295,6 +2298,9 @@ def run_export(export_tracks, video_track=None, settings=None):
 
         in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
 
+        # Pro Tools Selection State vorbereiten (Selector-Tool + Link Timeline/Edit)
+        _prepare_protools_selection_state(engine)
+
         # ── 3. Ueberhaenge pro Spur loeschen (vor dem Consolidate) ────
         logging.info("Schritt 3: Überhänge trimmen…")
         _trim_overhangs(engine, export_tracks, in_time, video_end)
@@ -2379,6 +2385,32 @@ def run_export(export_tracks, video_track=None, settings=None):
         with _export_lock:
             _export_running = False
         _set_busy(False)
+
+
+def _prepare_protools_selection_state(engine):
+    """Stellt sicher, dass das Selector-Tool aktiv ist und 'Link Timeline and Edit Selection' an ist."""
+    import ptsl.PTSL_pb2 as pt
+    logging.info("  PT: Selector-Tool aktivieren...")
+    try:
+        engine.set_edit_tool(pt.ETool_Selector)
+    except Exception as e:
+        logging.warning(f"  Selector-Tool konnte nicht gesetzt werden: {e}")
+
+    logging.info("  PT: Link Timeline & Edit Selection aktivieren...")
+    try:
+        res = engine.client.run_command(pt.GetEditModeOptions, {})
+        options = {}
+        if res and "edit_mode_options" in res:
+            options = res["edit_mode_options"]
+        
+        if not options.get("link_timeline_and_edit_selection", False):
+            options["link_timeline_and_edit_selection"] = True
+            engine.client.run_command(pt.SetEditModeOptions, {"edit_mode_options": options})
+            logging.info("  PT: Link Timeline & Edit Selection eingeschaltet.")
+        else:
+            logging.info("  PT: Link Timeline & Edit Selection war bereits aktiv.")
+    except Exception as e:
+        logging.warning(f"  Edit Mode Options konnten nicht angepasst werden: {e}")
 
 
 # -----------------------------------------------------------------------------
@@ -2569,6 +2601,9 @@ def run_wav_export_standalone(export_tracks, settings):
         if not video_end or video_end == "00:00:00:00.00":
             logging.error("  Video-Ende nicht ermittelt – Abbruch.")
             return
+
+        # Pro Tools Selection State vorbereiten (Selector-Tool + Link Timeline/Edit)
+        _prepare_protools_selection_state(engine)
 
         # Überhänge pro Spur löschen (Pre/Post-Material abschneiden vor Consolidate)
         prog["update"](0.20, "Überhänge trimmen…")
@@ -2929,6 +2964,9 @@ def run_aaf_export_standalone(export_tracks, settings):
         if not video_end or video_end == "00:00:00:00.00":
             logging.error("  Video-Ende nicht ermittelt – Abbruch.")
             return
+
+        # Pro Tools Selection State vorbereiten (Selector-Tool + Link Timeline/Edit)
+        _prepare_protools_selection_state(engine)
 
         # Überhänge pro Spur löschen (Pre/Post-Material abschneiden vor Consolidate)
         prog["update"](0.20, "Überhänge trimmen…")
