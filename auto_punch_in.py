@@ -3160,6 +3160,26 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
 
             if not renamed:
                 logging.warning("  Clip konnte nicht umbenannt werden")
+
+            # ── Datei-Rename Absicherung ──────────────────────────────────
+            # PT aendert manchmal nur den Clip-Namen intern, benennt aber die
+            # Datei auf der Festplatte nicht um (besonders bei Stereo Interleaved).
+            # Wir pruefen ob die Datei noch den alten Namen hat und benennen sie
+            # manuell um, damit PT den korrekten Namen auf der Spur anzeigt.
+            if renamed and os.path.exists(target_file):
+                new_file = os.path.join(os.path.dirname(target_file),
+                                        new_name + os.path.splitext(target_name)[1])
+                if not os.path.exists(new_file):
+                    try:
+                        os.rename(target_file, new_file)
+                        logging.info(f"  Datei manuell umbenannt: {target_name} -> {os.path.basename(new_file)}")
+                        # PT muss die umbenannte Datei neu einlesen
+                        engine.refresh_all_modified_audio_files()
+                        time.sleep(1.5)
+                    except OSError as e:
+                        logging.warning(f"  Datei-Rename fehlgeschlagen: {e}")
+                else:
+                    logging.info(f"  Datei bereits umbenannt: {os.path.basename(new_file)}")
     except Exception as e:
         logging.warning(f"  PT Rename/Refresh: {e}")
 
