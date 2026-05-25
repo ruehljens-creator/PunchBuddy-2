@@ -2445,7 +2445,7 @@ def _do_wav_export(export_tracks, session_dir):
             if not f.lower().endswith(".wav"):
                 continue
             base = os.path.splitext(f)[0]
-            if base == track_name or base.startswith(track_name + "_") or base.startswith(track_name + "."):
+            if base == track_name or base.startswith(track_name + "_") or base.startswith(track_name + ".") or base.startswith(track_name + "-"):
                 full = os.path.join(audio_dir, f)
                 candidates.append((os.path.getmtime(full), full, f))
 
@@ -2938,7 +2938,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
     st_files = []
     for f in os.listdir(audio_dir):
         base = os.path.splitext(f)[0]
-        if (base == track_name or base.startswith(track_name + "_") or base.startswith(track_name + ".")) and f.lower().endswith(".wav"):
+        if (base == track_name or base.startswith(track_name + "_") or base.startswith(track_name + ".") or base.startswith(track_name + "-")) and f.lower().endswith(".wav"):
             full = os.path.join(audio_dir, f)
             mtime = os.path.getmtime(full)
             size = os.path.getsize(full)
@@ -3062,10 +3062,10 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
             engine.rename_target_clip(clip_name, new_name, rename_file=True)
             logging.info(f"  Clip umbenannt: {clip_name} -> {new_name}")
         except Exception:
-            # Fallback: PT benennt Consolidate-Clips als ST_XX
+            # Fallback: PT benennt Consolidate-Clips als <track_name>_XX
             renamed = False
             for i in range(1, 20):
-                try_name = f"ST_{i:02d}"
+                try_name = f"{track_name}_{i:02d}"
                 try:
                     engine.rename_target_clip(try_name, f"{try_name}-loudness", rename_file=True)
                     logging.info(f"  Clip umbenannt (Fallback): {try_name} -> {try_name}-loudness")
