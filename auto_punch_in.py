@@ -2429,7 +2429,10 @@ def _trim_overhangs(engine, export_tracks, in_time, video_end):
 
 # -----------------------------------------------------------------------------
 def _do_wav_export(export_tracks, session_dir):
-    """Kopiert die konsolidierten WAV-Dateien in den Export-Ordner."""
+    """Kopiert die konsolidierten WAV-Dateien in den Export-Ordner.
+    Unterstützt sowohl Stereo-Interleaved als auch Split-Mono (.L.wav/.R.wav).
+    Bei Split-Mono werden L+R zu einer Stereo-Interleaved-Datei zusammengeführt.
+    """
     audio_dir = os.path.join(session_dir, "Audio Files")
     export_dir = os.path.join(session_dir, "export")
     os.makedirs(export_dir, exist_ok=True)
@@ -2438,24 +2441,79 @@ def _do_wav_export(export_tracks, session_dir):
         logging.error(f"  Audio-Ordner nicht gefunden: {audio_dir}")
         return
 
+    def _matches_track(base_name, track_name):
+        """Prüft ob ein Dateiname (ohne Extension) zu einem Track gehört."""
+        return (base_name == track_name
+                or base_name.startswith(track_name + "_")
+                or base_name.startswith(track_name + ".")
+                or base_name.startswith(track_name + "-"))
+
     copied = 0
     for track_name in export_tracks:
-        candidates = []
+        # Alle WAV-Dateien für diesen Track sammeln – getrennt nach Typ
+        interleaved = []   # Normale Stereo-Interleaved oder Mono WAVs
+        split_L = []       # Split-Mono Left-Kanal (.L.wav)
+        split_R = []       # Split-Mono Right-Kanal (.R.wav)
+
         for f in os.listdir(audio_dir):
             if not f.lower().endswith(".wav"):
                 continue
-            base = os.path.splitext(f)[0]
-            if base == track_name or base.startswith(track_name + "_") or base.startswith(track_name + ".") or base.startswith(track_name + "-"):
-                full = os.path.join(audio_dir, f)
-                candidates.append((os.path.getmtime(full), full, f))
+            full = os.path.join(audio_dir, f)
 
-        if candidates:
-            candidates.sort(reverse=True)
-            src = candidates[0][1]
-            dst = os.path.join(export_dir, f"{track_name}.wav")
+            # Split-Mono erkennen: Dateiname endet auf .L.wav oder .R.wav
+            if f.lower().endswith(".l.wav"):
+                # Basis ohne .L.wav
+                stem = f[:-len(".L.wav")]
+                if _matches_track(stem, track_name):
+                    split_L.append((os.path.getmtime(full), full, f, stem))
+                continue
+            elif f.lower().endswith(".r.wav"):
+                stem = f[:-len(".R.wav")]
+                if _matches_track(stem, track_name):
+                    split_R.append((os.path.getmtime(full), full, f, stem))
+                continue
+
+            # Normale (interleaved) Datei
+            base = os.path.splitext(f)[0]
+            if _matches_track(base, track_name):
+                interleaved.append((os.path.getmtime(full), full, f))
+
+        dst = os.path.join(export_dir, f"{track_name}.wav")
+
+        # Strategie 1: Interleaved-Datei vorhanden → direkt kopieren (bevorzugt)
+        if interleaved:
+            interleaved.sort(reverse=True)
+            src = interleaved[0][1]
             shutil.copy2(src, dst)
-            logging.info(f"  WAV: {candidates[0][2]} -> {track_name}.wav")
+            logging.info(f"  WAV: {interleaved[0][2]} -> {track_name}.wav")
             copied += 1
+
+        # Strategie 2: Split-Mono L+R → zu Stereo zusammenführen
+        elif split_L and split_R:
+            split_L.sort(reverse=True)
+            split_R.sort(reverse=True)
+            l_file = split_L[0][1]
+            r_file = split_R[0][1]
+            try:
+                import soundfile as sf
+                import numpy as np
+                data_l, rate_l = sf.read(l_file)
+                data_r, rate_r = sf.read(r_file)
+                # Auf gleiche Länge bringen (falls nötig)
+                min_len = min(len(data_l), len(data_r))
+                data_l = data_l[:min_len]
+                data_r = data_r[:min_len]
+                # Mono-Arrays zu Stereo zusammenführen
+                if data_l.ndim == 1 and data_r.ndim == 1:
+                    stereo = np.column_stack((data_l, data_r))
+                else:
+                    stereo = np.column_stack((data_l.flatten()[:min_len],
+                                              data_r.flatten()[:min_len]))
+                sf.write(dst, stereo, rate_l)
+                logging.info(f"  WAV: Zusammenfuehren von {split_L[0][2]} und {split_R[0][2]} zu Stereo -> {track_name}.wav")
+                copied += 1
+            except Exception as e:
+                logging.error(f"  WAV: Split-Mono Zusammenfuehrung fehlgeschlagen fuer '{track_name}': {e}")
         else:
             logging.warning(f"  WAV: Keine Datei fuer Spur '{track_name}' in Audio Files")
 
@@ -3056,23 +3114,50 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
 
         # Clip-Name = Dateiname ohne Extension (z.B. ST_02.wav -> ST_02)
         clip_name = os.path.splitext(target_name)[0]
-        new_name = f"{clip_name}-loudness"
 
-        try:
-            engine.rename_target_clip(clip_name, new_name, rename_file=True)
-            logging.info(f"  Clip umbenannt: {clip_name} -> {new_name}")
-        except Exception:
-            # Fallback: PT benennt Consolidate-Clips als <track_name>_XX
+        # Bereits umbenannt? (verhindert ST_02-loudness -> ST_02-loudness-loudness)
+        if "-loudness" in clip_name:
+            logging.info(f"  Clip '{clip_name}' hat bereits '-loudness' Suffix – Umbenennung uebersprungen.")
+        else:
+            new_name = f"{clip_name}-loudness"
             renamed = False
-            for i in range(1, 20):
-                try_name = f"{track_name}_{i:02d}"
+
+            # Versuch 1: rename_target_clip mit exaktem Clip-Namen (Dateiname ohne Extension)
+            for rf in [True, False]:
                 try:
-                    engine.rename_target_clip(try_name, f"{try_name}-loudness", rename_file=True)
-                    logging.info(f"  Clip umbenannt (Fallback): {try_name} -> {try_name}-loudness")
+                    engine.rename_target_clip(clip_name, new_name, rename_file=rf)
+                    logging.info(f"  Clip umbenannt: {clip_name} -> {new_name} (rename_file={rf})")
                     renamed = True
                     break
                 except Exception:
                     continue
+
+            # Versuch 2: Reiner Track-Name (typisch fuer Stereo Interleaved nach Consolidate)
+            if not renamed and clip_name != track_name:
+                for rf in [True, False]:
+                    try:
+                        engine.rename_target_clip(track_name, f"{track_name}-loudness", rename_file=rf)
+                        logging.info(f"  Clip umbenannt (Track-Name): {track_name} -> {track_name}-loudness (rename_file={rf})")
+                        renamed = True
+                        break
+                    except Exception:
+                        continue
+
+            # Versuch 3: Nummerierte Fallbacks (<track_name>_01, _02, ...)
+            if not renamed:
+                for i in range(1, 20):
+                    try_name = f"{track_name}_{i:02d}"
+                    for rf in [True, False]:
+                        try:
+                            engine.rename_target_clip(try_name, f"{try_name}-loudness", rename_file=rf)
+                            logging.info(f"  Clip umbenannt (Fallback): {try_name} -> {try_name}-loudness (rename_file={rf})")
+                            renamed = True
+                            break
+                        except Exception:
+                            continue
+                    if renamed:
+                        break
+
             if not renamed:
                 logging.warning("  Clip konnte nicht umbenannt werden")
     except Exception as e:
