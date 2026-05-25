@@ -1871,10 +1871,6 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         if not video_end or video_end == "00:00:00:00.00":
             logging.error("  Interplay: Video-Ende nicht ermittelt – überspringe Consolidate.")
         else:
-            # Überhänge trimmen (vor dem Consolidate, damit der Clip danach ein physischer Haupt-Clip bleibt)
-            prog["update"](0.15, "Überhänge trimmen…")
-            _trim_overhangs(engine, export_tracks, in_time, video_end)
-
             # Videospur selektieren und Timeline setzen für Consolidate
             engine.select_tracks_by_name([video_track])
             time.sleep(0.25)
@@ -1885,12 +1881,16 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             engine.extend_selection_to_target_tracks(export_tracks)
             time.sleep(0.3)
 
-            # Consolidate
-            prog["update"](0.25, "Consolidate…")
+            # Consolidate (zuerst ausführen, damit auch leere Spuren eine silent Region erhalten)
+            prog["update"](0.15, "Consolidate…")
             logging.info("  Interplay: Consolidate...")
             engine.consolidate_clip()
             time.sleep(1.5)
             logging.info("  Interplay: Consolidate OK")
+
+            # Überhänge trimmen (nach dem Consolidate)
+            prog["update"](0.25, "Überhänge trimmen…")
+            _trim_overhangs(engine, export_tracks, in_time, video_end)
 
             # Loudness-Korrektur
             if settings.get("loudness_enabled", True):
@@ -2295,12 +2295,8 @@ def run_export(export_tracks, video_track=None, settings=None):
 
         in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
 
-        # ── 3. Ueberhaenge pro Spur loeschen (vor dem Consolidate) ────
-        logging.info("Schritt 3: Überhänge trimmen…")
-        _trim_overhangs(engine, export_tracks, in_time, video_end)
-
-        # ── 4. Timeline + Selection ausdehnen für Consolidate ────────
-        logging.info(f"Schritt 4: Timeline {in_time} -> {video_end}")
+        # ── 3. Timeline + Selection ausdehnen für Consolidate ────────
+        logging.info(f"Schritt 3: Timeline {in_time} -> {video_end}")
         engine.select_tracks_by_name([video_track])
         time.sleep(0.25)
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
@@ -2308,11 +2304,15 @@ def run_export(export_tracks, video_track=None, settings=None):
         engine.extend_selection_to_target_tracks(export_tracks)
         time.sleep(0.3)
 
-        # ── 5. Consolidate (alle Spuren auf einmal) ──────────────────
-        logging.info("Schritt 5: Consolidate...")
+        # ── 4. Consolidate (alle Spuren auf einmal) ──────────────────
+        logging.info("Schritt 4: Consolidate...")
         engine.consolidate_clip()
         time.sleep(1.5)
         logging.info("  Consolidate OK")
+
+        # ── 5. Ueberhaenge pro Spur loeschen ─────────────────────────
+        logging.info("Schritt 5: Überhänge trimmen…")
+        _trim_overhangs(engine, export_tracks, in_time, video_end)
 
         # ── 7. Loudness-Korrektur (EBU R128) ─────────────────────
         if settings.get("loudness_enabled", True):
@@ -2570,10 +2570,6 @@ def run_wav_export_standalone(export_tracks, settings):
             logging.error("  Video-Ende nicht ermittelt – Abbruch.")
             return
 
-        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden vor Consolidate)
-        prog["update"](0.20, "Überhänge trimmen…")
-        _trim_overhangs(engine, export_tracks, in_time, video_end)
-
         # Videospur selektieren und Range für Consolidate setzen
         engine.select_tracks_by_name([video_track])
         time.sleep(0.25)
@@ -2585,11 +2581,15 @@ def run_wav_export_standalone(export_tracks, settings):
         time.sleep(0.3)
 
         # Consolidate
-        prog["update"](0.32, "Consolidate…")
+        prog["update"](0.20, "Consolidate…")
         logging.info("  Consolidate...")
         engine.consolidate_clip()
         time.sleep(1.5)
         logging.info("  Consolidate OK")
+
+        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden nach Consolidate)
+        prog["update"](0.32, "Überhänge trimmen…")
+        _trim_overhangs(engine, export_tracks, in_time, video_end)
 
         # Loudness-Korrektur
         if settings.get("loudness_enabled", True):
@@ -2930,10 +2930,6 @@ def run_aaf_export_standalone(export_tracks, settings):
             logging.error("  Video-Ende nicht ermittelt – Abbruch.")
             return
 
-        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden vor Consolidate)
-        prog["update"](0.20, "Überhänge trimmen…")
-        _trim_overhangs(engine, export_tracks, in_time, video_end)
-
         # Videospur selektieren und Range für Consolidate setzen
         engine.select_tracks_by_name([video_track])
         time.sleep(0.25)
@@ -2945,11 +2941,15 @@ def run_aaf_export_standalone(export_tracks, settings):
         time.sleep(0.3)
 
         # Consolidate
-        prog["update"](0.32, "Consolidate…")
+        prog["update"](0.20, "Consolidate…")
         logging.info("  Consolidate...")
         engine.consolidate_clip()
         time.sleep(1.5)
         logging.info("  Consolidate OK")
+
+        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden nach Consolidate)
+        prog["update"](0.32, "Überhänge trimmen…")
+        _trim_overhangs(engine, export_tracks, in_time, video_end)
 
         # Loudness-Korrektur
         if settings.get("loudness_enabled", True):
@@ -3126,9 +3126,12 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
     try:
         # Puffer fuer OS-Datei-Schreibvorgaenge und PT-Hintergrund-Tasks
         time.sleep(1.5)
-        engine.refresh_all_modified_audio_files()
+        try:
+            engine.refresh_all_modified_audio_files()
+            logging.info("  Pro Tools Audio-Dateien aktualisiert")
+        except Exception as re:
+            logging.warning(f"  Pro Tools Audio-Dateien Refresh fehlgeschlagen (wird fortgesetzt): {re}")
         time.sleep(3.0)  # PT braucht Zeit um die Datei neu einzulesen
-        logging.info("  Pro Tools Audio-Dateien aktualisiert")
 
         # Clip-Name = Dateiname ohne Extension (z.B. ST_02.wav -> ST_02)
         clip_name = os.path.splitext(target_name)[0]
@@ -3207,14 +3210,17 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
                         logging.info(f"  Datei manuell umbenannt: {target_name} -> {os.path.basename(new_file)}")
                         # Puffer vor dem Refresh
                         time.sleep(0.5)
-                        engine.refresh_all_modified_audio_files()
+                        try:
+                            engine.refresh_all_modified_audio_files()
+                        except Exception as re:
+                            logging.warning(f"  Pro Tools Audio-Dateien Refresh nach manuellem Rename fehlgeschlagen: {re}")
                         time.sleep(1.5)
                     except OSError as e:
                         logging.warning(f"  Datei-Rename fehlgeschlagen: {e}")
                 else:
                     logging.info(f"  Datei bereits umbenannt: {os.path.basename(new_file)}")
     except Exception as e:
-        logging.warning(f"  PT Rename/Refresh: {e}")
+        logging.warning(f"  PT Rename/Refresh Hauptfehler: {e}")
 
     _prog(0.98, f"Spur '{track_name}': Fertig.")
 
