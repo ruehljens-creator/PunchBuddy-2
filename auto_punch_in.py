@@ -1871,27 +1871,27 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         if not video_end or video_end == "00:00:00:00.00":
             logging.error("  Interplay: Video-Ende nicht ermittelt – überspringe Consolidate.")
         else:
-            # Export-Spuren erneut selektieren
-            engine.select_tracks_by_name(export_tracks)
-            time.sleep(0.2)
+            # Überhänge trimmen (vor dem Consolidate, damit der Clip danach ein physischer Haupt-Clip bleibt)
+            prog["update"](0.15, "Überhänge trimmen…")
+            _trim_overhangs(engine, export_tracks, in_time, video_end)
 
-            # Timeline setzen
+            # Export-Spuren selektieren
+            engine.select_tracks_by_name(export_tracks)
+            time.sleep(0.25)
+
+            # Timeline setzen für Consolidate
             logging.info(f"  Interplay: Timeline: {in_time} -> {video_end}")
             engine.set_timeline_selection(in_time=in_time, out_time=video_end)
-            time.sleep(0.2)
+            time.sleep(0.25)
             _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT))
             time.sleep(0.3)
 
             # Consolidate
-            prog["update"](0.15, "Consolidate…")
+            prog["update"](0.25, "Consolidate…")
             logging.info("  Interplay: Consolidate...")
             engine.consolidate_clip()
-            time.sleep(1.0)
+            time.sleep(1.5)
             logging.info("  Interplay: Consolidate OK")
-
-            # Überhänge trimmen
-            prog["update"](0.25, "Überhänge trimmen…")
-            _trim_overhangs(engine, export_tracks, in_time, video_end)
 
             # Loudness-Korrektur
             if settings.get("loudness_enabled", True):
@@ -2296,21 +2296,24 @@ def run_export(export_tracks, video_track=None, settings=None):
 
         in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
 
-        # ── 3. Timeline + Selection ausdehnen ────────────────────────
-        logging.info(f"Schritt 3: Timeline {in_time} -> {video_end} + {_EXTEND_COUNT}x Shift+Ö")
+        # ── 3. Ueberhaenge pro Spur loeschen (vor dem Consolidate) ────
+        logging.info("Schritt 3: Überhänge trimmen…")
+        _trim_overhangs(engine, export_tracks, in_time, video_end)
+
+        # ── 4. Timeline + Selection ausdehnen für Consolidate ────────
+        logging.info(f"Schritt 4: Timeline {in_time} -> {video_end} + {_EXTEND_COUNT}x Shift+Ö")
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.25)
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
-        time.sleep(0.2)
+        time.sleep(0.25)
         _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT) if settings else _EXTEND_COUNT)
         time.sleep(0.3)
 
-        # ── 4. Consolidate (alle Spuren auf einmal) ──────────────────
-        logging.info("Schritt 4: Consolidate...")
+        # ── 5. Consolidate (alle Spuren auf einmal) ──────────────────
+        logging.info("Schritt 5: Consolidate...")
         engine.consolidate_clip()
-        time.sleep(1.0)
+        time.sleep(1.5)
         logging.info("  Consolidate OK")
-
-        # ── 5. Ueberhaenge pro Spur loeschen ─────────────────────────
-        _trim_overhangs(engine, export_tracks, in_time, video_end)
 
         # ── 7. Loudness-Korrektur (EBU R128) ─────────────────────
         if settings.get("loudness_enabled", True):
@@ -2559,28 +2562,26 @@ def run_wav_export_standalone(export_tracks, settings):
             logging.error("  Video-Ende nicht ermittelt – Abbruch.")
             return
 
-        # Export-Spuren erneut selektieren (nach Video-Detection)
-        engine.select_tracks_by_name(export_tracks)
-        time.sleep(0.2)
+        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden vor Consolidate)
+        prog["update"](0.20, "Überhänge trimmen…")
+        _trim_overhangs(engine, export_tracks, in_time, video_end)
 
-        # Timeline setzen
+        # Export-Spuren erneut selektieren und Range für Consolidate setzen
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.25)
         logging.info(f"  Timeline: {in_time} -> {video_end}")
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
-        time.sleep(0.2)
+        time.sleep(0.25)
         # Selection auf Export-Spuren ausdehnen
         _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT))
         time.sleep(0.3)
 
         # Consolidate
-        prog["update"](0.20, "Consolidate…")
+        prog["update"](0.32, "Consolidate…")
         logging.info("  Consolidate...")
         engine.consolidate_clip()
-        time.sleep(1.0)
+        time.sleep(1.5)
         logging.info("  Consolidate OK")
-
-        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden)
-        prog["update"](0.32, "Überhänge trimmen…")
-        _trim_overhangs(engine, export_tracks, in_time, video_end)
 
         # Loudness-Korrektur
         if settings.get("loudness_enabled", True):
@@ -2912,28 +2913,26 @@ def run_aaf_export_standalone(export_tracks, settings):
             logging.error("  Video-Ende nicht ermittelt – Abbruch.")
             return
 
-        # Export-Spuren erneut selektieren (nach Video-Detection)
-        engine.select_tracks_by_name(export_tracks)
-        time.sleep(0.2)
+        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden vor Consolidate)
+        prog["update"](0.20, "Überhänge trimmen…")
+        _trim_overhangs(engine, export_tracks, in_time, video_end)
 
-        # Timeline setzen
+        # Export-Spuren erneut selektieren und Range für Consolidate setzen
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.25)
         logging.info(f"  Timeline: {in_time} -> {video_end}")
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
-        time.sleep(0.2)
+        time.sleep(0.25)
         # Selection auf Export-Spuren ausdehnen
         _send_shift_oe(settings.get("extend_count", _EXTEND_COUNT))
         time.sleep(0.3)
 
         # Consolidate
-        prog["update"](0.20, "Consolidate…")
+        prog["update"](0.32, "Consolidate…")
         logging.info("  Consolidate...")
         engine.consolidate_clip()
-        time.sleep(1.0)
+        time.sleep(1.5)
         logging.info("  Consolidate OK")
-
-        # Überhänge pro Spur löschen (Pre/Post-Material abschneiden)
-        prog["update"](0.32, "Überhänge trimmen…")
-        _trim_overhangs(engine, export_tracks, in_time, video_end)
 
         # Loudness-Korrektur
         if settings.get("loudness_enabled", True):
