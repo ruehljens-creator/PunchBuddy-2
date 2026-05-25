@@ -2246,6 +2246,7 @@ def run_export(export_tracks, video_track=None, settings=None):
             return
         _export_running = True
     _set_busy(True)
+    export_start_time = time.time()
 
     if settings is None:
         settings = load_settings()
@@ -2339,7 +2340,7 @@ def run_export(export_tracks, video_track=None, settings=None):
             try:
                 session_path = engine.session_path()
                 s_dir = os.path.dirname(session_path)
-                _do_wav_export(export_tracks, s_dir)
+                _do_wav_export(export_tracks, s_dir, min_mtime=export_start_time - 10.0)
             except Exception as e:
                 logging.error(f"  WAV Export Fehler: {e}")
         else:
@@ -2401,8 +2402,11 @@ def _protools_selection_context(engine):
     # 1. Edit-Tool sichern und auf Selector setzen
     try:
         tool_res = engine.get_edit_tool()
-        if tool_res and "current_setting" in tool_res:
-            orig_tool = tool_res["current_setting"]
+        if tool_res is not None:
+            if hasattr(tool_res, "current_setting"):
+                orig_tool = tool_res.current_setting
+            elif isinstance(tool_res, dict) and "current_setting" in tool_res:
+                orig_tool = tool_res["current_setting"]
         logging.info("  PT: Selector-Tool aktivieren...")
         engine.set_edit_tool(pt.ETool_Selector)
     except Exception as e:
@@ -2450,21 +2454,9 @@ def _trim_overhangs(engine, export_tracks, in_time, video_end):
         # Pre-Material (vor Start-TC) löschen
         engine.select_all_clips_on_track(track_name)
         time.sleep(0.1)
-        # 1 Frame vor dem Start-TC berechnen
-        tc_parts = in_time.replace(".00", "").split(":")
-        pre_h, pre_m, pre_s, pre_f = int(tc_parts[0]), int(tc_parts[1]), int(tc_parts[2]), int(tc_parts[3])
-        if pre_f > 0:
-            pre_f -= 1
-        elif pre_s > 0:
-            pre_s -= 1; pre_f = 24
-        elif pre_m > 0:
-            pre_m -= 1; pre_s = 59; pre_f = 24
-        elif pre_h > 0:
-            pre_h -= 1; pre_m = 59; pre_s = 59; pre_f = 24
-        pre_tc = f"{pre_h:02d}:{pre_m:02d}:{pre_s:02d}:{pre_f:02d}.00"
         engine.set_timeline_selection(
             in_time="00:00:00:00.00",
-            out_time=pre_tc
+            out_time=in_time
         )
         time.sleep(0.1)
         try:
@@ -2489,7 +2481,7 @@ def _trim_overhangs(engine, export_tracks, in_time, video_end):
 
 
 # -----------------------------------------------------------------------------
-def _do_wav_export(export_tracks, session_dir):
+def _do_wav_export(export_tracks, session_dir, min_mtime=None):
     """Kopiert die konsolidierten WAV-Dateien in den Export-Ordner.
     Unterstützt sowohl Stereo-Interleaved als auch Split-Mono (.L.wav/.R.wav).
     Bei Split-Mono werden L+R zu einer Stereo-Interleaved-Datei zusammengeführt.
@@ -2520,6 +2512,12 @@ def _do_wav_export(export_tracks, session_dir):
             if not f.lower().endswith(".wav"):
                 continue
             full = os.path.join(audio_dir, f)
+            try:
+                mtime = os.path.getmtime(full)
+            except Exception:
+                continue
+            if min_mtime is not None and mtime < min_mtime:
+                continue
 
             # Split-Mono erkennen: Dateiname endet auf .L.wav oder .R.wav
             if f.lower().endswith(".l.wav"):
@@ -2587,6 +2585,7 @@ def run_wav_export_standalone(export_tracks, settings):
     try:
         logging.info("=== WAV EXPORT (Standalone) START ===")
         _set_busy(True)
+        export_start_time = time.time()
         prog = _show_progress_win("PunchBuddy – WAV Export")
         prog["update"](0.03, "Verbindung zu Pro Tools…")
         engine = _get_engine()
@@ -2661,7 +2660,7 @@ def run_wav_export_standalone(export_tracks, settings):
                 _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
 
         prog["update"](0.88, "WAV-Dateien kopieren…")
-        _do_wav_export(export_tracks, session_dir)
+        _do_wav_export(export_tracks, session_dir, min_mtime=export_start_time - 10.0)
         prog["update"](1.0, "WAV Export abgeschlossen.")
         time.sleep(0.8)
         logging.info("=== WAV EXPORT (Standalone) ENDE ===")
@@ -3746,16 +3745,20 @@ class PunchBuddyApp(rumps.App):
             port = self.settings.get("http_port", 8899)
             bind_host = self.settings.get("http_bind_host", "127.0.0.1")
             actual_bind = "127.0.0.1" if bind_host == "127.0.0.1" else "0.0.0.0"
-            try:
-                self.httpd = socketserver.TCPServer((actual_bind, port), Handler)
-            except OSError:
-                # Port belegt – freien Port automatisch ermitteln
-                logging.warning(f"Port {port} belegt – suche freien Port...")
-                self.httpd = socketserver.TCPServer((actual_bind, 0), Handler)
-                port = self.httpd.server_address[1]
-                self.settings["http_port"] = port
-                save_settings(self.settings)
-                logging.info(f"Freier Port gefunden und gespeichert: {port}")
+            
+            self.httpd = None
+            for attempt in range(4):
+                try:
+                    self.httpd = socketserver.TCPServer((actual_bind, port), Handler)
+                    break
+                except OSError as e:
+                    if attempt < 3:
+                        logging.warning(f"Port {port} belegt (Versuch {attempt+1}/4), warte 0.5s...")
+                        time.sleep(0.5)
+                    else:
+                        logging.warning(f"Port {port} dauerhaft belegt – weiche auf freien Port aus (wird NICHT gespeichert)...")
+                        self.httpd = socketserver.TCPServer((actual_bind, 0), Handler)
+                        port = self.httpd.server_address[1]
             self._http_port = port
             self._http_bind_host_display = bind_host
             threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
