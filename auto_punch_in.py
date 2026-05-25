@@ -3108,6 +3108,8 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
     # Pro Tools aktualisieren und Clip umbenennen
     _prog(0.85, f"'{target_name}': Pro Tools aktualisiert…")
     try:
+        # Puffer fuer OS-Datei-Schreibvorgaenge und PT-Hintergrund-Tasks
+        time.sleep(1.5)
         engine.refresh_all_modified_audio_files()
         time.sleep(3.0)  # PT braucht Zeit um die Datei neu einzulesen
         logging.info("  Pro Tools Audio-Dateien aktualisiert")
@@ -3139,6 +3141,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
                         engine.rename_target_clip(track_name, f"{track_name}-loudness", rename_file=rf)
                         logging.info(f"  Clip umbenannt (Track-Name): {track_name} -> {track_name}-loudness (rename_file={rf})")
                         renamed = True
+                        new_name = f"{track_name}-loudness"
                         break
                     except Exception:
                         continue
@@ -3152,6 +3155,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
                             engine.rename_target_clip(try_name, f"{try_name}-loudness", rename_file=rf)
                             logging.info(f"  Clip umbenannt (Fallback): {try_name} -> {try_name}-loudness (rename_file={rf})")
                             renamed = True
+                            new_name = f"{try_name}-loudness"
                             break
                         except Exception:
                             continue
@@ -3160,6 +3164,18 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
 
             if not renamed:
                 logging.warning("  Clip konnte nicht umbenannt werden")
+            else:
+                # ── Timeline-Clip Rename Absicherung ──────────────────────────
+                # Da der Clip auf der Timeline nach dem Trimmen ein Sub-Clip ist,
+                # benennt rename_target_clip oft nur das File/Hauptclip um.
+                # Wir selektieren den Clip auf der Spur und benennen ihn explizit um.
+                try:
+                    engine.select_all_clips_on_track(track_name)
+                    time.sleep(0.25)
+                    engine.rename_selected_clip(new_name, rename_file=False)
+                    logging.info(f"  Timeline-Clip auf Spur '{track_name}' umbenannt -> {new_name}")
+                except Exception as e:
+                    logging.warning(f"  Timeline-Clip Rename fehlgeschlagen auf Spur '{track_name}': {e}")
 
             # ── Datei-Rename Absicherung ──────────────────────────────────
             # PT aendert manchmal nur den Clip-Namen intern, benennt aber die
@@ -3173,7 +3189,8 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
                     try:
                         os.rename(target_file, new_file)
                         logging.info(f"  Datei manuell umbenannt: {target_name} -> {os.path.basename(new_file)}")
-                        # PT muss die umbenannte Datei neu einlesen
+                        # Puffer vor dem Refresh
+                        time.sleep(0.5)
                         engine.refresh_all_modified_audio_files()
                         time.sleep(1.5)
                     except OSError as e:
