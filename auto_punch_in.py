@@ -203,8 +203,857 @@ DEFAULT_SETTINGS = {
     "import_close_session": True,
     "http_port": 8899,
     "http_bind_host": "127.0.0.1",
+    "language": "de",
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Mehrsprachigkeit / Localization
+# ─────────────────────────────────────────────────────────────────────────────
+TRANSLATIONS = {
+    "de": {
+        "record_a_start": "Record A starten",
+        "record_b_start": "Record B starten",
+        "play_input": "Play Input",
+        "export_wav": "WAV Export",
+        "export_aaf": "AAF Export",
+        "export_interplay": "Interplay Export",
+        "interplay_import_start": "Interplay Import starten",
+        "settings": "Einstellungen...",
+        "open_log": "Log File öffnen",
+        "help_info": "Hilfe & Info",
+        "manual": "Bedienungsanleitung",
+        "tech_docs": "Technische Dokumentation",
+        "developed_by": "Programmiert von:",
+        "opensource": "Open Source Software & Lizenzen",
+        "quit": "Beenden",
+        "tab_tracks": "Spurenauswahl",
+        "tab_export": "Export",
+        "tab_webtrigger": "Webtrigger",
+        "tab_presets": "Presets",
+        "save": "Speichern",
+        "cancel": "Abbrechen",
+        "language": "Sprache:",
+        "col_record_a": "Record A",
+        "col_record_b": "Record B",
+        "col_export": "Export",
+        "col_loudness": "Loudness",
+        "col_play_input": "Play Input",
+        "col_track": "Spur",
+        "btn_copy": "Kopieren",
+        "btn_load": "Laden",
+        "btn_rename": "Umbenennen",
+        "btn_new": "Neu",
+        "btn_delete": "Löschen",
+        "preset_select": "Preset auswählen:",
+        "preset_contains": "Enthaltene Einstellungen:",
+        "preset_info_tracks": "• Spurenzuweisungen (Record A, Record B, Export, Loudness, Play Input)\n",
+        "preset_info_mon": "• Monitor-Spuren (Record A Mon, Record B Mon)\n",
+        "preset_info_export": "• Export (WAV, AAF, Interplay, Lautheitskorrektur)\n",
+        "preset_info_keywords": "• Fehler-/Erfolgs-Keywords, Umbenennung\n",
+        "preset_info_import": "• Import-Einstellungen\n",
+        "preset_info_webtrigger": "• Webtrigger-Port und Netzwerk-Interface",
+        "lbl_start_tc": "Start-Timecode (HH:MM:SS:FF):",
+        "lbl_video_track": "Video-Spurname:",
+        "lbl_loudness_enable": "Lautheitskorrektur aktivieren (EBU R128)",
+        "lbl_target_lufs": "Ziel-Lautheit (LUFS):",
+        "lbl_max_truepeak": "Max True Peak (dB):",
+        "lbl_workspace_steps": "Workspace Position (Steps):",
+        "lbl_error_keywords": "Fehler-Keywords:",
+        "lbl_success_keywords": "Erfolgs-Keywords:",
+        "lbl_rename_seq": "Rename Sequence (nach Interplay Export)",
+        "lbl_rename_enable": "Umbenennung nach Export aktivieren",
+        "lbl_rename_trim_start": "Zeichen am Anfang löschen:",
+        "lbl_rename_trim_end": "Zeichen am Ende löschen:",
+        "lbl_rename_prefix": "Präfix hinzufügen:",
+        "lbl_rename_suffix": "Suffix hinzufügen:",
+        "lbl_import_settings": "Import-Einstellungen (Interplay)",
+        "lbl_import_close": "Session nach Import automatisch schließen",
+        "lbl_http_server_config": "HTTP-Server Konfiguration",
+        "lbl_http_port": "Port:",
+        "lbl_restart_required": "(Neustart nach Änderung erforderlich)",
+        "lbl_network_interface": "Netzwerk-Interface",
+        "lbl_interface": "Interface:",
+        "lbl_trigger_urls": "Trigger-URLs (Klicken zum Kopieren)",
+        "alert_error": "Fehler",
+        "alert_note": "Hinweis",
+        "notif_copied": "Kopiert",
+        "msg_log_not_created": "Das Logfile wurde noch nicht erstellt.",
+        "msg_cannot_read_tracks": "Konnte Spuren nicht aus Pro Tools lesen:",
+        "msg_no_tracks_in_session": "Keine Spuren in der aktuellen Pro Tools Session gefunden.",
+        "msg_invalid_tc": "Ungültiger Timecode: '{}'\nFormat: HH:MM:SS:FF",
+        "msg_steps_negative": "Steps muss >= 0 sein",
+        "msg_video_track_empty": "Video-Spurname darf nicht leer sein",
+        "msg_extend_count_negative": "Shift+Ö Anzahl muss >= 0 sein",
+        "msg_invalid_port": "Port muss zwischen 1024 und 65535 liegen.",
+        "msg_invalid_port_value": "Ungültiger Port: {}",
+        "msg_settings_saved": "Einstellungen gespeichert.",
+        "lbl_webtrigger_preset": "Preset 1-8 laden",
+        "lbl_preset_trigger_urls": "Preset-Trigger (Klicken zum Kopieren):",
+        "title_settings_window": "Einstellungen PunchBuddy",
+        "msg_no_tracks": "Keine Spuren gefunden (Pro Tools offen?)",
+        "log_menu_rec_a": ">>> MENU 'Record A starten' <<<",
+        "log_menu_rec_b": ">>> MENU 'Record B starten' <<<",
+        "log_menu_play_input": ">>> MENU 'Play Input' <<<",
+        "log_menu_export_wav": ">>> MENU 'WAV Export' <<<",
+        "log_menu_export_aaf": ">>> MENU 'AAF Export' <<<",
+        "log_menu_export_interplay": ">>> MENU 'Interplay Export' <<<",
+        "log_menu_import": ">>> MENU 'Interplay Import starten' <<<",
+        "log_menu_quit": ">>> MENU 'Beenden' <<<",
+        "log_menu_settings": ">>> MENU 'Einstellungen...' <<<",
+        "log_menu_open_log": ">>> MENU 'Log File oeffnen' <<<",
+        "prog_title_interplay": "PunchBuddy – Interplay Export",
+        "prog_title_wav": "PunchBuddy – WAV Export",
+        "prog_title_aaf": "PunchBuddy – AAF Export",
+        "prog_connect_pt": "Verbindung zu Pro Tools…",
+        "prog_prep_tracks": "Spuren vorbereiten…",
+        "prog_get_video_end": "Video-Ende ermitteln…",
+        "prog_trim_overhangs": "Überhänge trimmen…",
+        "prog_consolidate": "Consolidate…",
+        "prog_loudness": "Lautheitskorrektur…",
+        "prog_eject_dmgs": "DMGs auswerfen…",
+        "prog_start_export": "Export starten…",
+        "prog_copy_wav": "WAV-Dateien kopieren…",
+        "prog_wav_done": "WAV Export abgeschlossen.",
+        "prog_aaf_export": "AAF exportieren…",
+        "prog_aaf_done": "AAF Export abgeschlossen.",
+        "tab_import": "Import",
+        "lbl_track_selection_header": "Spurenauswahl",
+        "lbl_export_settings_general": "Export Einstellungen Allgemein",
+        "lbl_interplay_export_settings": "Interplay Export Einstellungen",
+        "lbl_import_settings_header": "Interplay Import Einstellungen",
+        "lbl_import_close_desc": "Wenn aktiv, wird vor dem Interplay Import geprüft ob eine\nPro Tools Session geöffnet ist. Falls ja, wird sie gespeichert\nund geschlossen, bevor der Import gestartet wird.",
+        "lbl_import_close_session": "Offene Session vor Import schließen (speichert automatisch)",
+        "lbl_http_restart_info": "(Neustart nach Änderung erforderlich)",
+        "msg_manual_not_found_title": "Bedienungsanleitung nicht gefunden",
+        "msg_manual_not_found_body": "BEDIENUNGSANLEITUNG.md nicht gefunden.\nBitte die Datei neben PunchBuddy.app ablegen.",
+        "msg_docs_not_found_title": "Technische Dokumentation nicht gefunden",
+        "msg_docs_not_found_body": "TECHNISCHE_DOKUMENTATION.md nicht gefunden.\nBitte die Datei neben PunchBuddy.app ablegen.",
+        "msg_opensource_title": "Open Source Lizenzen",
+        "msg_opensource_body": "Diese Software verwendet folgende Open Source Bibliotheken:\n\n• Python 3.14 (PSF License)\n• rumps (BSD 3-Clause License)\n   https://github.com/jaredks/rumps\n\n• pyloudnorm (MIT License)\n   https://github.com/csteinmetz1/pyloudnorm\n\n• soundfile (BSD 3-Clause License)\n   https://github.com/bastibe/python-soundfile\n\n• numpy & scipy (BSD 3-Clause License)\n\n• ptsl - Pro Tools Scripting Library (MIT License)\n   https://github.com/iluvcapra/ptsl\n\n• PyObjC (MIT License)",
+        "msg_settings_saved_http_restart": "Alle Einstellungen wurden gespeichert.\nHTTP-Server wird mit neuen Netzwerkeinstellungen neugestartet.",
+        "msg_settings_saved_success": "Alle Einstellungen wurden gespeichert.",
+        "alert_saved": "Gespeichert",
+        "alert_preset_saved": "Preset gespeichert",
+        "msg_preset_saved_body": "wurde gespeichert.",
+        "alert_preset_delete_error": "Löschen nicht möglich",
+        "msg_preset_delete_error_body": "Mindestens ein Preset muss vorhanden sein.",
+        "title_preset_rename": "Preset umbenennen",
+        "msg_preset_rename_body": "Neuer Name für {}:",
+        "title_preset_new": "Neues Preset",
+        "msg_preset_new_body": "Name für das neue Preset:",
+        "default_preset_name": "Neues Preset",
+        "prog_loudness_win_title": "PunchBuddy Lautheitskorrektur",
+        "prog_loudness_init": "Initialisierung…",
+        "prog_loudness_done": "Lautheitskorrektur abgeschlossen.",
+        "prog_track_search": "Spur '{}': Suche Audiodatei…",
+        "prog_track_read": "'{}': Lese Audio…",
+        "prog_track_measure": "'{}': Messe Lautheit…",
+        "prog_track_gain": "'{}': Wende Gain {:+.1f} dB an…",
+        "prog_track_write": "'{}': Schreibe Datei…",
+        "prog_track_refresh": "'{}': Pro Tools aktualisiert…",
+        "prog_title_import": "PunchBuddy – Interplay Import",
+        "prog_check_session": "Session prüfen…",
+        "prog_close_session": "Session '{}' schließen…",
+        "prog_copy_seq_name": "Sequenzname aus Interplay kopieren…",
+        "prog_send_seq_to_pt": "Sequenz an Pro Tools senden…",
+        "prog_wait_pt_dialog": "Werte auf Pro Tools Dialog…",
+        "prog_paste_session_path": "Session-Pfad einfügen…",
+        "prog_wait_import_session_data": "Werte auf Import Session Data…",
+        "prog_set_import_options": "Import-Optionen setzen…",
+        "prog_choose_preset": "Choose + Track Data Preset…",
+        "prog_confirm_import": "Import bestätigen…",
+        "prog_import_running": "Import läuft…",
+        "prog_pt_loading": "Pro Tools lädt Session…",
+        "prog_import_done": "Import abgeschlossen.",
+        "prog_wait_export_comment": "Warte auf Export Comment…",
+        "prog_export_workspace": "Export Options: Workspace wählen…",
+        "prog_export_running": "Export läuft…",
+        "prog_export_success_confirm": "Export erfolgreich – Bestätigung…",
+        "prog_export_failed": "Export fehlgeschlagen!",
+        "prog_export_done_ellipsis": "Export abgeschlossen…",
+        "prog_rename_seq": "Sequenz umbenennen…",
+        "prog_export_done": "Export abgeschlossen.",
+    },
+    "en": {
+        "record_a_start": "Start Record A",
+        "record_b_start": "Start Record B",
+        "play_input": "Play Input",
+        "export_wav": "WAV Export",
+        "export_aaf": "AAF Export",
+        "export_interplay": "Interplay Export",
+        "interplay_import_start": "Start Interplay Import",
+        "settings": "Settings...",
+        "open_log": "Open Log File",
+        "help_info": "Help & Info",
+        "manual": "User Manual",
+        "tech_docs": "Technical Documentation",
+        "developed_by": "Developed by:",
+        "opensource": "Open Source Software & Licenses",
+        "quit": "Quit",
+        "tab_tracks": "Track Selection",
+        "tab_export": "Export",
+        "tab_webtrigger": "Webtrigger",
+        "tab_presets": "Presets",
+        "save": "Save",
+        "cancel": "Cancel",
+        "language": "Language:",
+        "col_record_a": "Record A",
+        "col_record_b": "Record B",
+        "col_export": "Export",
+        "col_loudness": "Loudness",
+        "col_play_input": "Play Input",
+        "col_track": "Track",
+        "btn_copy": "Copy",
+        "btn_load": "Load",
+        "btn_rename": "Rename",
+        "btn_new": "New",
+        "btn_delete": "Delete",
+        "preset_select": "Select Preset:",
+        "preset_contains": "Included Settings:",
+        "preset_info_tracks": "• Track assignments (Record A, Record B, Export, Loudness, Play Input)\n",
+        "preset_info_mon": "• Monitor tracks (Record A Mon, Record B Mon)\n",
+        "preset_info_export": "• Export (WAV, AAF, Interplay, Loudness Correction)\n",
+        "preset_info_keywords": "• Error/Success Keywords, Renaming\n",
+        "preset_info_import": "• Import settings\n",
+        "preset_info_webtrigger": "• Webtrigger Port and Network Interface",
+        "lbl_start_tc": "Start Timecode (HH:MM:SS:FF):",
+        "lbl_video_track": "Video Track Name:",
+        "lbl_loudness_enable": "Enable Loudness Correction (EBU R128)",
+        "lbl_target_lufs": "Target Loudness (LUFS):",
+        "lbl_max_truepeak": "Max True Peak (dB):",
+        "lbl_workspace_steps": "Workspace Position (Steps):",
+        "lbl_error_keywords": "Error Keywords:",
+        "lbl_success_keywords": "Success Keywords:",
+        "lbl_rename_seq": "Rename Sequence (after Interplay Export)",
+        "lbl_rename_enable": "Enable renaming after export",
+        "lbl_rename_trim_start": "Delete characters at start:",
+        "lbl_rename_trim_end": "Delete characters at end:",
+        "lbl_rename_prefix": "Add prefix:",
+        "lbl_rename_suffix": "Add suffix:",
+        "lbl_import_settings": "Import Settings (Interplay)",
+        "lbl_import_close": "Automatically close session after import",
+        "lbl_http_server_config": "HTTP Server Configuration",
+        "lbl_http_port": "Port:",
+        "lbl_restart_required": "(Restart required after change)",
+        "lbl_network_interface": "Network Interface",
+        "lbl_interface": "Interface:",
+        "lbl_trigger_urls": "Trigger URLs (Click to copy)",
+        "alert_error": "Error",
+        "alert_note": "Notice",
+        "notif_copied": "Copied",
+        "msg_log_not_created": "The log file has not been created yet.",
+        "msg_cannot_read_tracks": "Could not read tracks from Pro Tools:",
+        "msg_no_tracks_in_session": "No tracks found in the current Pro Tools session.",
+        "msg_invalid_tc": "Invalid timecode: '{}'\nFormat: HH:MM:SS:FF",
+        "msg_steps_negative": "Steps must be >= 0",
+        "msg_video_track_empty": "Video track name cannot be empty",
+        "msg_extend_count_negative": "Shift+Ö count must be >= 0",
+        "msg_invalid_port": "Port must be between 1024 and 65535.",
+        "msg_invalid_port_value": "Invalid port: {}",
+        "msg_settings_saved": "Settings saved.",
+        "lbl_webtrigger_preset": "Load Preset 1-8",
+        "lbl_preset_trigger_urls": "Preset Triggers (Click to copy):",
+        "title_settings_window": "PunchBuddy Settings",
+        "msg_no_tracks": "No tracks found (Pro Tools open?)",
+        "log_menu_rec_a": ">>> MENU 'Record A start' <<<",
+        "log_menu_rec_b": ">>> MENU 'Record B start' <<<",
+        "log_menu_play_input": ">>> MENU 'Play Input' <<<",
+        "log_menu_export_wav": ">>> MENU 'WAV Export' <<<",
+        "log_menu_export_aaf": ">>> MENU 'AAF Export' <<<",
+        "log_menu_export_interplay": ">>> MENU 'Export Interplay' <<<",
+        "log_menu_import": ">>> MENU 'Start Interplay Import' <<<",
+        "log_menu_quit": ">>> MENU 'Quit' <<<",
+        "log_menu_settings": ">>> MENU 'Settings...' <<<",
+        "log_menu_open_log": ">>> MENU 'Open Log File' <<<",
+        "prog_title_interplay": "PunchBuddy – Interplay Export",
+        "prog_title_wav": "PunchBuddy – WAV Export",
+        "prog_title_aaf": "PunchBuddy – AAF Export",
+        "prog_connect_pt": "Connecting to Pro Tools…",
+        "prog_prep_tracks": "Preparing tracks…",
+        "prog_get_video_end": "Determining video end…",
+        "prog_trim_overhangs": "Trimming overhangs…",
+        "prog_consolidate": "Consolidating…",
+        "prog_loudness": "Loudness correction…",
+        "prog_eject_dmgs": "Ejecting DMGs…",
+        "prog_start_export": "Starting export…",
+        "prog_copy_wav": "Copying WAV files…",
+        "prog_wav_done": "WAV Export complete.",
+        "prog_aaf_export": "Exporting AAF…",
+        "prog_aaf_done": "AAF Export complete.",
+        "tab_import": "Import",
+        "lbl_track_selection_header": "Track Selection",
+        "lbl_export_settings_general": "General Export Settings",
+        "lbl_interplay_export_settings": "Interplay Export Settings",
+        "lbl_import_settings_header": "Interplay Import Settings",
+        "lbl_import_close_desc": "If active, it checks if a Pro Tools session is open before Interplay Import. If so, it is saved and closed before the import starts.",
+        "lbl_import_close_session": "Close open session before import (saves automatically)",
+        "lbl_http_restart_info": "(Restart required after change)",
+        "msg_manual_not_found_title": "User Manual Not Found",
+        "msg_manual_not_found_body": "BEDIENUNGSANLEITUNG.md not found.\nPlease place the file next to PunchBuddy.app.",
+        "msg_docs_not_found_title": "Technical Documentation Not Found",
+        "msg_docs_not_found_body": "TECHNISCHE_DOKUMENTATION.md not found.\nPlease place the file next to PunchBuddy.app.",
+        "msg_opensource_title": "Open Source Licenses",
+        "msg_opensource_body": "This software uses the following open source libraries:\n\n• Python 3.14 (PSF License)\n• rumps (BSD 3-Clause License)\n   https://github.com/jaredks/rumps\n\n• pyloudnorm (MIT License)\n   https://github.com/csteinmetz1/pyloudnorm\n\n• soundfile (BSD 3-Clause License)\n   https://github.com/bastibe/python-soundfile\n\n• numpy & scipy (BSD 3-Clause License)\n\n• ptsl - Pro Tools Scripting Library (MIT License)\n   https://github.com/iluvcapra/ptsl\n\n• PyObjC (MIT License)",
+        "msg_settings_saved_http_restart": "All settings saved.\nHTTP server will restart with the new network settings.",
+        "msg_settings_saved_success": "All settings saved.",
+        "alert_saved": "Saved",
+        "alert_preset_saved": "Preset Saved",
+        "msg_preset_saved_body": "has been saved.",
+        "alert_preset_delete_error": "Delete Not Possible",
+        "msg_preset_delete_error_body": "At least one preset must exist.",
+        "title_preset_rename": "Rename Preset",
+        "msg_preset_rename_body": "New name for {}:",
+        "title_preset_new": "New Preset",
+        "msg_preset_new_body": "Name for the new preset:",
+        "default_preset_name": "New Preset",
+        "prog_loudness_win_title": "PunchBuddy Loudness Correction",
+        "prog_loudness_init": "Initializing…",
+        "prog_loudness_done": "Loudness correction complete.",
+        "prog_track_search": "Track '{}': Searching audio file…",
+        "prog_track_read": "'{}': Reading audio…",
+        "prog_track_measure": "'{}': Measuring loudness…",
+        "prog_track_gain": "'{}': Applying gain {:+.1f} dB…",
+        "prog_track_write": "'{}': Writing file…",
+        "prog_track_refresh": "'{}': Pro Tools updated…",
+        "prog_title_import": "PunchBuddy – Interplay Import",
+        "prog_check_session": "Checking session…",
+        "prog_close_session": "Closing session '{}'…",
+        "prog_copy_seq_name": "Copying sequence name from Interplay…",
+        "prog_send_seq_to_pt": "Sending sequence to Pro Tools…",
+        "prog_wait_pt_dialog": "Waiting for Pro Tools dialog…",
+        "prog_paste_session_path": "Pasting session path…",
+        "prog_wait_import_session_data": "Waiting for Import Session Data…",
+        "prog_set_import_options": "Setting import options…",
+        "prog_choose_preset": "Choose + Track Data Preset…",
+        "prog_confirm_import": "Confirming import…",
+        "prog_import_running": "Import running…",
+        "prog_pt_loading": "Pro Tools loading session…",
+        "prog_import_done": "Import complete.",
+        "prog_wait_export_comment": "Waiting for Export Comment…",
+        "prog_export_workspace": "Export Options: Selecting workspace…",
+        "prog_export_running": "Export running…",
+        "prog_export_success_confirm": "Export successful – Confirmation…",
+        "prog_export_failed": "Export failed!",
+        "prog_export_done_ellipsis": "Export complete…",
+        "prog_rename_seq": "Renaming sequence…",
+        "prog_export_done": "Export complete.",
+    },
+    "fr": {
+        "record_a_start": "Démarrer Record A",
+        "record_b_start": "Démarrer Record B",
+        "play_input": "Play Input",
+        "export_wav": "Export WAV",
+        "export_aaf": "Export AAF",
+        "export_interplay": "Export Interplay",
+        "interplay_import_start": "Démarrer l'importation Interplay",
+        "settings": "Paramètres...",
+        "open_log": "Ouvrir le fichier de log",
+        "help_info": "Aide & Info",
+        "manual": "Guide d'utilisation",
+        "tech_docs": "Documentation technique",
+        "developed_by": "Développé par:",
+        "opensource": "Logiciel libre & Licences",
+        "quit": "Quitter",
+        "tab_tracks": "Sélection des pistes",
+        "tab_export": "Exporter",
+        "tab_webtrigger": "Webtrigger",
+        "tab_presets": "Presets",
+        "save": "Enregistrer",
+        "cancel": "Annuler",
+        "language": "Langue:",
+        "col_record_a": "Record A",
+        "col_record_b": "Record B",
+        "col_export": "Export",
+        "col_loudness": "Loudness",
+        "col_play_input": "Play Input",
+        "col_track": "Piste",
+        "btn_copy": "Copier",
+        "btn_load": "Charger",
+        "btn_rename": "Renommer",
+        "btn_new": "Nouveau",
+        "btn_delete": "Supprimer",
+        "preset_select": "Sélectionner preset:",
+        "preset_contains": "Paramètres inclus:",
+        "preset_info_tracks": "• Assignation des pistes (Record A, Record B, Export, Loudness, Play Input)\n",
+        "preset_info_mon": "• Pistes de contrôle (Record A Mon, Record B Mon)\n",
+        "preset_info_export": "• Export (WAV, AAF, Interplay, correction de sonie)\n",
+        "preset_info_keywords": "• Mots-clés d'erreur/succès, renommage\n",
+        "preset_info_import": "• Paramètres d'importation\n",
+        "preset_info_webtrigger": "• Port Webtrigger et interface réseau",
+        "lbl_start_tc": "Timecode de départ (HH:MM:SS:FF):",
+        "lbl_video_track": "Nom de la piste vidéo:",
+        "lbl_loudness_enable": "Activer la correction de sonie (EBU R128)",
+        "lbl_target_lufs": "Sonie cible (LUFS):",
+        "lbl_max_truepeak": "True Peak max (dB):",
+        "lbl_workspace_steps": "Position de l'espace de travail (Steps):",
+        "lbl_error_keywords": "Mots-clés d'erreur:",
+        "lbl_success_keywords": "Mots-clés de succès:",
+        "lbl_rename_seq": "Renommer la séquence (après l'exportation Interplay)",
+        "lbl_rename_enable": "Activer le renommage après exportation",
+        "lbl_rename_trim_start": "Supprimer les caractères au début:",
+        "lbl_rename_trim_end": "Supprimer les caractères à la fin:",
+        "lbl_rename_prefix": "Ajouter un préfixe:",
+        "lbl_rename_suffix": "Ajouter un suffixe:",
+        "lbl_import_settings": "Paramètres d'importation (Interplay)",
+        "lbl_import_close": "Fermer automatiquement la session après l'importation",
+        "lbl_http_server_config": "Configuration du serveur HTTP",
+        "lbl_http_port": "Port:",
+        "lbl_restart_required": "(Redémarrage requis après modification)",
+        "lbl_network_interface": "Interface réseau",
+        "lbl_interface": "Interface:",
+        "lbl_trigger_urls": "URLs de déclenchement (Cliquer pour copier)",
+        "alert_error": "Erreur",
+        "alert_note": "Avis",
+        "notif_copied": "Copié",
+        "msg_log_not_created": "Le fichier de log n'a pas encore été créé.",
+        "msg_cannot_read_tracks": "Impossible de lire les pistes depuis Pro Tools:",
+        "msg_no_tracks_in_session": "Aucune piste trouvée dans la session Pro Tools actuelle.",
+        "msg_invalid_tc": "Timecode invalide: '{}'\nFormat: HH:MM:SS:FF",
+        "msg_steps_negative": "Steps doit être >= 0",
+        "msg_video_track_empty": "Le nom de la piste vidéo ne peut pas être vide",
+        "msg_extend_count_negative": "Le nombre Shift+Ö doit être >= 0",
+        "msg_invalid_port": "Le port doit être compris entre 1024 et 65535.",
+        "msg_invalid_port_value": "Port invalide: {}",
+        "msg_settings_saved": "Paramètres enregistrés.",
+        "lbl_webtrigger_preset": "Charger Preset 1-8",
+        "lbl_preset_trigger_urls": "Déclencheurs de Preset (Cliquer pour copier) :",
+        "title_settings_window": "Paramètres de PunchBuddy",
+        "msg_no_tracks": "Aucune piste trouvée (Pro Tools ouvert?)",
+        "log_menu_rec_a": ">>> MENU 'Record A start' <<<",
+        "log_menu_rec_b": ">>> MENU 'Record B start' <<<",
+        "log_menu_play_input": ">>> MENU 'Play Input' <<<",
+        "log_menu_export_wav": ">>> MENU 'Export WAV' <<<",
+        "log_menu_export_aaf": ">>> MENU 'Export AAF' <<<",
+        "log_menu_export_interplay": ">>> MENU 'Export Interplay' <<<",
+        "log_menu_import": ">>> MENU 'Démarrer l'importation Interplay' <<<",
+        "log_menu_quit": ">>> MENU 'Quitter' <<<",
+        "log_menu_settings": ">>> MENU 'Paramètres...' <<<",
+        "log_menu_open_log": ">>> MENU 'Ouvrir le fichier de log' <<<",
+        "prog_title_interplay": "PunchBuddy – Export Interplay",
+        "prog_title_wav": "PunchBuddy – Export WAV",
+        "prog_title_aaf": "PunchBuddy – Export AAF",
+        "prog_connect_pt": "Connexion à Pro Tools…",
+        "prog_prep_tracks": "Préparation des pistes…",
+        "prog_get_video_end": "Détermination de la fin de la vidéo…",
+        "prog_trim_overhangs": "Trimming des overhangs…",
+        "prog_consolidate": "Consolidation…",
+        "prog_loudness": "Correction de sonie…",
+        "prog_eject_dmgs": "Éjection des DMGs…",
+        "prog_start_export": "Démarrage de l'exportation…",
+        "prog_copy_wav": "Copie des fichiers WAV…",
+        "prog_wav_done": "Export WAV terminé.",
+        "prog_aaf_export": "Exportation AAF…",
+        "prog_aaf_done": "Export AAF terminé.",
+        "tab_import": "Import",
+        "lbl_track_selection_header": "Sélection des pistes",
+        "lbl_export_settings_general": "Paramètres d'exportation généraux",
+        "lbl_interplay_export_settings": "Paramètres d'exportation Interplay",
+        "lbl_import_settings_header": "Paramètres d'importation Interplay",
+        "lbl_import_close_desc": "Si activé, vérifie si une session Pro Tools est ouverte avant l'import Interplay. Si oui, elle est enregistrée et fermée avant le début de l'import.",
+        "lbl_import_close_session": "Fermer la session ouverte avant l'importation (enregistre automatiquement)",
+        "lbl_http_restart_info": "(Redémarrage requis après modification)",
+        "msg_manual_not_found_title": "Guide d'utilisation introuvable",
+        "msg_manual_not_found_body": "BEDIENUNGSANLEITUNG.md introuvable.\nVeuillez placer le fichier à côté de PunchBuddy.app.",
+        "msg_docs_not_found_title": "Documentation technique introuvable",
+        "msg_docs_not_found_body": "TECHNISCHE_DOKUMENTATION.md introuvable.\nVeuillez placer le fichier à côté de PunchBuddy.app.",
+        "msg_opensource_title": "Licences Open Source",
+        "msg_opensource_body": "Ce logiciel utilise les bibliothèques open source suivantes :\n\n• Python 3.14 (PSF License)\n• rumps (BSD 3-Clause License)\n   https://github.com/jaredks/rumps\n\n• pyloudnorm (MIT License)\n   https://github.com/csteinmetz1/pyloudnorm\n\n• soundfile (BSD 3-Clause License)\n   https://github.com/bastibe/python-soundfile\n\n• numpy & scipy (BSD 3-Clause License)\n\n• ptsl - Pro Tools Scripting Library (MIT License)\n   https://github.com/iluvcapra/ptsl\n\n• PyObjC (MIT License)",
+        "msg_settings_saved_http_restart": "Tous les paramètres ont été enregistrés.\nLe serveur HTTP va redémarrer avec les nouveaux paramètres réseau.",
+        "msg_settings_saved_success": "Tous les paramètres ont été enregistrés.",
+        "alert_saved": "Enregistré",
+        "alert_preset_saved": "Preset enregistré",
+        "msg_preset_saved_body": "a été enregistré.",
+        "alert_preset_delete_error": "Suppression impossible",
+        "msg_preset_delete_error_body": "Au moins un preset doit exister.",
+        "title_preset_rename": "Renommer le preset",
+        "msg_preset_rename_body": "Nouveau nom pour {} :",
+        "title_preset_new": "Nouveau preset",
+        "msg_preset_new_body": "Nom pour le nouveau preset :",
+        "default_preset_name": "Nouveau preset",
+        "prog_loudness_win_title": "PunchBuddy Correction de sonie",
+        "prog_loudness_init": "Initialisation…",
+        "prog_loudness_done": "Correction de sonie terminée.",
+        "prog_track_search": "Piste '{}' : Recherche du fichier audio…",
+        "prog_track_read": "'{}' : Lecture audio…",
+        "prog_track_measure": "'{}' : Mesure de la sonie…",
+        "prog_track_gain": "'{}' : Application du gain {:+.1f} dB…",
+        "prog_track_write": "'{}' : Écriture du fichier…",
+        "prog_track_refresh": "'{}' : Pro Tools mis à jour…",
+        "prog_title_import": "PunchBuddy – Importation Interplay",
+        "prog_check_session": "Vérification de la session…",
+        "prog_close_session": "Fermeture de la session '{}'…",
+        "prog_copy_seq_name": "Copie du nom de la séquence depuis Interplay…",
+        "prog_send_seq_to_pt": "Envoi de la séquence à Pro Tools…",
+        "prog_wait_pt_dialog": "Attente du dialogue Pro Tools…",
+        "prog_paste_session_path": "Collage du chemin de la session…",
+        "prog_wait_import_session_data": "Attente d'Import Session Data…",
+        "prog_set_import_options": "Configuration des options d'importation…",
+        "prog_choose_preset": "Choose + Track Data Preset…",
+        "prog_confirm_import": "Confirmation de l'importation…",
+        "prog_import_running": "Importation en cours…",
+        "prog_pt_loading": "Pro Tools charge la session…",
+        "prog_import_done": "Importation terminée.",
+        "prog_wait_export_comment": "Attente d'Export Comment…",
+        "prog_export_workspace": "Export Options : Sélection de l'espace de travail…",
+        "prog_export_running": "Exportation en cours…",
+        "prog_export_success_confirm": "Exportation réussie – Confirmation…",
+        "prog_export_failed": "Exportation échouée !",
+        "prog_export_done_ellipsis": "Exportation terminée…",
+        "prog_rename_seq": "Renommage de la séquence…",
+        "prog_export_done": "Exportation terminée.",
+    },
+    "es": {
+        "record_a_start": "Iniciar Record A",
+        "record_b_start": "Iniciar Record B",
+        "play_input": "Play Input",
+        "export_wav": "Exportación WAV",
+        "export_aaf": "Exportación AAF",
+        "export_interplay": "Exportación Interplay",
+        "interplay_import_start": "Iniciar importación Interplay",
+        "settings": "Configuración...",
+        "open_log": "Abrir archivo de log",
+        "help_info": "Ayuda e Info",
+        "manual": "Manual de usuario",
+        "tech_docs": "Documentación técnica",
+        "developed_by": "Desarrollado por:",
+        "opensource": "Software de código abierto y Licencias",
+        "quit": "Salir",
+        "tab_tracks": "Selección de pistas",
+        "tab_export": "Exportar",
+        "tab_webtrigger": "Webtrigger",
+        "tab_presets": "Presets",
+        "save": "Guardar",
+        "cancel": "Cancelar",
+        "language": "Idioma:",
+        "col_record_a": "Record A",
+        "col_record_b": "Record B",
+        "col_export": "Exportar",
+        "col_loudness": "Loudness",
+        "col_play_input": "Play Input",
+        "col_track": "Pista",
+        "btn_copy": "Copiar",
+        "btn_load": "Cargar",
+        "btn_rename": "Renombrar",
+        "btn_new": "Nuevo",
+        "btn_delete": "Eliminar",
+        "preset_select": "Seleccionar preset:",
+        "preset_contains": "Ajustes incluidos:",
+        "preset_info_tracks": "• Asignaciones de pistas (Record A, Record B, Export, Loudness, Play Input)\n",
+        "preset_info_mon": "• Pistas de monitoreo (Record A Mon, Record B Mon)\n",
+        "preset_info_export": "• Exportar (WAV, AAF, Interplay, corrección de sonoridad)\n",
+        "preset_info_keywords": "• Palabras clave de error/éxito, renombrado\n",
+        "preset_info_import": "• Ajustes de importación\n",
+        "preset_info_webtrigger": "• Puerto Webtrigger e interfaz de red",
+        "lbl_start_tc": "Timecode de inicio (HH:MM:SS:FF):",
+        "lbl_video_track": "Nombre de pista de video:",
+        "lbl_loudness_enable": "Activar corrección de sonoridad (EBU R128)",
+        "lbl_target_lufs": "Sonoridad objetivo (LUFS):",
+        "lbl_max_truepeak": "True Peak máx. (dB):",
+        "lbl_workspace_steps": "Posición del espacio de trabajo (Steps):",
+        "lbl_error_keywords": "Palabras clave de error:",
+        "lbl_success_keywords": "Palabras clave de éxito:",
+        "lbl_rename_seq": "Renombrar secuencia (tras exportación Interplay)",
+        "lbl_rename_enable": "Activar renombrado tras exportación",
+        "lbl_rename_trim_start": "Eliminar caracteres al inicio:",
+        "lbl_rename_trim_end": "Eliminar caracteres al final:",
+        "lbl_rename_prefix": "Añadir prefijo:",
+        "lbl_rename_suffix": "Añadir sufijo:",
+        "lbl_import_settings": "Ajustes de importación (Interplay)",
+        "lbl_import_close": "Cerrar sesión automáticamente tras importar",
+        "lbl_http_server_config": "Configuración del servidor HTTP",
+        "lbl_http_port": "Puerto:",
+        "lbl_restart_required": "(Requiere reiniciar tras modificar)",
+        "lbl_network_interface": "Interfaz de red",
+        "lbl_interface": "Interfaz:",
+        "lbl_trigger_urls": "URLs de activación (Clic para copiar)",
+        "alert_error": "Error",
+        "alert_note": "Aviso",
+        "notif_copied": "Copiado",
+        "msg_log_not_created": "El archivo de log aún no ha sido creado.",
+        "msg_cannot_read_tracks": "No se pudieron leer las pistas de Pro Tools:",
+        "msg_no_tracks_in_session": "No se encontraron pistas en la sesión de Pro Tools actual.",
+        "msg_invalid_tc": "Timecode no válido: '{}'\nFormato: HH:MM:SS:FF",
+        "msg_steps_negative": "Steps debe ser >= 0",
+        "msg_video_track_empty": "El nombre de la pista de video no puede estar vacío",
+        "msg_extend_count_negative": "El número Shift+Ö debe ser >= 0",
+        "msg_invalid_port": "El puerto debe estar entre 1024 y 65535.",
+        "msg_invalid_port_value": "Puerto no válido: {}",
+        "msg_settings_saved": "Ajustes guardados.",
+        "lbl_webtrigger_preset": "Cargar Preset 1-8",
+        "lbl_preset_trigger_urls": "Activadores de Preset (Clic para copiar):",
+        "title_settings_window": "Configuración de PunchBuddy",
+        "msg_no_tracks": "No se encontraron pistas (¿Pro Tools abierto?)",
+        "log_menu_rec_a": ">>> MENU 'Record A start' <<<",
+        "log_menu_rec_b": ">>> MENU 'Record B start' <<<",
+        "log_menu_play_input": ">>> MENU 'Play Input' <<<",
+        "log_menu_export_wav": ">>> MENU 'Export WAV' <<<",
+        "log_menu_export_aaf": ">>> MENU 'Export AAF' <<<",
+        "log_menu_export_interplay": ">>> MENU 'Export Interplay' <<<",
+        "log_menu_import": ">>> MENU 'Iniciar importación Interplay' <<<",
+        "log_menu_quit": ">>> MENU 'Salir' <<<",
+        "log_menu_settings": ">>> MENU 'Configuración...' <<<",
+        "log_menu_open_log": ">>> MENU 'Abrir archivo de log' <<<",
+        "prog_title_interplay": "PunchBuddy – Exportación Interplay",
+        "prog_title_wav": "PunchBuddy – Exportación WAV",
+        "prog_title_aaf": "PunchBuddy – Exportación AAF",
+        "prog_connect_pt": "Conectando a Pro Tools…",
+        "prog_prep_tracks": "Preparando pistas…",
+        "prog_get_video_end": "Determinando fin de video…",
+        "prog_trim_overhangs": "Trimming de overhangs…",
+        "prog_consolidate": "Consolidando…",
+        "prog_loudness": "Corrección de sonoridad…",
+        "prog_eject_dmgs": "Expulsando DMGs…",
+        "prog_start_export": "Iniciando exportación…",
+        "prog_copy_wav": "Copiando archivos WAV…",
+        "prog_wav_done": "Exportación WAV completada.",
+        "prog_aaf_export": "Exportando AAF…",
+        "prog_aaf_done": "Exportación AAF completada.",
+        "tab_import": "Importar",
+        "lbl_track_selection_header": "Selección de pistas",
+        "lbl_export_settings_general": "Configuración general de exportación",
+        "lbl_interplay_export_settings": "Configuración de exportación Interplay",
+        "lbl_import_settings_header": "Configuración de importación Interplay",
+        "lbl_import_close_desc": "Si está activo, verifica si hay una sesión de Pro Tools abierta antes de la importación de Interplay. De ser así, se guarda y se cierra antes de iniciar la importación.",
+        "lbl_import_close_session": "Cerrar sesión abierta antes de importar (guarda automáticamente)",
+        "lbl_http_restart_info": "(Requiere reiniciar tras modificar)",
+        "msg_manual_not_found_title": "Manual de usuario no encontrado",
+        "msg_manual_not_found_body": "BEDIENUNGSANLEITUNG.md no encontrado.\nPor favor, coloque el archivo al lado de PunchBuddy.app.",
+        "msg_docs_not_found_title": "Documentación técnica no encontrada",
+        "msg_docs_not_found_body": "TECHNISCHE_DOKUMENTATION.md no encontrado.\nPor favor, coloque el archivo al lado de PunchBuddy.app.",
+        "msg_opensource_title": "Licencias de código abierto",
+        "msg_opensource_body": "Este software utiliza las siguientes bibliotecas de código abierto:\n\n• Python 3.14 (PSF License)\n• rumps (BSD 3-Clause License)\n   https://github.com/jaredks/rumps\n\n• pyloudnorm (MIT License)\n   https://github.com/csteinmetz1/pyloudnorm\n\n• soundfile (BSD 3-Clause License)\n   https://github.com/bastibe/python-soundfile\n\n• numpy & scipy (BSD 3-Clause License)\n\n• ptsl - Pro Tools Scripting Library (MIT License)\n   https://github.com/iluvcapra/ptsl\n\n• PyObjC (MIT License)",
+        "msg_settings_saved_http_restart": "Se han guardado todos los ajustes.\nEl servidor HTTP se reiniciará con la nueva configuración de red.",
+        "msg_settings_saved_success": "Se han guardado todos los ajustes.",
+        "alert_saved": "Guardado",
+        "alert_preset_saved": "Preset guardado",
+        "msg_preset_saved_body": "ha sido guardado.",
+        "alert_preset_delete_error": "No se puede eliminar",
+        "msg_preset_delete_error_body": "Debe existir al menos un preset.",
+        "title_preset_rename": "Renombrar preset",
+        "msg_preset_rename_body": "Nuevo nombre para {}:",
+        "title_preset_new": "Nuevo preset",
+        "msg_preset_new_body": "Nombre para el nuevo preset:",
+        "default_preset_name": "Nuevo preset",
+        "prog_loudness_win_title": "PunchBuddy Corrección de sonoridad",
+        "prog_loudness_init": "Inicialización…",
+        "prog_loudness_done": "Corrección de sonoridad completada.",
+        "prog_track_search": "Pista '{}': Buscando archivo de audio…",
+        "prog_track_read": "'{}': Leyendo audio…",
+        "prog_track_measure": "'{}': Midiendo sonoridad…",
+        "prog_track_gain": "'{}': Aplicando ganancia {:+.1f} dB…",
+        "prog_track_write": "'{}': Escribiendo archivo…",
+        "prog_track_refresh": "'{}': Pro Tools actualizado…",
+        "prog_title_import": "PunchBuddy – Importación Interplay",
+        "prog_check_session": "Comprobando sesión…",
+        "prog_close_session": "Cerrando sesión '{}'…",
+        "prog_copy_seq_name": "Copiando nombre de secuencia desde Interplay…",
+        "prog_send_seq_to_pt": "Enviando secuencia a Pro Tools…",
+        "prog_wait_pt_dialog": "Esperando diálogo de Pro Tools…",
+        "prog_paste_session_path": "Pegando ruta de sesión…",
+        "prog_wait_import_session_data": "Esperando Import Session Data…",
+        "prog_set_import_options": "Configurando opciones de importación…",
+        "prog_choose_preset": "Choose + Track Data Preset…",
+        "prog_confirm_import": "Confirmando importación…",
+        "prog_import_running": "Importación en curso…",
+        "prog_pt_loading": "Pro Tools cargando sesión…",
+        "prog_import_done": "Importación completada.",
+        "prog_wait_export_comment": "Esperando Export Comment…",
+        "prog_export_workspace": "Export Options: Seleccionando espacio de trabajo…",
+        "prog_export_running": "Exportación en curso…",
+        "prog_export_success_confirm": "Exportación exitosa – Confirmación…",
+        "prog_export_failed": "¡Exportación fallida!",
+        "prog_export_done_ellipsis": "Exportación completada…",
+        "prog_rename_seq": "Renombrando secuencia…",
+        "prog_export_done": "Exportación completada.",
+    },
+    "pt": {
+        "record_a_start": "Iniciar Record A",
+        "record_b_start": "Iniciar Record B",
+        "play_input": "Play Input",
+        "export_wav": "Exportação WAV",
+        "export_aaf": "Exportação AAF",
+        "export_interplay": "Exportação Interplay",
+        "interplay_import_start": "Iniciar importação Interplay",
+        "settings": "Configurações...",
+        "open_log": "Abrir arquivo de log",
+        "help_info": "Ajuda e Info",
+        "manual": "Manual do usuário",
+        "tech_docs": "Documentação técnica",
+        "developed_by": "Desenvolvido por:",
+        "opensource": "Software de código aberto e Licenças",
+        "quit": "Sair",
+        "tab_tracks": "Seleção de faixas",
+        "tab_export": "Exportar",
+        "tab_webtrigger": "Webtrigger",
+        "tab_presets": "Presets",
+        "save": "Salvar",
+        "cancel": "Cancelar",
+        "language": "Idioma:",
+        "col_record_a": "Record A",
+        "col_record_b": "Record B",
+        "col_export": "Exportar",
+        "col_loudness": "Loudness",
+        "col_play_input": "Play Input",
+        "col_track": "Faixa",
+        "btn_copy": "Copiar",
+        "btn_load": "Carregar",
+        "btn_rename": "Renomear",
+        "btn_new": "Novo",
+        "btn_delete": "Excluir",
+        "preset_select": "Selecionar preset:",
+        "preset_contains": "Configurações incluídas:",
+        "preset_info_tracks": "• Atribuições de faixas (Record A, Record B, Export, Loudness, Play Input)\n",
+        "preset_info_mon": "• Faixas de monitoramento (Record A Mon, Record B Mon)\n",
+        "preset_info_export": "• Exportar (WAV, AAF, Interplay, correção de sonoridade)\n",
+        "preset_info_keywords": "• Palavras-chave de erro/sucesso, renomeação\n",
+        "preset_info_import": "• Configurações de importação\n",
+        "preset_info_webtrigger": "• Porta Webtrigger e interface de rede",
+        "lbl_start_tc": "Timecode de início (HH:MM:SS:FF):",
+        "lbl_video_track": "Nome da faixa de vídeo:",
+        "lbl_loudness_enable": "Ativar correção de sonoridade (EBU R128)",
+        "lbl_target_lufs": "Sonoridade alvo (LUFS):",
+        "lbl_max_truepeak": "True Peak máx. (dB):",
+        "lbl_workspace_steps": "Posição do espaço de trabalho (Steps):",
+        "lbl_error_keywords": "Palavras-chave de erro:",
+        "lbl_success_keywords": "Palavras-chave de sucesso:",
+        "lbl_rename_seq": "Renomear sequência (após exportação Interplay)",
+        "lbl_rename_enable": "Ativar renomeação após exportação",
+        "lbl_rename_trim_start": "Remover caracteres no início:",
+        "lbl_rename_trim_end": "Remover caracteres no fim:",
+        "lbl_rename_prefix": "Adicionar prefixo:",
+        "lbl_rename_suffix": "Adicionar sufixo:",
+        "lbl_import_settings": "Configurações de importação (Interplay)",
+        "lbl_import_close": "Fechar sessão automaticamente após importar",
+        "lbl_http_server_config": "Configuração do servidor HTTP",
+        "lbl_http_port": "Porta:",
+        "lbl_restart_required": "(Exige reiniciar após modificar)",
+        "lbl_network_interface": "Interface de rede",
+        "lbl_interface": "Interface:",
+        "lbl_trigger_urls": "URLs de ativação (Clique para copiar)",
+        "alert_error": "Erro",
+        "alert_note": "Aviso",
+        "notif_copied": "Copiado",
+        "msg_log_not_created": "O arquivo de log ainda não foi criado.",
+        "msg_cannot_read_tracks": "Não foi possível ler as faixas do Pro Tools:",
+        "msg_no_tracks_in_session": "Nenhuma faixa encontrada na sessão do Pro Tools atual.",
+        "msg_invalid_tc": "Timecode inválido: '{}'\nFormato: HH:MM:SS:FF",
+        "msg_steps_negative": "Steps deve ser >= 0",
+        "msg_video_track_empty": "O nome da faixa de vídeo não pode ser vazio",
+        "msg_extend_count_negative": "O número Shift+Ö deve ser >= 0",
+        "msg_invalid_port": "A porta deve estar entre 1024 y 65535.",
+        "msg_invalid_port_value": "Porta inválida: {}",
+        "msg_settings_saved": "Configurações salvas.",
+        "lbl_webtrigger_preset": "Carregar Preset 1-8",
+        "lbl_preset_trigger_urls": "Ativadores de Preset (Clique para copiar):",
+        "title_settings_window": "Configurações do PunchBuddy",
+        "msg_no_tracks": "Nenhuma faixa encontrada (Pro Tools aberto?)",
+        "log_menu_rec_a": ">>> MENU 'Record A start' <<<",
+        "log_menu_rec_b": ">>> MENU 'Record B start' <<<",
+        "log_menu_play_input": ">>> MENU 'Play Input' <<<",
+        "log_menu_export_wav": ">>> MENU 'Export WAV' <<<",
+        "log_menu_export_aaf": ">>> MENU 'Export AAF' <<<",
+        "log_menu_export_interplay": ">>> MENU 'Export Interplay' <<<",
+        "log_menu_import": ">>> MENU 'Iniciar importação Interplay' <<<",
+        "log_menu_quit": ">>> MENU 'Sair' <<<",
+        "log_menu_settings": ">>> MENU 'Configurações...' <<<",
+        "log_menu_open_log": ">>> MENU 'Abrir arquivo de log' <<<",
+        "prog_title_interplay": "PunchBuddy – Exportação Interplay",
+        "prog_title_wav": "PunchBuddy – Exportação WAV",
+        "prog_title_aaf": "PunchBuddy – Exportação AAF",
+        "prog_connect_pt": "Conectando ao Pro Tools…",
+        "prog_prep_tracks": "Preparando faixas…",
+        "prog_get_video_end": "Determinando fim do vídeo…",
+        "prog_trim_overhangs": "Trimming de overhangs…",
+        "prog_consolidate": "Consolidando…",
+        "prog_loudness": "Correção de sonoridade…",
+        "prog_eject_dmgs": "Ejetando DMGs…",
+        "prog_start_export": "Iniciando exportação…",
+        "prog_copy_wav": "Copiando arquivos WAV…",
+        "prog_wav_done": "Exportação WAV concluída.",
+        "prog_aaf_export": "Exportando AAF…",
+        "prog_aaf_done": "Exportação AAF concluída.",
+        "tab_import": "Importar",
+        "lbl_track_selection_header": "Seleção de faixas",
+        "lbl_export_settings_general": "Configurações gerais de exportação",
+        "lbl_interplay_export_settings": "Configurações de exportação Interplay",
+        "lbl_import_settings_header": "Configurações de importação Interplay",
+        "lbl_import_close_desc": "Se ativo, verifica se uma sessão do Pro Tools está aberta antes da importação do Interplay. Se sim, ela é salva e fechada antes do início da importação.",
+        "lbl_import_close_session": "Fechar sessão aberta antes de importar (salva automaticamente)",
+        "lbl_http_restart_info": "(Exige reiniciar após modificar)",
+        "msg_manual_not_found_title": "Manual do usuário não encontrado",
+        "msg_manual_not_found_body": "BEDIENUNGSANLEITUNG.md não encontrado.\nPor favor, coloque o arquivo ao lado de PunchBuddy.app.",
+        "msg_docs_not_found_title": "Documentação técnica não encontrada",
+        "msg_docs_not_found_body": "TECHNISCHE_DOKUMENTATION.md não encontrado.\nPor favor, coloque o arquivo ao lado de PunchBuddy.app.",
+        "msg_opensource_title": "Licenças de código aberto",
+        "msg_opensource_body": "Este software usa as seguintes bibliotecas de código aberto:\n\n• Python 3.14 (PSF License)\n• rumps (BSD 3-Clause License)\n   https://github.com/jaredks/rumps\n\n• pyloudnorm (MIT License)\n   https://github.com/csteinmetz1/pyloudnorm\n\n• soundfile (BSD 3-Clause License)\n   https://github.com/bastibe/python-soundfile\n\n• numpy & scipy (BSD 3-Clause License)\n\n• ptsl - Pro Tools Scripting Library (MIT License)\n   https://github.com/iluvcapra/ptsl\n\n• PyObjC (MIT License)",
+        "msg_settings_saved_http_restart": "Todas as configurações foram salvas.\nO servidor HTTP será reiniciado com as novas configurações de rede.",
+        "msg_settings_saved_success": "Todas as configurações foram salvas.",
+        "alert_saved": "Salvo",
+        "alert_preset_saved": "Preset salvo",
+        "msg_preset_saved_body": "foi salvo.",
+        "alert_preset_delete_error": "Não é possível excluir",
+        "msg_preset_delete_error_body": "Pelo menos um preset deve existir.",
+        "title_preset_rename": "Renomear preset",
+        "msg_preset_rename_body": "Novo nome para {}:",
+        "title_preset_new": "Novo preset",
+        "msg_preset_new_body": "Nome para o novo preset:",
+        "default_preset_name": "Novo preset",
+        "prog_loudness_win_title": "PunchBuddy Correção de sonoridade",
+        "prog_loudness_init": "Inicialização…",
+        "prog_loudness_done": "Correção de sonoridade concluída.",
+        "prog_track_search": "Faixa '{}': Buscando arquivo de áudio…",
+        "prog_track_read": "'{}': Lendo áudio…",
+        "prog_track_measure": "'{}': Medindo sonoridade…",
+        "prog_track_gain": "'{}': Aplicando ganho {:+.1f} dB…",
+        "prog_track_write": "'{}': Escrevendo arquivo…",
+        "prog_track_refresh": "'{}': Pro Tools atualizado…",
+        "prog_title_import": "PunchBuddy – Importação Interplay",
+        "prog_check_session": "Verificando sessão…",
+        "prog_close_session": "Fechando sessão '{}'…",
+        "prog_copy_seq_name": "Copiando nome da sequência do Interplay…",
+        "prog_send_seq_to_pt": "Enviando sequência ao Pro Tools…",
+        "prog_wait_pt_dialog": "Aguardando diálogo do Pro Tools…",
+        "prog_paste_session_path": "Colando caminho da sessão…",
+        "prog_wait_import_session_data": "Aguardando Import Session Data…",
+        "prog_set_import_options": "Configurando opções de importação…",
+        "prog_choose_preset": "Choose + Track Data Preset…",
+        "prog_confirm_import": "Confirmando importação…",
+        "prog_import_running": "Importação em curso…",
+        "prog_pt_loading": "Pro Tools carregando sessão…",
+        "prog_import_done": "Importação concluída.",
+        "prog_wait_export_comment": "Aguardando Export Comment…",
+        "prog_export_workspace": "Export Options: Selecionando espaço de trabalho…",
+        "prog_export_running": "Exportação em curso…",
+        "prog_export_success_confirm": "Exportação bem-sucedida – Confirmação…",
+        "prog_export_failed": "Exportação falhou!",
+        "prog_export_done_ellipsis": "Exportação concluída…",
+        "prog_rename_seq": "Renomeando sequência…",
+        "prog_export_done": "Exportação concluída.",
+    }
+}
+
+_current_lang = "de"
+
+def load_app_language():
+    global _current_lang
+    try:
+        if os.path.exists(SETTINGS_PATH):
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                _current_lang = data.get("language", "de")
+    except Exception:
+        _current_lang = "de"
+
+def t(key):
+    lang = _current_lang
+    lang_dict = TRANSLATIONS.get(lang, TRANSLATIONS["en"])
+    val = lang_dict.get(key)
+    if val is None:
+        val = TRANSLATIONS["en"].get(key, key)
+    return val
+
+# Start up load language
+load_app_language()
 # ── Migration: ~/.autopunchin → ~/.punchbuddy ─────────────────────────────
 _OLD_SETTINGS_DIR = os.path.expanduser("~/.autopunchin")
 _NEW_SETTINGS_DIR = os.path.dirname(SETTINGS_PATH)
@@ -1470,8 +2319,8 @@ def run_interplay_import():
 
     try:
         logging.info("=== INTERPLAY IMPORT START ===")
-        prog = _show_progress_win("PunchBuddy – Interplay Import")
-        prog["update"](0.03, "Session prüfen…")
+        prog = _show_progress_win(t("prog_title_import"))
+        prog["update"](0.03, t("prog_check_session"))
 
         # ── Schritt 0: Offene Session schließen (falls aktiviert) ─────
         settings = load_settings()
@@ -1483,7 +2332,7 @@ def run_interplay_import():
                     try:
                         sess_name = engine.session_name()
                         if sess_name:
-                            prog["update"](0.08, f"Session '{sess_name}' schließen…")
+                            prog["update"](0.08, t("prog_close_session").format(sess_name))
                             logging.info(f"  Session '{sess_name}' ist offen – wird gespeichert und geschlossen...")
                             engine.save_session()
                             logging.info(f"  Session '{sess_name}' gespeichert.")
@@ -1508,7 +2357,7 @@ def run_interplay_import():
         _VK_RETURN = 36   # Return (lokal, da nur hier gebraucht)
         _VK_1      = 18   # '1'
 
-        prog["update"](0.15, "Sequenzname aus Interplay kopieren…")
+        prog["update"](0.15, t("prog_copy_seq_name"))
         logging.info("  Import Schritt 1: Interplay Access – Sequenzname kopieren...")
         _activate_app("interplayAccess")
         try:
@@ -1555,7 +2404,7 @@ def run_interplay_import():
             seq_name = ""
 
         # Cmd+Shift+P via AppleScript: Java-Menüaktion wird so zuverlässig ausgelöst
-        prog["update"](0.35, "Sequenz an Pro Tools senden…")
+        prog["update"](0.35, t("prog_send_seq_to_pt"))
         _run_applescript(
             'tell application "System Events" to tell process "interplayAccess" '
             'to keystroke "p" using {command down, shift down}'
@@ -1567,14 +2416,14 @@ def run_interplay_import():
         # Pro Tools öffnet nach Cmd+Shift+P aus Interplay ein Fenster dessen
         # Titel sich mit jedem PT-Update ändert ("ProTools Ultimate 2026.4 (offline)").
         # "(offline)" ist der versionsstabile Substring – darauf warten statt blind schlafen.
-        prog["update"](0.43, "Warte auf Pro Tools Dialog…")
+        prog["update"](0.43, t("prog_wait_pt_dialog"))
         logging.info("  Import Schritt 2: Warte auf Pro Tools '(offline)'-Dialog...")
         _activate_app("Pro Tools")
         if _wait_for_pt_window("offline", timeout=30):
             logging.info("  Import Schritt 2: Fenster gefunden.")
         else:
             logging.warning("  Import Schritt 2: '(offline)'-Fenster nach 30s nicht erschienen – versuche trotzdem.")
-        prog["update"](0.55, "Session-Pfad einfügen…")
+        prog["update"](0.55, t("prog_paste_session_path"))
         time.sleep(0.3)
         _send_key(_VK_V, cmd=True)  # Sequenzname einfügen
         time.sleep(0.3)
@@ -1582,7 +2431,7 @@ def run_interplay_import():
         logging.info("  Import Schritt 2 OK.")
 
         # ── Schritt 3: Auf "Import Session Data" Fenster warten ───────
-        prog["update"](0.62, "Warte auf Import Session Data…")
+        prog["update"](0.62, t("prog_wait_import_session_data"))
         logging.info("  Import Schritt 3: Warte auf 'Import Session Data'...")
         if not _wait_for_pt_window("Import Session Data", timeout=60):
             logging.error("  Import Schritt 3 FEHLER: 'Import Session Data' nicht erschienen.")
@@ -1592,7 +2441,7 @@ def run_interplay_import():
 
         # ── Schritt 4: Match All + Playlist-Option setzen ─────────────
         # (Button-Clicks via AppleScript – braucht KEIN keystroke-Permission)
-        prog["update"](0.70, "Import-Optionen setzen…")
+        prog["update"](0.70, t("prog_set_import_options"))
         logging.info("  Import Schritt 4: Match All + Playlist-Option...")
         ok, out = _run_applescript_safe('''
             try
@@ -1728,7 +2577,7 @@ def run_interplay_import():
             logging.warning(f"  Import Schritt 5a (Choose): {out}")
 
         # Warte auf Track Data Fenster
-        prog["update"](0.80, "Choose + Track Data Preset…")
+        prog["update"](0.80, t("prog_choose_preset"))
         logging.info("  Import Schritt 5: Warte auf Track Data Fenster...")
         if _wait_for_pt_window("Track Data to Import", timeout=15):
             time.sleep(0.3)
@@ -1742,14 +2591,14 @@ def run_interplay_import():
         time.sleep(1.0)
 
         # ── Schritt 6: Import bestätigen (CGEvent) ────────────────────
-        prog["update"](0.87, "Import bestätigen…")
+        prog["update"](0.87, t("prog_confirm_import"))
         logging.info("  Import Schritt 6: Import bestätigen...")
         time.sleep(0.3)
         _send_key(_VK_RETURN)
         logging.info("  Import Schritt 6 OK – Import gestartet.")
 
         # ── Schritt 7: Warte bis Import Session Data Fenster weg ──────
-        prog["update"](0.90, "Import läuft…")
+        prog["update"](0.90, t("prog_import_running"))
         logging.info("  Import Schritt 7: Warte auf Abschluss (max 120s)...")
         if _wait_for_pt_window("Import Session Data", timeout=120, gone=True):
             logging.info("  Import Schritt 7 OK – Import Session Data geschlossen.")
@@ -1757,7 +2606,7 @@ def run_interplay_import():
             logging.warning("  Import Schritt 7: Fenster nach 120s noch offen.")
 
         # ── Schritt 8: Warte bis Pro Tools fertig geladen hat ─────────
-        prog["update"](0.95, "Pro Tools lädt Session…")
+        prog["update"](0.95, t("prog_pt_loading"))
         logging.info("  Import Schritt 8: Warte bis Pro Tools bereit ist...")
         time.sleep(2.0)
         for i in range(180):
@@ -1791,12 +2640,12 @@ def run_interplay_import():
             time.sleep(1.0)
         logging.info("  Import Schritt 8 OK – Pro Tools bereit.")
 
-        prog["update"](1.0, "Import abgeschlossen.")
+        prog["update"](1.0, t("prog_import_done"))
         time.sleep(0.8)
         logging.info("=== INTERPLAY IMPORT ENDE ===")
     except Exception as e:
         logging.error(f"Import Fehler: {e}", exc_info=True)
-        if prog: prog["update"](1.0, f"Fehler: {e}")
+        if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()
         # Engine nach Import schließen: Pro Tools hat jetzt eine neue Session,
@@ -1824,8 +2673,8 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
     _set_busy(True)
     try:
         logging.info("=== INTERPLAY EXPORT START ===")
-        prog = _show_progress_win("PunchBuddy – Interplay Export")
-        prog["update"](0.03, "Verbindung zu Pro Tools…")
+        prog = _show_progress_win(t("prog_title_interplay"))
+        prog["update"](0.03, t("prog_connect_pt"))
 
         engine = _get_engine()
         if engine is None:
@@ -1840,7 +2689,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             logging.debug(f"  session_dir korrigiert (Session File Backups entfernt): {session_dir}")
 
         # ── Versteckte Spuren einblenden ─────────────────────────────
-        prog["update"](0.06, "Spuren vorbereiten…")
+        prog["update"](0.06, t("prog_prep_tracks"))
         logging.info(f"  Interplay: Spuren einblenden: {export_tracks}...")
         try:
             engine.set_track_hidden_state(export_tracks, False)
@@ -1853,7 +2702,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
 
         # Video-Ende ermitteln
-        prog["update"](0.10, "Video-Ende ermitteln…")
+        prog["update"](0.10, t("prog_get_video_end"))
         logging.info(f"  Interplay: Spuren selektieren: {export_tracks}")
         engine.select_tracks_by_name(export_tracks)
         time.sleep(0.3)
@@ -1874,7 +2723,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             # Pro Tools Selection State vorbereiten und absichern
             with _protools_selection_context(engine):
                 # Überhänge trimmen (vor dem Consolidate, damit der Clip danach ein physischer Haupt-Clip bleibt)
-                prog["update"](0.15, "Überhänge trimmen…")
+                prog["update"](0.15, t("prog_trim_overhangs"))
                 _trim_overhangs(engine, export_tracks, in_time, video_end)
 
                 # Export-Spuren selektieren und Timeline setzen für Consolidate
@@ -1888,7 +2737,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
                 time.sleep(0.3)
 
                 # Consolidate
-                prog["update"](0.25, "Consolidate…")
+                prog["update"](0.25, t("prog_consolidate"))
                 logging.info("  Interplay: Consolidate...")
                 engine.consolidate_clip()
                 time.sleep(1.5)
@@ -1896,7 +2745,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
 
                 # Loudness-Korrektur
                 if settings.get("loudness_enabled", True):
-                    prog["update"](0.30, "Lautheitskorrektur…")
+                    prog["update"](0.30, t("prog_loudness"))
                     loud_tracks = settings.get("loudness_tracks", ["ST"])
                     target_lufs = settings.get("target_lufs", -23.0)
                     max_tp = settings.get("max_truepeak", -3.0)
@@ -1905,7 +2754,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             logging.info("  Interplay: Vorbereitung (Consolidate+Loudness) abgeschlossen.")
 
         # ── DMGs auswerfen (verschieben den Workspace-Count) ─────────
-        prog["update"](0.62, "DMGs auswerfen…")
+        prog["update"](0.62, t("prog_eject_dmgs"))
         try:
             result = subprocess.run(
                 ["hdiutil", "info", "-plist"],
@@ -1943,12 +2792,12 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         pt_log_start = os.path.getsize(pt_log_path) if pt_log_path and os.path.exists(pt_log_path) else 0
         logging.info(f"  Interplay: PT Log Snapshot: {pt_log_path} @ {pt_log_start:,} Bytes")
 
-        prog["update"](0.67, "Export starten…")
+        prog["update"](0.67, t("prog_start_export"))
         logging.info("  Interplay: F13 senden...")
         _send_key(_VK_F13)
 
         # ── 1. Export Comment Fenster ─────────────────────────────────
-        prog["update"](0.70, "Warte auf Export Comment…")
+        prog["update"](0.70, t("prog_wait_export_comment"))
         logging.info("  Interplay: Warte auf 'Export Comment'...")
         if not _wait_for_pt_window("Export Comment", timeout=10):
             logging.warning("  Interplay: 'Export Comment' nicht erschienen – Abbruch.")
@@ -1958,7 +2807,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         logging.info("  Interplay: Export Comment bestaetigt.")
 
         # ── 2. Export Options Fenster ─────────────────────────────────
-        prog["update"](0.73, "Export Options: Workspace wählen…")
+        prog["update"](0.73, t("prog_export_workspace"))
         logging.info("  Interplay: Warte auf 'Export Options'...")
         if not _wait_for_pt_window("Export Options", timeout=10):
             logging.warning("  Interplay: 'Export Options' nicht erschienen – Abbruch.")
@@ -2089,19 +2938,19 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         logging.info("  Interplay: Export Options bestaetigt.")
 
         # ── 3. Export-Ergebnis aus PT Log lesen, dann Bestätigung sofort senden ──
-        prog["update"](0.80, "Export läuft…")
+        prog["update"](0.80, t("prog_export_running"))
         logging.info("  Interplay: Warte auf Export-Ergebnis im PT Log...")
         export_ok, log_msg = _poll_pt_log_for_export(pt_log_path, pt_log_start, timeout=90)
 
         if export_ok is True:
             logging.info(f"  Interplay: Export ERFOLGREICH – {log_msg}")
-            prog["update"](0.93, "Export erfolgreich – Bestätigung…")
+            prog["update"](0.93, t("prog_export_success_confirm"))
         elif export_ok is False:
             logging.error(f"  Interplay: Export FEHLGESCHLAGEN – {log_msg}")
-            prog["update"](0.93, "Export fehlgeschlagen!")
+            prog["update"](0.93, t("prog_export_failed"))
         else:
             logging.warning(f"  Interplay: Export-Ergebnis unklar – {log_msg}")
-            prog["update"](0.93, "Export abgeschlossen…")
+            prog["update"](0.93, t("prog_export_done_ellipsis"))
 
         pt_dismiss_pos = os.path.getsize(pt_log_path) if pt_log_path and os.path.exists(pt_log_path) else 0
         _send_key(_VK_RETURN)
@@ -2113,20 +2962,20 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             if export_ok is False:
                 logging.warning("  Interplay: Umbenennung uebersprungen – Export war fehlerhaft.")
             else:
-                prog["update"](0.97, "Sequenz umbenennen…")
+                prog["update"](0.97, t("prog_rename_seq"))
                 logging.info("  Interplay: Starte Sequence-Umbenennung...")
                 _run_applescript('tell application "interplayAccess" to activate')
                 time.sleep(0.3)
                 _rename_sequence_in_interplay(settings)
 
-        prog["update"](1.0, "Export abgeschlossen.")
+        prog["update"](1.0, t("prog_export_done"))
         time.sleep(0.8)
         logging.info("=== INTERPLAY EXPORT ENDE ===")
         return export_ok is not False   # False nur bei erkanntem Fehler
 
     except Exception as e:
         logging.error(f"Interplay Export Fehler: {e}", exc_info=True)
-        if prog: prog["update"](1.0, f"Fehler: {e}")
+        if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
         return False
     finally:
         if prog: prog["close"]()
@@ -2586,8 +3435,8 @@ def run_wav_export_standalone(export_tracks, settings):
         logging.info("=== WAV EXPORT (Standalone) START ===")
         _set_busy(True)
         export_start_time = time.time()
-        prog = _show_progress_win("PunchBuddy – WAV Export")
-        prog["update"](0.03, "Verbindung zu Pro Tools…")
+        prog = _show_progress_win(t("prog_title_wav"))
+        prog["update"](0.03, t("prog_connect_pt"))
         engine = _get_engine()
         if engine is None:
             logging.error("PTSL Engine nicht verfuegbar.")
@@ -2596,7 +3445,7 @@ def run_wav_export_standalone(export_tracks, settings):
         session_dir = os.path.dirname(session_path)
 
         # Spuren einblenden
-        prog["update"](0.06, "Spuren vorbereiten…")
+        prog["update"](0.06, t("prog_prep_tracks"))
         logging.info(f"  Spuren einblenden: {export_tracks}...")
         try:
             engine.set_track_hidden_state(export_tracks, False)
@@ -2605,13 +3454,13 @@ def run_wav_export_standalone(export_tracks, settings):
             logging.warning(f"  Spuren einblenden: {e}")
 
         # Spuren selektieren
-        prog["update"](0.08, "Spuren vorbereiten…")
+        prog["update"](0.08, t("prog_prep_tracks"))
         logging.info(f"  Spuren selektieren: {export_tracks}")
         engine.select_tracks_by_name(export_tracks)
         time.sleep(0.3)
 
         # Video-Ende ermitteln (wie im Haupt-Export)
-        prog["update"](0.13, "Video-Ende ermitteln…")
+        prog["update"](0.13, t("prog_get_video_end"))
         in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
         video_track = _detect_video_track(engine, settings)
         video_end = None
@@ -2631,7 +3480,7 @@ def run_wav_export_standalone(export_tracks, settings):
         # Pro Tools Selection State vorbereiten und absichern
         with _protools_selection_context(engine):
             # Überhänge pro Spur löschen (Pre/Post-Material abschneiden vor Consolidate)
-            prog["update"](0.20, "Überhänge trimmen…")
+            prog["update"](0.20, t("prog_trim_overhangs"))
             _trim_overhangs(engine, export_tracks, in_time, video_end)
 
             # Export-Spuren selektieren und Range für Consolidate setzen
@@ -2645,7 +3494,7 @@ def run_wav_export_standalone(export_tracks, settings):
             time.sleep(0.3)
 
             # Consolidate
-            prog["update"](0.32, "Consolidate…")
+            prog["update"](0.32, t("prog_consolidate"))
             logging.info("  Consolidate...")
             engine.consolidate_clip()
             time.sleep(1.5)
@@ -2653,20 +3502,20 @@ def run_wav_export_standalone(export_tracks, settings):
 
             # Loudness-Korrektur
             if settings.get("loudness_enabled", True):
-                prog["update"](0.40, "Lautheitskorrektur…")
+                prog["update"](0.40, t("prog_loudness"))
                 loud_tracks = settings.get("loudness_tracks", ["ST"])
                 target_lufs = settings.get("target_lufs", -23.0)
                 max_tp = settings.get("max_truepeak", -3.0)
                 _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
 
-        prog["update"](0.88, "WAV-Dateien kopieren…")
+        prog["update"](0.88, t("prog_copy_wav"))
         _do_wav_export(export_tracks, session_dir, min_mtime=export_start_time - 10.0)
-        prog["update"](1.0, "WAV Export abgeschlossen.")
+        prog["update"](1.0, t("prog_wav_done"))
         time.sleep(0.8)
         logging.info("=== WAV EXPORT (Standalone) ENDE ===")
     except Exception as e:
         logging.error(f"WAV Export Fehler: {e}", exc_info=True)
-        if prog: prog["update"](1.0, f"Fehler: {e}")
+        if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()
         _set_busy(False)
@@ -2947,8 +3796,8 @@ def run_aaf_export_standalone(export_tracks, settings):
     try:
         logging.info("=== AAF EXPORT (Standalone) START ===")
         _set_busy(True)
-        prog = _show_progress_win("PunchBuddy – AAF Export")
-        prog["update"](0.03, "Verbindung zu Pro Tools…")
+        prog = _show_progress_win(t("prog_title_aaf"))
+        prog["update"](0.03, t("prog_connect_pt"))
         engine = _get_engine()
         if engine is None:
             logging.error("PTSL Engine nicht verfuegbar.")
@@ -2958,7 +3807,7 @@ def run_aaf_export_standalone(export_tracks, settings):
         session_name = os.path.splitext(os.path.basename(session_path))[0]
 
         # Spuren einblenden
-        prog["update"](0.06, "Spuren vorbereiten…")
+        prog["update"](0.06, t("prog_prep_tracks"))
         logging.info(f"  Spuren einblenden: {export_tracks}...")
         try:
             engine.set_track_hidden_state(export_tracks, False)
@@ -2967,13 +3816,13 @@ def run_aaf_export_standalone(export_tracks, settings):
             logging.warning(f"  Spuren einblenden: {e}")
 
         # Spuren selektieren
-        prog["update"](0.08, "Spuren vorbereiten…")
+        prog["update"](0.08, t("prog_prep_tracks"))
         logging.info(f"  Spuren selektieren: {export_tracks}")
         engine.select_tracks_by_name(export_tracks)
         time.sleep(0.3)
 
         # Video-Ende ermitteln (wie im Haupt-Export)
-        prog["update"](0.13, "Video-Ende ermitteln…")
+        prog["update"](0.13, t("prog_get_video_end"))
         in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
         video_track = _detect_video_track(engine, settings)
         video_end = None
@@ -2993,7 +3842,7 @@ def run_aaf_export_standalone(export_tracks, settings):
         # Pro Tools Selection State vorbereiten und absichern
         with _protools_selection_context(engine):
             # Überhänge pro Spur löschen (Pre/Post-Material abschneiden vor Consolidate)
-            prog["update"](0.20, "Überhänge trimmen…")
+            prog["update"](0.20, t("prog_trim_overhangs"))
             _trim_overhangs(engine, export_tracks, in_time, video_end)
 
             # Export-Spuren selektieren und Range für Consolidate setzen
@@ -3007,7 +3856,7 @@ def run_aaf_export_standalone(export_tracks, settings):
             time.sleep(0.3)
 
             # Consolidate
-            prog["update"](0.32, "Consolidate…")
+            prog["update"](0.32, t("prog_consolidate"))
             logging.info("  Consolidate...")
             engine.consolidate_clip()
             time.sleep(1.5)
@@ -3015,26 +3864,26 @@ def run_aaf_export_standalone(export_tracks, settings):
 
             # Loudness-Korrektur
             if settings.get("loudness_enabled", True):
-                prog["update"](0.40, "Lautheitskorrektur…")
+                prog["update"](0.40, t("prog_loudness"))
                 loud_tracks = settings.get("loudness_tracks", ["ST"])
                 target_lufs = settings.get("target_lufs", -23.0)
                 max_tp = settings.get("max_truepeak", -3.0)
                 _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
 
         # Spuren erneut selektieren für AAF-Export
-        prog["update"](0.85, "AAF exportieren…")
+        prog["update"](0.85, t("prog_aaf_export"))
         engine.select_tracks_by_name(export_tracks)
         time.sleep(0.2)
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
         time.sleep(0.2)
 
         _do_aaf_export(session_name, session_dir)
-        prog["update"](1.0, "AAF Export abgeschlossen.")
+        prog["update"](1.0, t("prog_aaf_done"))
         time.sleep(0.8)
         logging.info("=== AAF EXPORT (Standalone) ENDE ===")
     except Exception as e:
         logging.error(f"AAF Export Fehler: {e}", exc_info=True)
-        if prog: prog["update"](1.0, f"Fehler: {e}")
+        if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()
         _set_busy(False)
@@ -3055,7 +3904,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
             except Exception: pass
 
     logging.info(f"  Loudness-Korrektur fuer Spur '{track_name}'...")
-    _prog(0.05, f"Spur '{track_name}': Suche Audiodatei…")
+    _prog(0.05, t("prog_track_search").format(track_name))
     try:
         import soundfile as sf
         import pyloudnorm as pyln
@@ -3090,12 +3939,12 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
     logging.info(f"  Datei: {target_name} ({st_files[0][1] / 1024 / 1024:.1f} MB)")
 
     # Audio lesen
-    _prog(0.15, f"'{target_name}': Lese Audio…")
+    _prog(0.15, t("prog_track_read").format(target_name))
     data, rate = sf.read(target_file)
     logging.info(f"  Sample-Rate: {rate} Hz, Dauer: {len(data)/rate:.1f}s, Kanaele: {data.ndim}")
 
     # Lautheit messen
-    _prog(0.35, f"'{target_name}': Messe Lautheit…")
+    _prog(0.35, t("prog_track_measure").format(target_name))
     meter = pyln.Meter(rate)
     current_lufs = meter.integrated_loudness(data)
     logging.info(f"  Aktuelle Lautheit: {current_lufs:.1f} LUFS (Ziel: {target_lufs} LUFS)")
@@ -3110,7 +3959,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
     logging.info(f"  Gain-Korrektur: {gain_db:+.1f} dB")
 
     # Gain anwenden
-    _prog(0.55, f"'{target_name}': Wende Gain {gain_db:+.1f} dB an…")
+    _prog(0.55, t("prog_track_gain").format(target_name, gain_db))
     normalized = data * gain_linear
 
     # True Peak pruefen und limitieren
@@ -3130,7 +3979,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
         logging.info(f"  True Peak OK – kein Limiting noetig")
 
     # Datei ueberschreiben
-    _prog(0.70, f"'{target_name}': Schreibe Datei…")
+    _prog(0.70, t("prog_track_write").format(target_name))
     sf.write(target_file, normalized, rate)
     logging.info(f"  Datei ueberschrieben: {target_name}")
 
@@ -3184,7 +4033,7 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
         logging.warning(f"  Metadata schreiben: {e}")
 
     # Pro Tools aktualisieren und Clip umbenennen
-    _prog(0.85, f"'{target_name}': Pro Tools aktualisiert…")
+    _prog(0.85, t("prog_track_refresh").format(target_name))
     try:
         # Puffer fuer OS-Datei-Schreibvorgaenge und PT-Hintergrund-Tasks
         time.sleep(1.5)
@@ -3317,7 +4166,7 @@ def _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, m
             rect  = _AK.NSMakeRect(0, 0, WIN_W, WIN_H)
             win   = _AK.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
                 rect, _AK.NSWindowStyleMaskTitled, _AK.NSBackingStoreBuffered, False)
-            win.setTitle_("PunchBuddy Lautheitskorrektur")
+            win.setTitle_(t("prog_loudness_win_title"))
             win.setLevel_(3)
             win.center()
 
@@ -3325,7 +4174,7 @@ def _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, m
 
             lbl = _AK.NSTextField.alloc().initWithFrame_(
                 _AK.NSMakeRect(20, WIN_H - 38, WIN_W - 40, 18))
-            lbl.setStringValue_("Initialisierung…")
+            lbl.setStringValue_(t("prog_loudness_init"))
             lbl.setBezeled_(False)
             lbl.setEditable_(False)
             lbl.setDrawsBackground_(False)
@@ -3378,7 +4227,7 @@ def _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, m
             _update(_b + frac * _s, msg)
         normalize_track(engine, session_dir, lt, target_lufs, max_tp, progress_cb=_cb)
 
-    _update(1.0, "Lautheitskorrektur abgeschlossen.")
+    _update(1.0, t("prog_loudness_done"))
     time.sleep(0.8)
     _close()
 
@@ -3568,25 +4417,23 @@ class PunchBuddyApp(rumps.App):
         self.settings        = load_settings()
 
         # ── Profil A (Standard) ──────────────────────────────────────────
-        self.start_item      = rumps.MenuItem("Punch-In A starten",      callback=self._on_start)
+        self.start_item      = rumps.MenuItem(t("record_a_start"),      callback=self._on_start)
 
         # ── Profil B (zweiter Trigger) ───────────────────────────────────
-        self.start_b_item    = rumps.MenuItem("Punch-In B starten",      callback=self._on_start_b)
+        self.start_b_item    = rumps.MenuItem(t("record_b_start"),      callback=self._on_start_b)
 
         # ── Play (Auto Monitor) ──────────────────────────────────────────
-        self.play_item       = rumps.MenuItem("Play",      callback=self._on_start_play)
+        self.play_item       = rumps.MenuItem(t("play_input"),      callback=self._on_start_play)
 
         # ── Export ────────────────────────────────────────────────────────
-        self.export_item       = rumps.MenuItem("Export starten (komplett)",  callback=self._on_start_export)
-        self.wav_export_item   = rumps.MenuItem("WAV Export",  callback=self._on_start_export_wav)
-        self.aaf_export_item   = rumps.MenuItem("AAF Export",  callback=self._on_start_export_aaf)
-        self.interplay_export_item = rumps.MenuItem("Interplay Export", callback=self._on_start_export_interplay)
-        self.rename_seq_item   = rumps.MenuItem("Sequence umbenennen", callback=self._on_rename_sequence)
+        self.wav_export_item   = rumps.MenuItem(t("export_wav"),  callback=self._on_start_export_wav)
+        self.aaf_export_item   = rumps.MenuItem(t("export_aaf"),  callback=self._on_start_export_aaf)
+        self.interplay_export_item = rumps.MenuItem(t("export_interplay"), callback=self._on_start_export_interplay)
 
-        self.import_item       = rumps.MenuItem("Interplay Import starten",  callback=self._on_start_import)
+        self.import_item       = rumps.MenuItem(t("interplay_import_start"),  callback=self._on_start_import)
 
-        self.settings_item      = rumps.MenuItem("Einstellungen...",  callback=self._on_unified_settings)
-        self.open_log_item      = rumps.MenuItem("Log File öffnen", callback=self._on_open_log)
+        self.settings_item      = rumps.MenuItem(t("settings"),  callback=self._on_unified_settings)
+        self.open_log_item      = rumps.MenuItem(t("open_log"), callback=self._on_open_log)
 
         # ── Menuestruktur ────────────────────────────────────────────────
         
@@ -3599,15 +4446,11 @@ class PunchBuddyApp(rumps.App):
         ]
 
         # Export-Untermenue
-        export_menu = rumps.MenuItem("Export")
-        export_menu.add(self.export_item)
-        export_menu.add(rumps.separator)
-        export_menu.add(self.wav_export_item)
-        export_menu.add(self.aaf_export_item)
-        export_menu.add(self.interplay_export_item)
-        export_menu.add(rumps.separator)
-        export_menu.add(self.rename_seq_item)
-        self.menu.add(export_menu)
+        self.export_menu = rumps.MenuItem(t("tab_export"))
+        self.export_menu.add(self.wav_export_item)
+        self.export_menu.add(self.aaf_export_item)
+        self.export_menu.add(self.interplay_export_item)
+        self.menu.add(self.export_menu)
 
         self.menu.add(self.import_item)
         self.menu.add(rumps.separator)
@@ -3619,27 +4462,29 @@ class PunchBuddyApp(rumps.App):
 
         
         # 3. Hilfe & Info (Untermenü)
-        help_menu = rumps.MenuItem("Hilfe & Info")
+        self.help_menu = rumps.MenuItem(t("help_info"))
         
-        manual_item = rumps.MenuItem("Bedienungsanleitung", callback=self._on_help_manual)
-        docs_item = rumps.MenuItem("Technische Dokumentation", callback=self._on_help_docs)
+        self.manual_item = rumps.MenuItem(t("manual"), callback=self._on_help_manual)
+        self.docs_item = rumps.MenuItem(t("tech_docs"), callback=self._on_help_docs)
         
-        credits_title = rumps.MenuItem("Programmiert von:", callback=None)
+        self.credits_title = rumps.MenuItem(t("developed_by"), callback=None)
         credits_names = rumps.MenuItem("Jens Rühl & Christian Becker", callback=None)
         
-        opensource_item = rumps.MenuItem("Open Source Software & Lizenzen", callback=self._on_help_opensource)
+        self.opensource_item = rumps.MenuItem(t("opensource"), callback=self._on_help_opensource)
 
-        help_menu.add(manual_item)
-        help_menu.add(docs_item)
-        help_menu.add(rumps.separator)
-        help_menu.add(opensource_item)
-        help_menu.add(rumps.separator)
-        help_menu.add(credits_title)
-        help_menu.add(credits_names)
+        self.help_menu.add(self.manual_item)
+        self.help_menu.add(self.docs_item)
+        self.help_menu.add(rumps.separator)
+        self.help_menu.add(self.opensource_item)
+        self.help_menu.add(rumps.separator)
+        self.help_menu.add(self.credits_title)
+        self.help_menu.add(credits_names)
 
-        self.menu.add(help_menu)
+        self.menu.add(self.help_menu)
         self.menu.add(rumps.separator)
-        self.menu.add(rumps.MenuItem("Beenden", callback=self._on_quit))
+        
+        self.quit_item = rumps.MenuItem(t("quit"), callback=self._on_quit)
+        self.menu.add(self.quit_item)
 
 
         self._start_http()
@@ -3674,6 +4519,55 @@ class PunchBuddyApp(rumps.App):
         # ── Dock-Icon sofort beim Start anzeigen ─────────────────────────
         _ensure_dock_icon()
 
+    def load_preset_by_index(self, idx):
+        presets = self.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+        if not (0 <= idx < len(presets)):
+            logging.error(f"Preset-Index {idx} ungültig (0-{len(presets)-1})")
+            return False
+
+        p = presets[idx]
+
+        # Spurenzuweisungen anwenden
+        self.settings["tracks"] = p.get("rec_a", [])
+        self.settings["monitor_tracks"] = p.get("mon_a", [])
+        self.settings["tracks_b"] = p.get("rec_b", [])
+        self.settings["monitor_tracks_b"] = p.get("mon_b", [])
+        self.settings["export_tracks"] = p.get("export_tracks", p.get("export", []))
+        self.settings["loudness_tracks"] = p.get("loudness_tracks", [])
+        self.settings["play_monitor_tracks"] = p.get("play_monitor_tracks", [])
+
+        # Kontrollen-Keys anwenden
+        bool_keys = ["wav_export_enabled", "aaf_export_enabled", "interplay_enabled",
+                     "loudness_enabled", "interplay_rename_enabled", "import_close_session"]
+        for key in bool_keys:
+            if key in p:
+                self.settings[key] = p[key]
+
+        str_keys = ["export_start_tc", "video_track", "interplay_workspace",
+                    "export_error_keywords", "export_success_keywords",
+                    "interplay_rename_prefix", "interplay_rename_suffix"]
+        for key in str_keys:
+            if key in p:
+                self.settings[key] = p[key]
+
+        int_keys = ["extend_count", "interplay_workspace_steps",
+                    "interplay_rename_trim_start", "interplay_rename_trim_end", "http_port"]
+        for key in int_keys:
+            if key in p:
+                self.settings[key] = p[key]
+
+        float_keys = ["target_lufs", "max_truepeak"]
+        for key in float_keys:
+            if key in p:
+                self.settings[key] = p[key]
+
+        if "http_bind_host" in p:
+            self.settings["http_bind_host"] = p["http_bind_host"]
+
+        save_settings(self.settings)
+        logging.info(f"Preset {idx} ('{p.get('name')}') erfolgreich geladen und gespeichert.")
+        return True
+
     def _start_http(self):
         app_ref = self
 
@@ -3691,12 +4585,6 @@ class PunchBuddyApp(rumps.App):
                     self.end_headers()
                     self.wfile.write(b"OK")
                     app_ref._trigger_b()
-                elif self.path == "/export":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger_export()
                 elif self.path == "/import":
                     self.send_response(200)
                     self.send_header("Content-type", "text/plain")
@@ -3733,6 +4621,25 @@ class PunchBuddyApp(rumps.App):
                     self.end_headers()
                     self.wfile.write(b"OK")
                     app_ref._trigger_stop()
+                elif self.path.startswith("/preset/"):
+                    try:
+                        preset_num = int(self.path.split("/preset/")[1])
+                        idx = preset_num - 1
+                        if app_ref.load_preset_by_index(idx):
+                            self.send_response(200)
+                            self.send_header("Content-type", "text/plain; charset=utf-8")
+                            self.end_headers()
+                            self.wfile.write(f"Preset {preset_num} geladen".encode("utf-8"))
+                        else:
+                            self.send_response(400)
+                            self.send_header("Content-type", "text/plain; charset=utf-8")
+                            self.end_headers()
+                            self.wfile.write(b"Ungueltiger Preset Index")
+                    except Exception as e:
+                        self.send_response(500)
+                        self.send_header("Content-type", "text/plain; charset=utf-8")
+                        self.end_headers()
+                        self.wfile.write(str(e).encode("utf-8"))
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -3772,6 +4679,7 @@ class PunchBuddyApp(rumps.App):
             logging.info(f"  /export_interplay → Interplay Export")
             logging.info(f"  /play       → Play/Stop (Toggle)")
             logging.info(f"  /stop       → Stop (dediziert)")
+            logging.info(f"  /preset/{{1-8}} → Preset 1-8 laden")
         except Exception as e:
             self._http_port = 8899  # Fallback für URL-Anzeige
             self._http_bind_host_display = self.settings.get("http_bind_host", "127.0.0.1")
@@ -3810,27 +4718,9 @@ class PunchBuddyApp(rumps.App):
         monitor = self.settings.get("monitor_tracks_b", DEFAULT_SETTINGS["monitor_tracks_b"])
         threading.Thread(target=run_punch_in, args=(tracks, monitor), daemon=True).start()
 
-    def _trigger_export(self):
-        logging.info(">>> EXPORT TRIGGER <<<")
-        export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
-        if not export_tracks:
-            logging.warning("Keine Export-Spuren definiert – Trigger ignoriert.")
-            return
-        threading.Thread(target=run_export, args=(export_tracks, None, self.settings), daemon=True).start()
-
     def _trigger_import(self):
         logging.info(">>> IMPORT TRIGGER <<<")
         threading.Thread(target=run_interplay_import, daemon=True).start()
-
-    def _trigger_rename_sequence(self):
-        logging.info(">>> RENAME SEQUENCE TRIGGER <<<")
-        settings = load_settings()
-        threading.Thread(
-            target=_rename_sequence_in_interplay, args=(settings,), daemon=True
-        ).start()
-
-    def _on_rename_sequence(self, _):
-        self._trigger_rename_sequence()
 
     def _trigger_export_wav(self):
         logging.info(">>> WAV EXPORT TRIGGER <<<")
@@ -3851,23 +4741,38 @@ class PunchBuddyApp(rumps.App):
         ws_steps = self.settings.get("interplay_workspace_steps", 17)
         threading.Thread(target=run_interplay_export, args=(export_tracks, self.settings, ws_steps), daemon=True).start()
 
+    def update_menu_titles(self):
+        """Updates all menu titles dynamically to reflect the current language."""
+        self.start_item.title = t("record_a_start")
+        self.start_b_item.title = t("record_b_start")
+        self.play_item.title = t("play_input")
+        self.wav_export_item.title = t("export_wav")
+        self.aaf_export_item.title = t("export_aaf")
+        self.interplay_export_item.title = t("export_interplay")
+        self.import_item.title = t("interplay_import_start")
+        self.settings_item.title = t("settings")
+        self.open_log_item.title = t("open_log")
+        self.export_menu.title = t("tab_export")
+        self.help_menu.title = t("help_info")
+        self.manual_item.title = t("manual")
+        self.docs_item.title = t("tech_docs")
+        self.credits_title.title = t("developed_by")
+        self.opensource_item.title = t("opensource")
+        self.quit_item.title = t("quit")
+
     # ── Menü-Callbacks ────────────────────────────────────────────────────
 
     def _on_start(self, _):
-        logging.info(">>> MENU 'Punch-In A starten' <<<")
+        logging.info(">>> MENU 'Record A starten' <<<")
         self._trigger()
 
     def _on_start_b(self, _):
-        logging.info(">>> MENU 'Punch-In B starten' <<<")
+        logging.info(">>> MENU 'Record B starten' <<<")
         self._trigger_b()
 
     def _on_start_play(self, _):
-        logging.info(">>> MENU 'Play' <<<")
+        logging.info(">>> MENU 'Play Input' <<<")
         self._trigger_play()
-
-    def _on_start_export(self, _):
-        logging.info(">>> MENU 'Export starten' <<<")
-        self._trigger_export()
 
     def _on_start_import(self, _):
         logging.info(">>> MENU 'Interplay Import starten' <<<")
@@ -3895,7 +4800,7 @@ class PunchBuddyApp(rumps.App):
         """Öffnet das kombinierte Einstellungs- und Spurenauswahl-Fenster."""
         _ensure_dock_icon()
         if not APPKIT_OK:
-            rumps.alert("Fehler", "AppKit nicht verfügbar.")
+            rumps.alert(t("alert_error"), "AppKit nicht verfügbar.")
             return
 
         # Spuren aus Pro Tools lesen
@@ -3912,14 +4817,14 @@ class PunchBuddyApp(rumps.App):
             self._open_unified_settings_window(track_names)
         except Exception as e:
             logging.error(f"Fehler beim Oeffnen des Fensters: {e}", exc_info=True)
-            rumps.alert("Fehler", f"Fenster konnte nicht geoeffnet werden:\n{e}")
+            rumps.alert(t("alert_error"), f"Fenster konnte nicht geoeffnet werden:\n{e}")
 
     def _on_open_log(self, _):
         logging.info(">>> MENU 'Log File oeffnen' <<<")
         if os.path.exists(LOG_PATH):
             subprocess.Popen(["open", LOG_PATH])
         else:
-            rumps.alert("Hinweis", "Das Logfile wurde noch nicht erstellt.")
+            rumps.alert(t("alert_note"), t("msg_log_not_created"))
 
     def _on_start_export_wav(self, _):
         logging.info(">>> MENU 'WAV Export' <<<")
@@ -4163,9 +5068,8 @@ class PunchBuddyApp(rumps.App):
                 _sp.Popen(["open", _doc]); return
             except Exception:
                 pass
-        rumps.alert(title="Bedienungsanleitung",
-                    message="BEDIENUNGSANLEITUNG.md nicht gefunden.\n"
-                            "Bitte die Datei neben PunchBuddy.app ablegen.")
+        rumps.alert(title=t("msg_manual_not_found_title"),
+                    message=t("msg_manual_not_found_body"))
 
     def _on_help_docs(self, _):
         import subprocess as _sp
@@ -4175,25 +5079,13 @@ class PunchBuddyApp(rumps.App):
                 _sp.Popen(["open", _doc]); return
             except Exception:
                 pass
-        rumps.alert(title="Technische Dokumentation",
-                    message="TECHNISCHE_DOKUMENTATION.md nicht gefunden.\n"
-                            "Bitte die Datei neben PunchBuddy.app ablegen.")
+        rumps.alert(title=t("msg_docs_not_found_title"),
+                    message=t("msg_docs_not_found_body"))
 
     def _on_help_opensource(self, _):
         rumps.alert(
-            title="Open Source Lizenzen",
-            message="Diese Software verwendet folgende Open Source Bibliotheken:\n\n"
-                    "• Python 3.14 (PSF License)\n"
-                    "• rumps (BSD 3-Clause License)\n"
-                    "   https://github.com/jaredks/rumps\n\n"
-                    "• pyloudnorm (MIT License)\n"
-                    "   https://github.com/csteinmetz1/pyloudnorm\n\n"
-                    "• soundfile (BSD 3-Clause License)\n"
-                    "   https://github.com/bastibe/python-soundfile\n\n"
-                    "• numpy & scipy (BSD 3-Clause License)\n\n"
-                    "• ptsl - Pro Tools Scripting Library (MIT License)\n"
-                    "   https://github.com/iluvcapra/ptsl\n\n"
-                    "• PyObjC (MIT License)"
+            title=t("msg_opensource_title"),
+            message=t("msg_opensource_body")
         )
 
 
@@ -4231,7 +5123,7 @@ class PunchBuddyApp(rumps.App):
         style = AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(xx, yy, WIN_W, WIN_H), style, AppKit.NSBackingStoreBuffered, False)
-        window.setTitle_("Einstellungen PunchBuddy")
+        window.setTitle_(t("title_settings_window"))
         window.setLevel_(3)
 
         # Fenster-Icon setzen
@@ -4249,7 +5141,7 @@ class PunchBuddyApp(rumps.App):
 
         # ── TAB 1: SPUREN ────────────────────────────────────────────────
         tab1 = NSTabViewItem.alloc().initWithIdentifier_("Spuren")
-        tab1.setLabel_("Spurenauswahl")
+        tab1.setLabel_(t("tab_tracks"))
         t1_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
         tab1.setView_(t1_view)
 
@@ -4275,16 +5167,16 @@ class PunchBuddyApp(rumps.App):
             scroll_h = t1_view.frame().size.height - HEADER_H
 
             # Column Headers
-            for txt, cx, w in [("Trigger A", col_a_x, CB_W), ("Trigger B", col_b_x, CB_W),
-                                ("Export", col_export_x, CB_W), ("Loud", col_loud_x, CB_W),
-                                ("Play", col_play_x, CB_W)]:
+            for txt, cx, w in [(t("col_record_a"), col_a_x, CB_W), (t("col_record_b"), col_b_x, CB_W),
+                                (t("col_export"), col_export_x, CB_W), (t("col_loudness"), col_loud_x, CB_W + 15),
+                                (t("col_play_input"), col_play_x, CB_W + 20)]:
                 lbl = NSTextField.labelWithString_(txt)
                 lbl.setFrame_(NSMakeRect(cx, scroll_h + 15, w, 18))
                 lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
                 lbl.setAlignment_(AppKit.NSTextAlignmentCenter)
                 t1_view.addSubview_(lbl)
 
-            lbl_spur = NSTextField.labelWithString_("Spur")
+            lbl_spur = NSTextField.labelWithString_(t("col_track"))
             lbl_spur.setFrame_(NSMakeRect(PAD, scroll_h + 15, LABEL_W, 18))
             lbl_spur.setFont_(NSFont.boldSystemFontOfSize_(11))
             t1_view.addSubview_(lbl_spur)
@@ -4331,100 +5223,56 @@ class PunchBuddyApp(rumps.App):
             scroll_view.setDocumentView_(doc_view)
             t1_view.addSubview_(scroll_view)
         else:
-            nl = NSTextField.labelWithString_("Keine Spuren gefunden (Pro Tools offen?)")
+            nl = NSTextField.labelWithString_(t("msg_no_tracks"))
             nl.setFrame_(NSMakeRect(PAD, t1_view.frame().size.height / 2, WIN_W - 40, 30))
             t1_view.addSubview_(nl)
 
-        # ── TAB 2: EXPORT-EINSTELLUNGEN ──────────────────────────────────
+        # ── TAB 2: EXPORT ────────────────────────────────────────────────
         tab2 = NSTabViewItem.alloc().initWithIdentifier_("Export")
-        tab2.setLabel_("Export-Einstellungen")
+        tab2.setLabel_(t("tab_export"))
         t2_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
         tab2.setView_(t2_view)
 
         controls = {}
         t2_y = t2_view.frame().size.height - 35
 
-        # ── Rubrik 1: Export (komplett) ──
-        h1 = NSTextField.labelWithString_("Export (komplett)")
-        h1.setFrame_(NSMakeRect(PAD, t2_y, 300, 20))
-        h1.setFont_(NSFont.boldSystemFontOfSize_(13))
-        t2_view.addSubview_(h1)
-
-        t2_y -= 28
-        cb_wav = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, 20, 20))
-        cb_wav.setButtonType_(AppKit.NSButtonTypeSwitch); cb_wav.setTitle_("")
-        cb_wav.setState_(NSOnState if self.settings.get("wav_export_enabled", False) else NSOffState)
-        t2_view.addSubview_(cb_wav); controls["wav_export_enabled"] = cb_wav
-        lw = NSTextField.labelWithString_("WAV Export aktivieren")
-        lw.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 250, 20)); t2_view.addSubview_(lw)
-
-        t2_y -= 25
-        cb_aaf = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, 20, 20))
-        cb_aaf.setButtonType_(AppKit.NSButtonTypeSwitch); cb_aaf.setTitle_("")
-        cb_aaf.setState_(NSOnState if self.settings.get("aaf_export_enabled", False) else NSOffState)
-        t2_view.addSubview_(cb_aaf); controls["aaf_export_enabled"] = cb_aaf
-        la = NSTextField.labelWithString_("AAF Export aktivieren (Embedded Audio)")
-        la.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 300, 20)); t2_view.addSubview_(la)
-
-        t2_y -= 25
-        cb_ip = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, 20, 20))
-        cb_ip.setButtonType_(AppKit.NSButtonTypeSwitch); cb_ip.setTitle_("")
-        cb_ip.setState_(NSOnState if self.settings.get("interplay_enabled", False) else NSOffState)
-        t2_view.addSubview_(cb_ip); controls["interplay_enabled"] = cb_ip
-        li = NSTextField.labelWithString_("Avid Interplay NEXIS Export aktivieren")
-        li.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 300, 20)); t2_view.addSubview_(li)
-
-        # ── Trennlinie ──
-        t2_y -= 20
-        sep1 = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, WIN_W - PAD * 2 - 40, 1))
-        sep1.setBoxType_(AppKit.NSBoxSeparator)
-        t2_view.addSubview_(sep1)
-
-        # ── Rubrik 2: Export Einstellungen Allgemein ──
-        t2_y -= 25
-        h2 = NSTextField.labelWithString_("Export Einstellungen Allgemein")
+        # ── Rubrik 1: Export Einstellungen Allgemein ──
+        h2 = NSTextField.labelWithString_(t("lbl_export_settings_general"))
         h2.setFrame_(NSMakeRect(PAD, t2_y, 350, 20))
         h2.setFont_(NSFont.boldSystemFontOfSize_(13))
         t2_view.addSubview_(h2)
 
         t2_y -= 28
-        ltc = NSTextField.labelWithString_("Start-Timecode (HH:MM:SS:FF):")
+        ltc = NSTextField.labelWithString_(t("lbl_start_tc"))
         ltc.setFrame_(NSMakeRect(PAD, t2_y, 220, 20)); t2_view.addSubview_(ltc)
         tf_tc = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 120, 22))
         tf_tc.setStringValue_(str(self.settings.get("export_start_tc", "10:00:00:00")))
         t2_view.addSubview_(tf_tc); controls["export_start_tc"] = tf_tc
 
         t2_y -= 25
-        lvt = NSTextField.labelWithString_("Video-Spurname:")
+        lvt = NSTextField.labelWithString_(t("lbl_video_track"))
         lvt.setFrame_(NSMakeRect(PAD, t2_y, 220, 20)); t2_view.addSubview_(lvt)
         tf_vt2 = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 120, 22))
         tf_vt2.setStringValue_(str(self.settings.get("video_track", "Video 1")))
         t2_view.addSubview_(tf_vt2); controls["video_track"] = tf_vt2
-
-        t2_y -= 25
-        lext = NSTextField.labelWithString_("Shift+Ö Anzahl (Spurausdehnung):")
-        lext.setFrame_(NSMakeRect(PAD, t2_y, 220, 20)); t2_view.addSubview_(lext)
-        tf_ext2 = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 60, 22))
-        tf_ext2.setStringValue_(str(self.settings.get("extend_count", 7)))
-        t2_view.addSubview_(tf_ext2); controls["extend_count"] = tf_ext2
 
         t2_y -= 30
         cb_l = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, 20, 20))
         cb_l.setButtonType_(AppKit.NSButtonTypeSwitch); cb_l.setTitle_("")
         cb_l.setState_(NSOnState if self.settings.get("loudness_enabled", True) else NSOffState)
         t2_view.addSubview_(cb_l); controls["loudness_enabled"] = cb_l
-        ll = NSTextField.labelWithString_("Lautheitskorrektur aktivieren (EBU R128)")
+        ll = NSTextField.labelWithString_(t("lbl_loudness_enable"))
         ll.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 300, 20)); t2_view.addSubview_(ll)
 
         t2_y -= 25
-        ll2 = NSTextField.labelWithString_("Ziel-Lautheit (LUFS):")
+        ll2 = NSTextField.labelWithString_(t("lbl_target_lufs"))
         ll2.setFrame_(NSMakeRect(PAD + 25, t2_y, 170, 20)); t2_view.addSubview_(ll2)
         tf_lufs = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 80, 22))
         tf_lufs.setStringValue_(str(self.settings.get("target_lufs", -23.0)))
         t2_view.addSubview_(tf_lufs); controls["target_lufs"] = tf_lufs
 
         t2_y -= 25
-        ll3 = NSTextField.labelWithString_("Max True Peak (dB):")
+        ll3 = NSTextField.labelWithString_(t("lbl_max_truepeak"))
         ll3.setFrame_(NSMakeRect(PAD + 25, t2_y, 170, 20)); t2_view.addSubview_(ll3)
         tf_tp = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 80, 22))
         tf_tp.setStringValue_(str(self.settings.get("max_truepeak", -3.0)))
@@ -4436,29 +5284,22 @@ class PunchBuddyApp(rumps.App):
         sep2.setBoxType_(AppKit.NSBoxSeparator)
         t2_view.addSubview_(sep2)
 
-        # ── Rubrik 3: Interplay Export Einstellungen ──
+        # ── Rubrik 2: Interplay Export Einstellungen ──
         t2_y -= 25
-        h3 = NSTextField.labelWithString_("Interplay Export Einstellungen")
+        h3 = NSTextField.labelWithString_(t("lbl_interplay_export_settings"))
         h3.setFrame_(NSMakeRect(PAD, t2_y, 350, 20))
         h3.setFont_(NSFont.boldSystemFontOfSize_(13))
         t2_view.addSubview_(h3)
 
         t2_y -= 28
-        lws = NSTextField.labelWithString_("Workspace Name:")
-        lws.setFrame_(NSMakeRect(PAD, t2_y, 150, 20)); t2_view.addSubview_(lws)
-        tf_ws = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 200, 22))
-        tf_ws.setStringValue_(str(self.settings.get("interplay_workspace", "001-aktuelles [fad-nexis]")))
-        t2_view.addSubview_(tf_ws); controls["interplay_workspace"] = tf_ws
-
-        t2_y -= 25
-        lst = NSTextField.labelWithString_("Workspace Position (Steps):")
+        lst = NSTextField.labelWithString_(t("lbl_workspace_steps"))
         lst.setFrame_(NSMakeRect(PAD, t2_y, 200, 20)); t2_view.addSubview_(lst)
         tf_st = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 60, 22))
         tf_st.setStringValue_(str(self.settings.get("interplay_workspace_steps", 17)))
         t2_view.addSubview_(tf_st); controls["interplay_workspace_steps"] = tf_st
 
         t2_y -= 28
-        l_ekw = NSTextField.labelWithString_("Fehler-Keywords:")
+        l_ekw = NSTextField.labelWithString_(t("lbl_error_keywords"))
         l_ekw.setFrame_(NSMakeRect(PAD, t2_y, 145, 20)); t2_view.addSubview_(l_ekw)
         tf_ekw = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 150, t2_y, 400, 22))
         tf_ekw.setStringValue_(self.settings.get("export_error_keywords",
@@ -4467,7 +5308,7 @@ class PunchBuddyApp(rumps.App):
         t2_view.addSubview_(tf_ekw); controls["export_error_keywords"] = tf_ekw
 
         t2_y -= 25
-        l_skw = NSTextField.labelWithString_("Erfolgs-Keywords:")
+        l_skw = NSTextField.labelWithString_(t("lbl_success_keywords"))
         l_skw.setFrame_(NSMakeRect(PAD, t2_y, 145, 20)); t2_view.addSubview_(l_skw)
         tf_skw = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 150, t2_y, 400, 22))
         tf_skw.setStringValue_(self.settings.get("export_success_keywords",
@@ -4483,7 +5324,7 @@ class PunchBuddyApp(rumps.App):
 
         # ── Rubrik 4: Rename Sequence ──
         t2_y -= 25
-        h4 = NSTextField.labelWithString_("Rename Sequence (nach Interplay Export)")
+        h4 = NSTextField.labelWithString_(t("lbl_rename_seq"))
         h4.setFrame_(NSMakeRect(PAD, t2_y, 420, 20))
         h4.setFont_(NSFont.boldSystemFontOfSize_(13))
         t2_view.addSubview_(h4)
@@ -4493,46 +5334,80 @@ class PunchBuddyApp(rumps.App):
         cb_rn.setButtonType_(AppKit.NSButtonTypeSwitch); cb_rn.setTitle_("")
         cb_rn.setState_(NSOnState if self.settings.get("interplay_rename_enabled", False) else NSOffState)
         t2_view.addSubview_(cb_rn); controls["interplay_rename_enabled"] = cb_rn
-        l_rn = NSTextField.labelWithString_("Umbenennung nach Export aktivieren")
+        l_rn = NSTextField.labelWithString_(t("lbl_rename_enable"))
         l_rn.setFrame_(NSMakeRect(PAD + 25, t2_y + 2, 350, 20)); t2_view.addSubview_(l_rn)
 
         t2_y -= 25
-        l_ts2 = NSTextField.labelWithString_("Zeichen am Anfang löschen:")
+        l_ts2 = NSTextField.labelWithString_(t("lbl_rename_trim_start"))
         l_ts2.setFrame_(NSMakeRect(PAD + 25, t2_y, 200, 20)); t2_view.addSubview_(l_ts2)
         tf_ts = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 260, t2_y, 60, 22))
         tf_ts.setStringValue_(str(self.settings.get("interplay_rename_trim_start", 0)))
         t2_view.addSubview_(tf_ts); controls["interplay_rename_trim_start"] = tf_ts
 
         t2_y -= 25
-        l_te2 = NSTextField.labelWithString_("Zeichen am Ende löschen:")
+        l_te2 = NSTextField.labelWithString_(t("lbl_rename_trim_end"))
         l_te2.setFrame_(NSMakeRect(PAD + 25, t2_y, 200, 20)); t2_view.addSubview_(l_te2)
         tf_te = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 260, t2_y, 60, 22))
         tf_te.setStringValue_(str(self.settings.get("interplay_rename_trim_end", 0)))
         t2_view.addSubview_(tf_te); controls["interplay_rename_trim_end"] = tf_te
 
         t2_y -= 25
-        l_pf2 = NSTextField.labelWithString_("Präfix hinzufügen:")
+        l_pf2 = NSTextField.labelWithString_(t("lbl_rename_prefix"))
         l_pf2.setFrame_(NSMakeRect(PAD + 25, t2_y, 150, 20)); t2_view.addSubview_(l_pf2)
         tf_pf = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 260, t2_y, 160, 22))
         tf_pf.setStringValue_(self.settings.get("interplay_rename_prefix", ""))
         t2_view.addSubview_(tf_pf); controls["interplay_rename_prefix"] = tf_pf
 
         t2_y -= 25
-        l_sf2 = NSTextField.labelWithString_("Suffix hinzufügen:")
+        l_sf2 = NSTextField.labelWithString_(t("lbl_rename_suffix"))
         l_sf2.setFrame_(NSMakeRect(PAD + 25, t2_y, 150, 20)); t2_view.addSubview_(l_sf2)
         tf_sf = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 260, t2_y, 160, 22))
         tf_sf.setStringValue_(self.settings.get("interplay_rename_suffix", ""))
         t2_view.addSubview_(tf_sf); controls["interplay_rename_suffix"] = tf_sf
 
+        # ── Trennlinie ──
+        t2_y -= 25
+        sep_lang = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t2_y, WIN_W - PAD * 2 - 40, 1))
+        sep_lang.setBoxType_(AppKit.NSBoxSeparator)
+        t2_view.addSubview_(sep_lang)
+
+        # ── Sprache / Language ──
+        t2_y -= 28
+        h_lang = NSTextField.labelWithString_(t("language"))
+        h_lang.setFrame_(NSMakeRect(PAD, t2_y + 2, 150, 20))
+        h_lang.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t2_view.addSubview_(h_lang)
+
+        t2_y -= 30
+        lang_popup = AppKit.NSPopUpButton.alloc().initWithFrame_(
+            NSMakeRect(PAD + 25, t2_y, 220, 24))
+        lang_popup.removeAllItems()
+        langs_ui = [
+            ("Deutsch", "de"),
+            ("English", "en"),
+            ("Français", "fr"),
+            ("Español", "es"),
+            ("Português", "pt")
+        ]
+        saved_lang = self.settings.get("language", "de")
+        _selected_lang_idx = 0
+        for _ii, (_dn, _code) in enumerate(langs_ui):
+            lang_popup.addItemWithTitle_(_dn)
+            if _code == saved_lang:
+                _selected_lang_idx = _ii
+        lang_popup.selectItemAtIndex_(_selected_lang_idx)
+        t2_view.addSubview_(lang_popup)
+        controls["language"] = lang_popup
+
         # ── TAB 3: IMPORT-EINSTELLUNGEN ──────────────────────────────────
         tab3 = NSTabViewItem.alloc().initWithIdentifier_("Import")
-        tab3.setLabel_("Import")
+        tab3.setLabel_(t("tab_import"))
         t3_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
         tab3.setView_(t3_view)
 
         t3_y = t3_view.frame().size.height - 35
 
-        h_imp = NSTextField.labelWithString_("Interplay Import Einstellungen")
+        h_imp = NSTextField.labelWithString_(t("lbl_import_settings_header"))
         h_imp.setFrame_(NSMakeRect(PAD, t3_y, 400, 20))
         h_imp.setFont_(NSFont.boldSystemFontOfSize_(13))
         t3_view.addSubview_(h_imp)
@@ -4542,14 +5417,11 @@ class PunchBuddyApp(rumps.App):
         cb_close.setButtonType_(AppKit.NSButtonTypeSwitch); cb_close.setTitle_("")
         cb_close.setState_(NSOnState if self.settings.get("import_close_session", True) else NSOffState)
         t3_view.addSubview_(cb_close); controls["import_close_session"] = cb_close
-        l_close = NSTextField.labelWithString_("Offene Session vor Import schließen (speichert automatisch)")
+        l_close = NSTextField.labelWithString_(t("lbl_import_close_session"))
         l_close.setFrame_(NSMakeRect(PAD + 25, t3_y + 2, 450, 20)); t3_view.addSubview_(l_close)
 
         t3_y -= 30
-        l_desc = NSTextField.labelWithString_(
-            "Wenn aktiv, wird vor dem Interplay Import geprüft ob eine\n"
-            "Pro Tools Session geöffnet ist. Falls ja, wird sie gespeichert\n"
-            "und geschlossen, bevor der Import gestartet wird.")
+        l_desc = NSTextField.labelWithString_(t("lbl_import_close_desc"))
         l_desc.setFrame_(NSMakeRect(PAD + 25, t3_y - 30, 450, 50))
         l_desc.setFont_(NSFont.systemFontOfSize_(11))
         l_desc.setTextColor_(NSColor.secondaryLabelColor())
@@ -4559,25 +5431,25 @@ class PunchBuddyApp(rumps.App):
 
         # ── TAB 4: WEBTRIGGER ─────────────────────────────────────────────
         tab4 = NSTabViewItem.alloc().initWithIdentifier_("Webtrigger")
-        tab4.setLabel_("Webtrigger")
+        tab4.setLabel_(t("tab_webtrigger"))
         t4_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
         tab4.setView_(t4_view)
 
         t4_y = t4_view.frame().size.height - 35
 
-        h_wt = NSTextField.labelWithString_("HTTP-Server Konfiguration")
+        h_wt = NSTextField.labelWithString_(t("lbl_http_server_config"))
         h_wt.setFrame_(NSMakeRect(PAD, t4_y, 400, 20))
         h_wt.setFont_(NSFont.boldSystemFontOfSize_(13))
         t4_view.addSubview_(h_wt)
 
         t4_y -= 30
-        l_port = NSTextField.labelWithString_("Port:")
+        l_port = NSTextField.labelWithString_(t("lbl_http_port"))
         l_port.setFrame_(NSMakeRect(PAD, t4_y, 40, 22)); t4_view.addSubview_(l_port)
         tf_port = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 45, t4_y, 70, 22))
         tf_port.setStringValue_(str(self.settings.get("http_port", 8899)))
         t4_view.addSubview_(tf_port); controls["http_port"] = tf_port
 
-        l_port_info = NSTextField.labelWithString_("(Neustart nach Änderung erforderlich)")
+        l_port_info = NSTextField.labelWithString_(t("lbl_http_restart_info"))
         l_port_info.setFrame_(NSMakeRect(PAD + 125, t4_y + 2, 280, 18))
         l_port_info.setFont_(NSFont.systemFontOfSize_(11))
         l_port_info.setTextColor_(NSColor.secondaryLabelColor())
@@ -4590,13 +5462,13 @@ class PunchBuddyApp(rumps.App):
         t4_view.addSubview_(sep_iface)
 
         t4_y -= 28
-        h_iface = NSTextField.labelWithString_("Netzwerk-Interface")
+        h_iface = NSTextField.labelWithString_(t("lbl_network_interface"))
         h_iface.setFrame_(NSMakeRect(PAD, t4_y, 300, 20))
         h_iface.setFont_(NSFont.boldSystemFontOfSize_(13))
         t4_view.addSubview_(h_iface)
 
         t4_y -= 30
-        l_iface = NSTextField.labelWithString_("Interface:")
+        l_iface = NSTextField.labelWithString_(t("lbl_interface"))
         l_iface.setFrame_(NSMakeRect(PAD, t4_y + 2, 80, 20))
         l_iface.setFont_(NSFont.systemFontOfSize_(12))
         t4_view.addSubview_(l_iface)
@@ -4615,14 +5487,14 @@ class PunchBuddyApp(rumps.App):
         t4_view.addSubview_(iface_popup)
         controls["http_bind_host"] = iface_popup
 
-        l_iface_note = NSTextField.labelWithString_("(Neustart nach Änderung erforderlich)")
+        l_iface_note = NSTextField.labelWithString_(t("lbl_http_restart_info"))
         l_iface_note.setFrame_(NSMakeRect(PAD + 355, t4_y + 2, 240, 18))
         l_iface_note.setFont_(NSFont.systemFontOfSize_(11))
         l_iface_note.setTextColor_(NSColor.secondaryLabelColor())
         t4_view.addSubview_(l_iface_note)
 
         t4_y -= 35
-        h_urls = NSTextField.labelWithString_("Trigger-URLs (Klicken zum Kopieren)")
+        h_urls = NSTextField.labelWithString_(t("lbl_trigger_urls"))
         h_urls.setFrame_(NSMakeRect(PAD, t4_y, 400, 20))
         h_urls.setFont_(NSFont.boldSystemFontOfSize_(13))
         t4_view.addSubview_(h_urls)
@@ -4630,21 +5502,25 @@ class PunchBuddyApp(rumps.App):
         port = getattr(self, '_http_port', self.settings.get("http_port", 8899))
         display_host = getattr(self, '_http_bind_host_display',
                                self.settings.get("http_bind_host", "127.0.0.1"))
-        _url_entries = [
-            ("/trigger",           "Punch-In A"),
-            ("/trigger2",          "Punch-In B"),
-            ("/play",              "Play/Stop (Toggle)"),
+
+        self._webtrigger_urls = []
+
+        _core_entries = [
+            ("/trigger",           "Record A"),
+            ("/trigger2",          "Record B"),
+            ("/play",              "Play Input/Stop (Toggle)"),
             ("/stop",              "Stop (dediziert)"),
-            ("/export",            "Export (komplett)"),
             ("/export_wav",        "WAV Export"),
             ("/export_aaf",        "AAF Export"),
             ("/export_interplay",  "Interplay Export"),
             ("/import",            "Interplay Import"),
         ]
 
-        for path, label in _url_entries:
+        for path, label in _core_entries:
             t4_y -= 28
             url = f"http://{display_host}:{port}{path}"
+            self._webtrigger_urls.append((url, label))
+            tag_idx = len(self._webtrigger_urls) - 1
 
             l_url = NSTextField.labelWithString_(f"{label}:")
             l_url.setFrame_(NSMakeRect(PAD, t4_y + 2, 140, 18))
@@ -4658,19 +5534,60 @@ class PunchBuddyApp(rumps.App):
             t4_view.addSubview_(tf_url)
 
             copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 475, t4_y, 70, 22))
-            copy_btn.setTitle_("Kopieren")
+            copy_btn.setTitle_(t("btn_copy"))
             copy_btn.setBezelStyle_(NSBezelStyleRounded)
             copy_btn.setFont_(NSFont.systemFontOfSize_(11))
-            copy_btn.setTag_(_url_entries.index((path, label)))
+            copy_btn.setTag_(tag_idx)
             t4_view.addSubview_(copy_btn)
 
-        self._webtrigger_urls = [(f"http://{display_host}:{port}{p}", l) for p, l in _url_entries]
+        # ── Preset Webtrigger URLs ────────────────────────────────────────
+        t4_y -= 15
+        sep_presets = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t4_y, WIN_W - PAD * 2 - 40, 1))
+        sep_presets.setBoxType_(AppKit.NSBoxSeparator)
+        t4_view.addSubview_(sep_presets)
+
+        t4_y -= 25
+        h_preset_urls = NSTextField.labelWithString_(t("lbl_preset_trigger_urls"))
+        h_preset_urls.setFrame_(NSMakeRect(PAD, t4_y, 400, 20))
+        h_preset_urls.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t4_view.addSubview_(h_preset_urls)
+
+        presets = self.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
+        for idx in range(8):
+            preset_name = f"Preset {idx+1}"
+            if idx < len(presets):
+                preset_name = presets[idx].get("name", preset_name)
+
+            path = f"/preset/{idx+1}"
+            url = f"http://{display_host}:{port}{path}"
+            self._webtrigger_urls.append((url, preset_name))
+            tag_idx = len(self._webtrigger_urls) - 1
+
+            t4_y -= 28
+            l_url = NSTextField.labelWithString_(f"{preset_name}:")
+            l_url.setFrame_(NSMakeRect(PAD, t4_y + 2, 140, 18))
+            l_url.setFont_(NSFont.systemFontOfSize_(12))
+            t4_view.addSubview_(l_url)
+
+            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 320, 22))
+            tf_url.setStringValue_(url)
+            tf_url.setEditable_(False); tf_url.setSelectable_(True)
+            tf_url.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.0))
+            t4_view.addSubview_(tf_url)
+
+            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 475, t4_y, 70, 22))
+            copy_btn.setTitle_(t("btn_copy"))
+            copy_btn.setBezelStyle_(NSBezelStyleRounded)
+            copy_btn.setFont_(NSFont.systemFontOfSize_(11))
+            copy_btn.setTag_(tag_idx)
+            t4_view.addSubview_(copy_btn)
+
         self._webtrigger_buttons = []
 
         _wt_target = _WebtriggerCopyTarget.alloc().init()
         _wt_target._app = self
         for sv in t4_view.subviews():
-            if isinstance(sv, NSButton) and sv.title() == "Kopieren":
+            if isinstance(sv, NSButton) and sv.title() == t("btn_copy"):
                 sv.setTarget_(_wt_target)
                 sv.setAction_(objc.selector(_wt_target.onCopy_, signature=b'v@:@'))
                 self._webtrigger_buttons.append(sv)
@@ -4678,13 +5595,13 @@ class PunchBuddyApp(rumps.App):
 
         # ── TAB 5: PRESETS ──────────────────────────────────────────────────
         tab5 = NSTabViewItem.alloc().initWithIdentifier_("Presets")
-        tab5.setLabel_("Presets")
+        tab5.setLabel_(t("tab_presets"))
         t5_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
         tab5.setView_(t5_view)
 
         t5_y = t5_view.frame().size.height - 35
 
-        h_pr = NSTextField.labelWithString_("Presets")
+        h_pr = NSTextField.labelWithString_(t("tab_presets"))
         h_pr.setFrame_(NSMakeRect(PAD, t5_y, 400, 20))
         h_pr.setFont_(NSFont.boldSystemFontOfSize_(13))
         t5_view.addSubview_(h_pr)
@@ -4695,7 +5612,7 @@ class PunchBuddyApp(rumps.App):
         t5_view.addSubview_(sep_pr0)
 
         t5_y -= 35
-        l_psel = NSTextField.labelWithString_("Preset auswählen:")
+        l_psel = NSTextField.labelWithString_(t("preset_select"))
         l_psel.setFrame_(NSMakeRect(PAD, t5_y + 3, 130, 20))
         l_psel.setFont_(NSFont.systemFontOfSize_(12))
         t5_view.addSubview_(l_psel)
@@ -4710,23 +5627,23 @@ class PunchBuddyApp(rumps.App):
 
         t5_y -= 40
         btn_load_pr  = NSButton.alloc().initWithFrame_(NSMakeRect(PAD,        t5_y, 75, 28))
-        btn_load_pr.setTitle_("Laden");      btn_load_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_load_pr.setTitle_(t("btn_load"));      btn_load_pr.setBezelStyle_(NSBezelStyleRounded)
         btn_load_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_load_pr)
 
         btn_save_pr  = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 85,   t5_y, 90, 28))
-        btn_save_pr.setTitle_("Speichern");  btn_save_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_save_pr.setTitle_(t("save"));  btn_save_pr.setBezelStyle_(NSBezelStyleRounded)
         btn_save_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_save_pr)
 
         btn_rename_pr = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 185, t5_y, 105, 28))
-        btn_rename_pr.setTitle_("Umbenennen"); btn_rename_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_rename_pr.setTitle_(t("btn_rename")); btn_rename_pr.setBezelStyle_(NSBezelStyleRounded)
         btn_rename_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_rename_pr)
 
         btn_new_pr   = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 300,  t5_y, 60, 28))
-        btn_new_pr.setTitle_("Neu");         btn_new_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_new_pr.setTitle_(t("btn_new"));         btn_new_pr.setBezelStyle_(NSBezelStyleRounded)
         btn_new_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_new_pr)
 
         btn_del_pr   = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 370,  t5_y, 80, 28))
-        btn_del_pr.setTitle_("Löschen");     btn_del_pr.setBezelStyle_(NSBezelStyleRounded)
+        btn_del_pr.setTitle_(t("btn_delete"));     btn_del_pr.setBezelStyle_(NSBezelStyleRounded)
         btn_del_pr.setFont_(NSFont.systemFontOfSize_(12)); t5_view.addSubview_(btn_del_pr)
 
         t5_y -= 35
@@ -4735,18 +5652,18 @@ class PunchBuddyApp(rumps.App):
         t5_view.addSubview_(sep_pr2)
 
         t5_y -= 28
-        h_pr_info = NSTextField.labelWithString_("Enthaltene Einstellungen:")
+        h_pr_info = NSTextField.labelWithString_(t("preset_contains"))
         h_pr_info.setFrame_(NSMakeRect(PAD, t5_y, 300, 20))
         h_pr_info.setFont_(NSFont.boldSystemFontOfSize_(12))
         t5_view.addSubview_(h_pr_info)
 
         _info_text = (
-            "• Spurenzuweisungen (Trigger A, Trigger B, Export, Lautheit, Play)\n"
-            "• Monitor-Spuren (Trigger A Mon, Trigger B Mon)\n"
-            "• Export-Einstellungen (WAV, AAF, Interplay, Lautheitskorrektur)\n"
-            "• Interplay Workspace, Fehler-/Erfolgs-Keywords, Umbenennung\n"
-            "• Import-Einstellungen\n"
-            "• Webtrigger-Port und Netzwerk-Interface"
+            t("preset_info_tracks") +
+            t("preset_info_mon") +
+            t("preset_info_export") +
+            t("preset_info_keywords") +
+            t("preset_info_import") +
+            t("preset_info_webtrigger")
         )
         t5_y -= 95
         l_info = NSTextField.labelWithString_(_info_text)
@@ -4781,13 +5698,13 @@ class PunchBuddyApp(rumps.App):
         btn_del_pr.setAction_(objc.selector(target.onDeletePreset_, signature=b'v@:@'))
 
         cancel_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, 10, 100, 30))
-        cancel_btn.setTitle_("Abbrechen"); cancel_btn.setBezelStyle_(NSBezelStyleRounded)
+        cancel_btn.setTitle_(t("cancel")); cancel_btn.setBezelStyle_(NSBezelStyleRounded)
         cancel_btn.setTarget_(target)
         cancel_btn.setAction_(objc.selector(target.onCancel_, signature=b'v@:@'))
         content.addSubview_(cancel_btn)
 
         save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(WIN_W - 120, 10, 100, 30))
-        save_btn.setTitle_("Speichern"); save_btn.setBezelStyle_(NSBezelStyleRounded)
+        save_btn.setTitle_(t("save")); save_btn.setBezelStyle_(NSBezelStyleRounded)
         save_btn.setKeyEquivalent_("\r"); save_btn.setTarget_(target)
         save_btn.setAction_(objc.selector(target.onSave_, signature=b'v@:@'))
         content.addSubview_(save_btn)
@@ -4795,7 +5712,7 @@ class PunchBuddyApp(rumps.App):
         global _config_refs
         _config_refs = [window, target, controls, checkboxes, tab_view,
                         presets_tab_popup, btn_load_pr, btn_save_pr, btn_rename_pr,
-                        btn_new_pr, btn_del_pr, iface_popup]
+                        btn_new_pr, btn_del_pr, iface_popup, lang_popup]
         window.makeKeyAndOrderFront_(None)
         window.center()
 
@@ -4904,15 +5821,15 @@ class PunchBuddyApp(rumps.App):
         col_loud_x   = col_export_x + CB_W + LOUD_GAP
         col_play_x   = col_loud_x + CB_W + PLAY_GAP
 
-        # "Trigger A" Header
-        lbl_a = NSTextField.labelWithString_("Trigger A")
+        # "Record A" Header
+        lbl_a = NSTextField.labelWithString_("Record A")
         lbl_a.setFrame_(NSMakeRect(col_a_x, WIN_H - 30, CB_W * 2, 18))
         lbl_a.setFont_(NSFont.boldSystemFontOfSize_(12))
         lbl_a.setAlignment_(AppKit.NSTextAlignmentCenter)
         content.addSubview_(lbl_a)
 
-        # "Trigger B" Header
-        lbl_b = NSTextField.labelWithString_("Trigger B")
+        # "Record B" Header
+        lbl_b = NSTextField.labelWithString_("Record B")
         lbl_b.setFrame_(NSMakeRect(col_b_x, WIN_H - 30, CB_W * 2, 18))
         lbl_b.setFont_(NSFont.boldSystemFontOfSize_(12))
         lbl_b.setAlignment_(AppKit.NSTextAlignmentCenter)
@@ -4949,8 +5866,8 @@ class PunchBuddyApp(rumps.App):
         sub_export.setAlignment_(AppKit.NSTextAlignmentCenter)
         content.addSubview_(sub_export)
 
-        # "Loud" Header (orange)
-        lbl_loud = NSTextField.labelWithString_("Loud")
+        # "Loudness" Header (orange)
+        lbl_loud = NSTextField.labelWithString_("Loudness")
         lbl_loud.setFrame_(NSMakeRect(col_loud_x, WIN_H - 30, CB_W, 18))
         lbl_loud.setFont_(NSFont.boldSystemFontOfSize_(12))
         lbl_loud.setAlignment_(AppKit.NSTextAlignmentCenter)
@@ -4963,8 +5880,8 @@ class PunchBuddyApp(rumps.App):
         sub_loud.setAlignment_(AppKit.NSTextAlignmentCenter)
         content.addSubview_(sub_loud)
 
-        # "Play" Header
-        lbl_play = NSTextField.labelWithString_("Play")
+        # "Play Input" Header
+        lbl_play = NSTextField.labelWithString_("Play Input")
         lbl_play.setFrame_(NSMakeRect(col_play_x, WIN_H - 30, CB_W, 18))
         lbl_play.setFont_(NSFont.boldSystemFontOfSize_(12))
         lbl_play.setAlignment_(AppKit.NSTextAlignmentCenter)
@@ -5514,7 +6431,7 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
             save_settings(self._app.settings)
             name = p.get("name", f"Preset {idx+1}")
             logging.info(f"Preset {name} gespeichert.")
-            rumps.alert("Preset gespeichert", f"{name} wurde gespeichert.")
+            rumps.alert(t("alert_preset_saved"), f"{name} " + t("msg_preset_saved_body"))
 
     def onRenamePreset_(self, sender):
         idx = self._preset_popup.indexOfSelectedItem()
@@ -5522,8 +6439,8 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
         if 0 <= idx < len(presets):
             old_name = presets[idx].get("name", f"Preset {idx+1}")
             response = rumps.Window(
-                title="Preset umbenennen", message=f"Neuer Name fuer {old_name}:",
-                default_text=old_name, ok="Umbenennen", cancel="Abbrechen").run()
+                title=t("title_preset_rename"), message=t("msg_preset_rename_body").format(old_name),
+                default_text=old_name, ok=t("btn_rename"), cancel=t("cancel")).run()
             if response.clicked:
                 new_name = response.text.strip()
                 if new_name:
@@ -5535,10 +6452,10 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
 
     def onNewPreset_(self, sender):
         response = rumps.Window(
-            title="Neues Preset", message="Name für das neue Preset:",
-            default_text="Neues Preset", ok="Erstellen", cancel="Abbrechen").run()
+            title=t("title_preset_new"), message=t("msg_preset_new_body"),
+            default_text=t("default_preset_name"), ok=t("btn_new"), cancel=t("cancel")).run()
         if response.clicked:
-            new_name = response.text.strip() or "Neues Preset"
+            new_name = response.text.strip() or t("default_preset_name")
             presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
             new_preset = {"name": new_name, "rec_a": [], "mon_a": [], "rec_b": [], "mon_b": [],
                           "export_tracks": [], "loudness_tracks": [], "play_monitor_tracks": []}
@@ -5553,7 +6470,7 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
         idx = self._preset_popup.indexOfSelectedItem()
         presets = self._app.settings.get("track_presets", DEFAULT_SETTINGS["track_presets"])
         if len(presets) <= 1:
-            rumps.alert("Löschen nicht möglich", "Mindestens ein Preset muss vorhanden sein.")
+            rumps.alert(t("alert_preset_delete_error"), t("msg_preset_delete_error_body"))
             return
         if 0 <= idx < len(presets):
             name = presets[idx].get("name", f"Preset {idx+1}")
@@ -5579,33 +6496,35 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
             l_enabled = (self._controls["loudness_enabled"].state() == AppKit.NSOnState)
             t_lufs = float(self._controls["target_lufs"].stringValue().replace(",", "."))
             m_tp = float(self._controls["max_truepeak"].stringValue().replace(",", "."))
-            i_enabled = (self._controls["interplay_enabled"].state() == AppKit.NSOnState)
-            i_ws = self._controls["interplay_workspace"].stringValue()
+            
+            if "interplay_enabled" in self._controls:
+                self._app.settings["interplay_enabled"] = (self._controls["interplay_enabled"].state() == AppKit.NSOnState)
+            if "interplay_workspace" in self._controls:
+                self._app.settings["interplay_workspace"] = self._controls["interplay_workspace"].stringValue()
+                
             i_steps = int(self._controls["interplay_workspace_steps"].stringValue())
             e_tc = self._controls["export_start_tc"].stringValue().strip()
 
             tc_parts = e_tc.split(":")
             if len(tc_parts) != 4 or not all(p.isdigit() for p in tc_parts):
-                raise ValueError(f"Ungueltiger Timecode: '{e_tc}'\nFormat: HH:MM:SS:FF")
+                raise ValueError(t("msg_invalid_tc").format(e_tc))
             if i_steps < 0:
-                raise ValueError("Steps muss >= 0 sein")
+                raise ValueError(t("msg_steps_negative"))
 
-            w_enabled = (self._controls["wav_export_enabled"].state() == AppKit.NSOnState)
-            a_enabled = (self._controls["aaf_export_enabled"].state() == AppKit.NSOnState)
+            if "wav_export_enabled" in self._controls:
+                self._app.settings["wav_export_enabled"] = (self._controls["wav_export_enabled"].state() == AppKit.NSOnState)
+            if "aaf_export_enabled" in self._controls:
+                self._app.settings["aaf_export_enabled"] = (self._controls["aaf_export_enabled"].state() == AppKit.NSOnState)
 
             v_track = self._controls["video_track"].stringValue().strip()
             if not v_track:
-                raise ValueError("Video-Spurname darf nicht leer sein")
+                raise ValueError(t("msg_video_track_empty"))
 
             self._app.settings["video_track"] = v_track
             self._app.settings["export_start_tc"] = e_tc
-            self._app.settings["wav_export_enabled"] = w_enabled
-            self._app.settings["aaf_export_enabled"] = a_enabled
             self._app.settings["loudness_enabled"] = l_enabled
             self._app.settings["target_lufs"] = t_lufs
             self._app.settings["max_truepeak"] = m_tp
-            self._app.settings["interplay_enabled"] = i_enabled
-            self._app.settings["interplay_workspace"] = i_ws
             self._app.settings["interplay_workspace_steps"] = i_steps
 
             if "export_error_keywords" in self._controls:
@@ -5615,10 +6534,11 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                 self._app.settings["export_success_keywords"] = (
                     self._controls["export_success_keywords"].stringValue().strip())
 
-            ext_count = int(self._controls["extend_count"].stringValue())
-            if ext_count < 0:
-                raise ValueError("Shift+Ö Anzahl muss >= 0 sein")
-            self._app.settings["extend_count"] = ext_count
+            if "extend_count" in self._controls:
+                ext_count = int(self._controls["extend_count"].stringValue())
+                if ext_count < 0:
+                    raise ValueError(t("msg_extend_count_negative"))
+                self._app.settings["extend_count"] = ext_count
 
             # 3. Import-Einstellungen speichern
             if "import_close_session" in self._controls:
@@ -5647,13 +6567,15 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                 try:
                     new_port = int(self._controls["http_port"].stringValue())
                     if not (1024 <= new_port <= 65535):
-                        raise ValueError("Port muss zwischen 1024 und 65535 liegen.")
+                        raise ValueError(t("msg_invalid_port"))
                     old_port = self._app.settings.get("http_port", 8899)
                     self._app.settings["http_port"] = new_port
                     if new_port != old_port:
                         need_http_restart = True
                 except ValueError as ve:
-                    raise ValueError(f"Ungültiger Port: {ve}")
+                    if str(ve) == t("msg_invalid_port"):
+                        raise ve
+                    raise ValueError(t("msg_invalid_port_value").format(ve))
 
             if "http_bind_host" in self._controls:
                 idx_iface = self._controls["http_bind_host"].indexOfSelectedItem()
@@ -5664,6 +6586,17 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                     if new_host != old_host:
                         need_http_restart = True
 
+            # 6. Sprache speichern und Menü-Titel sofort aktualisieren
+            if "language" in self._controls:
+                langs_codes = ["de", "en", "fr", "es", "pt"]
+                idx_lang = self._controls["language"].indexOfSelectedItem()
+                if 0 <= idx_lang < len(langs_codes):
+                    new_lang = langs_codes[idx_lang]
+                    self._app.settings["language"] = new_lang
+                    global _current_lang
+                    _current_lang = new_lang
+                    self._app.update_menu_titles()
+
             save_settings(self._app.settings)
             self._window.orderOut_(None)
             logging.info("Alle Einstellungen gespeichert.")
@@ -5671,12 +6604,11 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
             if need_http_restart:
                 import threading as _thr
                 _thr.Thread(target=self._app._restart_http, daemon=True).start()
-                rumps.alert("Gespeichert", "Alle Einstellungen wurden gespeichert.\n"
-                                           "HTTP-Server wird mit neuen Netzwerkeinstellungen neugestartet.")
+                rumps.alert(t("alert_saved"), t("msg_settings_saved_http_restart"))
             else:
-                rumps.alert("Gespeichert", "Alle Einstellungen wurden gespeichert.")
+                rumps.alert(t("alert_saved"), t("msg_settings_saved_success"))
         except ValueError as e:
-            rumps.alert("Fehler", str(e))
+            rumps.alert(t("alert_error"), str(e))
 
     def onCancel_(self, sender):
         self._window.orderOut_(None)
