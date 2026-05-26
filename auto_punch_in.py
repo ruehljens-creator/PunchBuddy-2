@@ -2281,6 +2281,107 @@ def _wait_for_pt_window(title_contains, timeout=30, gone=False):
     return False
 
 
+def _wait_for_consolidate_window_gone(timeout=60):
+    """
+    Wartet bis das Consolidate-Fenster ("Zusammenführen", "Consolidating" etc.) verschwindet.
+    """
+    time.sleep(0.5)  # Kurz warten, damit das Fenster Zeit hat sich zu öffnen
+    
+    script = '''
+        tell application "System Events"
+            tell process "Pro Tools"
+                set wNames to name of every window
+            end tell
+        end tell
+        return wNames as text
+    '''
+    
+    keywords = ["consolidat", "zusammenführ", "consolida", "consolidando"]
+    
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            rc, out, _ = _run_applescript(script)
+            if rc == 0:
+                found = False
+                out_lower = out.lower()
+                for kw in keywords:
+                    if kw in out_lower:
+                        found = True
+                        break
+                if not found:
+                    logging.info("  Consolidate-Fenster nicht mehr aktiv.")
+                    return True
+                logging.info("  Warte auf Abschluss des Consolidate-Vorgangs in Pro Tools...")
+        except Exception as e:
+            logging.debug(f"Fehler bei _wait_for_consolidate_window_gone: {e}")
+        time.sleep(0.5)
+    logging.warning("  Timeout beim Warten auf das Consolidate-Fenster.")
+    return False
+
+def _wait_for_consolidated_files(session_dir, track_names, timeout=10):
+    """
+    Wartet bis für jeden Spurnamen eine .wav-Datei im "Audio Files"-Ordner existiert,
+    die eine Größe > 0 hat und deren Größe sich über einen Zeitraum von 0.2s nicht mehr ändert.
+    """
+    audio_dir = os.path.join(session_dir, "Audio Files")
+    if not os.path.isdir(audio_dir):
+        return False
+        
+    logging.info("  Warte auf Stabilität der exportierten Audiodateien...")
+    deadline = time.time() + timeout
+    
+    # Letzte bekannte Modifikationszeiten und Dateigrößen
+    last_states = {}
+    
+    while time.time() < deadline:
+        stable_count = 0
+        
+        for track_name in track_names:
+            latest_file = None
+            latest_mtime = -1.0
+            
+            try:
+                for f in os.listdir(audio_dir):
+                    base = os.path.splitext(f)[0]
+                    if (base == track_name or 
+                        base.startswith(track_name + "_") or 
+                        base.startswith(track_name + ".") or 
+                        base.startswith(track_name + "-")) and f.lower().endswith(".wav"):
+                        full = os.path.join(audio_dir, f)
+                        mtime = os.path.getmtime(full)
+                        if mtime > latest_mtime:
+                            latest_mtime = mtime
+                            latest_file = full
+            except Exception:
+                continue
+                
+            if latest_file:
+                try:
+                    size = os.path.getsize(latest_file)
+                except Exception:
+                    size = 0
+                
+                prev_size, prev_time = last_states.get(track_name, (None, None))
+                now = time.time()
+                
+                if size > 0 and prev_size == size and (now - prev_time) >= 0.2:
+                    stable_count += 1
+                else:
+                    last_states[track_name] = (size, now)
+            else:
+                pass
+                
+        if stable_count == len(track_names):
+            logging.info("  Alle exportierten Audiodateien sind stabil und vollständig.")
+            return True
+            
+        time.sleep(0.1)
+        
+    logging.warning("  Erreichte Timeout beim Warten auf stabile Audiodateien – fahre fort.")
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Interplay Import (Avid Interplay Access → Pro Tools)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2740,7 +2841,8 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
                 prog["update"](0.25, t("prog_consolidate"))
                 logging.info("  Interplay: Consolidate...")
                 engine.consolidate_clip()
-                time.sleep(1.5)
+                _wait_for_consolidate_window_gone(timeout=60)
+                _wait_for_consolidated_files(session_dir, export_tracks, timeout=10)
                 logging.info("  Interplay: Consolidate OK")
 
                 # Loudness-Korrektur
@@ -3165,7 +3267,14 @@ def run_export(export_tracks, video_track=None, settings=None):
             # ── 5. Consolidate (alle Spuren auf einmal) ──────────────────
             logging.info("Schritt 5: Consolidate...")
             engine.consolidate_clip()
-            time.sleep(1.5)
+            
+            session_path = engine.session_path()
+            session_dir = os.path.dirname(session_path)
+            if os.path.basename(session_dir) == "Session File Backups":
+                session_dir = os.path.dirname(session_dir)
+
+            _wait_for_consolidate_window_gone(timeout=60)
+            _wait_for_consolidated_files(session_dir, export_tracks, timeout=10)
             logging.info("  Consolidate OK")
 
             # ── 7. Loudness-Korrektur (EBU R128) ─────────────────────
@@ -3173,8 +3282,6 @@ def run_export(export_tracks, video_track=None, settings=None):
                 loud_tracks = settings.get("loudness_tracks", ["ST"])
                 logging.info(f"Schritt 7: Loudness-Korrektur fuer {loud_tracks}...")
                 try:
-                    session_path = engine.session_path()
-                    session_dir = os.path.dirname(session_path)
                     target_lufs = settings.get("target_lufs", -23.0)
                     max_tp = settings.get("max_truepeak", -3.0)
                     _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
@@ -3497,7 +3604,10 @@ def run_wav_export_standalone(export_tracks, settings):
             prog["update"](0.32, t("prog_consolidate"))
             logging.info("  Consolidate...")
             engine.consolidate_clip()
-            time.sleep(1.5)
+            if os.path.basename(session_dir) == "Session File Backups":
+                session_dir = os.path.dirname(session_dir)
+            _wait_for_consolidate_window_gone(timeout=60)
+            _wait_for_consolidated_files(session_dir, export_tracks, timeout=10)
             logging.info("  Consolidate OK")
 
             # Loudness-Korrektur
@@ -3859,7 +3969,10 @@ def run_aaf_export_standalone(export_tracks, settings):
             prog["update"](0.32, t("prog_consolidate"))
             logging.info("  Consolidate...")
             engine.consolidate_clip()
-            time.sleep(1.5)
+            if os.path.basename(session_dir) == "Session File Backups":
+                session_dir = os.path.dirname(session_dir)
+            _wait_for_consolidate_window_gone(timeout=60)
+            _wait_for_consolidated_files(session_dir, export_tracks, timeout=10)
             logging.info("  Consolidate OK")
 
             # Loudness-Korrektur
