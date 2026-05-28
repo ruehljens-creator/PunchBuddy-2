@@ -373,6 +373,8 @@ TRANSLATIONS = {
         "prog_export_done_ellipsis": "Export abgeschlossen…",
         "prog_rename_seq": "Sequenz umbenennen…",
         "prog_export_done": "Export abgeschlossen.",
+        "play_custom": "Play KH2 / ST Abh",
+        "log_menu_play_custom": ">>> MENU 'Play KH2 / ST Abh' <<<",
     },
     "en": {
         "record_a_start": "Start Record A",
@@ -537,6 +539,8 @@ TRANSLATIONS = {
         "prog_export_done_ellipsis": "Export complete…",
         "prog_rename_seq": "Renaming sequence…",
         "prog_export_done": "Export complete.",
+        "play_custom": "Play KH2 / ST Abh",
+        "log_menu_play_custom": ">>> MENU 'Play KH2 / ST Abh' <<<",
     },
     "fr": {
         "record_a_start": "Démarrer Record A",
@@ -701,6 +705,8 @@ TRANSLATIONS = {
         "prog_export_done_ellipsis": "Exportation terminée…",
         "prog_rename_seq": "Renommage de la séquence…",
         "prog_export_done": "Exportation terminée.",
+        "play_custom": "Lecture KH2 / ST Abh",
+        "log_menu_play_custom": ">>> MENU 'Lecture KH2 / ST Abh' <<<",
     },
     "es": {
         "record_a_start": "Iniciar Record A",
@@ -865,6 +871,8 @@ TRANSLATIONS = {
         "prog_export_done_ellipsis": "Exportación completada…",
         "prog_rename_seq": "Renombrando secuencia…",
         "prog_export_done": "Exportación completada.",
+        "play_custom": "Reproducir KH2 / ST Abh",
+        "log_menu_play_custom": ">>> MENU 'Reproducir KH2 / ST Abh' <<<",
     },
     "pt": {
         "record_a_start": "Iniciar Record A",
@@ -1029,6 +1037,8 @@ TRANSLATIONS = {
         "prog_export_done_ellipsis": "Exportação concluída…",
         "prog_rename_seq": "Renomeando sequência…",
         "prog_export_done": "Exportação concluída.",
+        "play_custom": "Reproduzir KH2 / ST Abh",
+        "log_menu_play_custom": ">>> MENU 'Reproduzir KH2 / ST Abh' <<<",
     }
 }
 
@@ -1777,6 +1787,63 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
 # Play (Monitor Auto) Workflow
 # ─────────────────────────────────────────────────────────────────────────────
 _play_monitor_tracks = []
+_play_custom_active = False
+
+def run_play_custom():
+    """Play/Stop-Toggle mit speziellen Mute-States für KH2 und ST Abh.
+    Stop-Pfad: delegiert an run_stop() – funktioniert auch während einer Aufnahme.
+    Start-Pfad: mutet KH2, entmutet ST Abh und startet Playback."""
+    global _running, _play_custom_active
+    import ptsl.PTSL_pb2 as pt
+
+    engine = _get_engine()
+    if engine is None:
+        logging.error("PTSL Engine nicht verfügbar – Abbruch (Play Custom).")
+        return
+
+    ok_ts, ts_r = _ptsl_call(engine.transport_state, label="PlayCustomTransportState", timeout=6.0)
+    if not ok_ts:
+        logging.warning("Play Custom: Konnte Transport-State nicht lesen.")
+        return
+
+    state_str = str(ts_r)
+    logging.info(f"Play Custom: Transport-State: {state_str}")
+
+    # ── STOP-Pfad ────────────────────────────────────────────────────────────
+    if state_str in ("TS_TransportRecording", "TS_TransportPlaying",
+                     "TS_TransportIsCued", "TS_TransportIsCuedForPreview",
+                     "TS_TransportIsStopping"):
+        logging.info("Play Custom: Transport active – stopping (via run_stop)...")
+        run_stop()
+        return
+
+    # ── START-Pfad ───────────────────────────────────────────────────────────
+    with _running_lock:
+        if _running:
+            logging.warning("Play Custom: Script running – start ignored.")
+            return
+        _running = True
+    _set_busy(True)
+    try:
+        logging.info("Play Custom Start: setting track mute states...")
+        # KH2 mute (True), ST Abh unmute (False)
+        _ptsl_call(engine.set_track_mute_state, ["KH2"], True, label="MuteKH2", timeout=5.0)
+        _ptsl_call(engine.set_track_mute_state, ["ST Abh"], False, label="UnmuteSTAbh", timeout=5.0)
+        
+        _play_custom_active = True
+
+        time.sleep(0.3)
+        logging.info("Play Custom Start: starting playback...")
+        _ptsl_call(engine.toggle_play_state, label="PlayCustomToggle", timeout=6.0)
+
+    except Exception as e:
+        logging.error(f"Error in run_play_custom: {e}", exc_info=True)
+        _play_custom_active = False
+    finally:
+        with _running_lock:
+            _running = False
+        _set_busy(False)
+
 
 def run_play():
     """Play/Stop-Toggle.
@@ -1962,6 +2029,29 @@ def run_stop():
                 logging.warning(f"Stop: Input Monitor AUS FEHLER (Versuch {attempt+1}/3)")
                 time.sleep(0.5 * (attempt + 1))
             _play_monitor_tracks = []
+
+        # Play-Custom-Mutes zurücksetzen falls ein /play_custom aktiv war
+        global _play_custom_active
+        if _play_custom_active:
+            time.sleep(0.3)
+            logging.info("Stop: Custom Play war aktiv – Mute-States wiederherstellen (KH2 entmuten, ST Abh muten)...")
+            for attempt in range(3):
+                ok_kh2, _ = _ptsl_call(
+                    engine.set_track_mute_state,
+                    ["KH2"], False,
+                    label=f"StopUnmuteKH2#{attempt+1}", timeout=5.0
+                )
+                ok_st, _ = _ptsl_call(
+                    engine.set_track_mute_state,
+                    ["ST Abh"], True,
+                    label=f"StopMuteSTAbh#{attempt+1}", timeout=5.0
+                )
+                if ok_kh2 and ok_st:
+                    logging.info("Stop: Mute-States wiederherstellen OK")
+                    break
+                logging.warning(f"Stop: Mute-States wiederherstellen FEHLER (Versuch {attempt+1}/3)")
+                time.sleep(0.5 * (attempt + 1))
+            _play_custom_active = False
 
         logging.info("Stop: abgeschlossen.")
 
@@ -4538,6 +4628,9 @@ class PunchBuddyApp(rumps.App):
         # ── Play (Auto Monitor) ──────────────────────────────────────────
         self.play_item       = rumps.MenuItem(t("play_input"),      callback=self._on_start_play)
 
+        # ── Play Custom ──────────────────────────────────────────────────
+        self.play_custom_item = rumps.MenuItem(t("play_custom"), callback=self._on_start_play_custom)
+
         # ── Export ────────────────────────────────────────────────────────
         self.wav_export_item   = rumps.MenuItem(t("export_wav"),  callback=self._on_start_export_wav)
         self.aaf_export_item   = rumps.MenuItem(t("export_aaf"),  callback=self._on_start_export_aaf)
@@ -4555,6 +4648,7 @@ class PunchBuddyApp(rumps.App):
             self.start_item,
             self.start_b_item,
             self.play_item,
+            self.play_custom_item,
             rumps.separator,
         ]
 
@@ -4728,6 +4822,12 @@ class PunchBuddyApp(rumps.App):
                     self.end_headers()
                     self.wfile.write(b"OK")
                     app_ref._trigger_play()
+                elif self.path == "/play_custom":
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    app_ref._trigger_play_custom()
                 elif self.path == "/stop":
                     self.send_response(200)
                     self.send_header("Content-type", "text/plain")
@@ -4791,6 +4891,7 @@ class PunchBuddyApp(rumps.App):
             logging.info(f"  /export_wav → WAV Export")
             logging.info(f"  /export_interplay → Interplay Export")
             logging.info(f"  /play       → Play/Stop (Toggle)")
+            logging.info(f"  /play_custom → Play Custom (Mute KH2/Unmute ST Abh)")
             logging.info(f"  /stop       → Stop (dediziert)")
             logging.info(f"  /preset/{{1-8}} → Preset 1-8 laden")
         except Exception as e:
@@ -4817,6 +4918,10 @@ class PunchBuddyApp(rumps.App):
     def _trigger_play(self):
         logging.info(">>> TRIGGER PLAY <<<")
         threading.Thread(target=run_play, daemon=True).start()
+
+    def _trigger_play_custom(self):
+        logging.info(">>> TRIGGER PLAY CUSTOM <<<")
+        threading.Thread(target=run_play_custom, daemon=True).start()
 
     def _trigger_stop(self):
         logging.info(">>> TRIGGER STOP <<<")
@@ -4859,6 +4964,7 @@ class PunchBuddyApp(rumps.App):
         self.start_item.title = t("record_a_start")
         self.start_b_item.title = t("record_b_start")
         self.play_item.title = t("play_input")
+        self.play_custom_item.title = t("play_custom")
         self.wav_export_item.title = t("export_wav")
         self.aaf_export_item.title = t("export_aaf")
         self.interplay_export_item.title = t("export_interplay")
@@ -4886,6 +4992,10 @@ class PunchBuddyApp(rumps.App):
     def _on_start_play(self, _):
         logging.info(">>> MENU 'Play Input' <<<")
         self._trigger_play()
+
+    def _on_start_play_custom(self, _):
+        logging.info(t("log_menu_play_custom"))
+        self._trigger_play_custom()
 
     def _on_start_import(self, _):
         logging.info(">>> MENU 'Interplay Import starten' <<<")
@@ -5225,7 +5335,7 @@ class PunchBuddyApp(rumps.App):
         NSBezelStyleRounded = AppKit.NSBezelStyleRounded
 
         WIN_W = 680
-        WIN_H = 820
+        WIN_H = 850
         PAD = 20
         BUTTON_H = 50
 
@@ -5622,6 +5732,7 @@ class PunchBuddyApp(rumps.App):
             ("/trigger",           "Record A"),
             ("/trigger2",          "Record B"),
             ("/play",              "Play Input/Stop (Toggle)"),
+            ("/play_custom",       "Play Custom (KH2/ST Abh)"),
             ("/stop",              "Stop (dediziert)"),
             ("/export_wav",        "WAV Export"),
             ("/export_aaf",        "AAF Export"),
