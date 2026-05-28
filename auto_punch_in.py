@@ -219,6 +219,7 @@ TRANSLATIONS = {
         "export_interplay": "Interplay Export",
         "interplay_import_start": "Interplay Import starten",
         "settings": "Einstellungen...",
+        "refresh_tracks": "Spuren neu einlesen",
         "open_log": "Log File öffnen",
         "help_info": "Hilfe & Info",
         "manual": "Bedienungsanleitung",
@@ -385,6 +386,7 @@ TRANSLATIONS = {
         "export_interplay": "Interplay Export",
         "interplay_import_start": "Start Interplay Import",
         "settings": "Settings...",
+        "refresh_tracks": "Refresh Track List",
         "open_log": "Open Log File",
         "help_info": "Help & Info",
         "manual": "User Manual",
@@ -551,6 +553,7 @@ TRANSLATIONS = {
         "export_interplay": "Export Interplay",
         "interplay_import_start": "Démarrer l'importation Interplay",
         "settings": "Paramètres...",
+        "refresh_tracks": "Actualiser la liste des pistes",
         "open_log": "Ouvrir le fichier de log",
         "help_info": "Aide & Info",
         "manual": "Guide d'utilisation",
@@ -717,6 +720,7 @@ TRANSLATIONS = {
         "export_interplay": "Exportación Interplay",
         "interplay_import_start": "Iniciar importación Interplay",
         "settings": "Configuración...",
+        "refresh_tracks": "Actualizar lista de pistas",
         "open_log": "Abrir archivo de log",
         "help_info": "Ayuda e Info",
         "manual": "Manual de usuario",
@@ -883,6 +887,7 @@ TRANSLATIONS = {
         "export_interplay": "Exportação Interplay",
         "interplay_import_start": "Iniciar importação Interplay",
         "settings": "Configurações...",
+        "refresh_tracks": "Atualizar lista de faixas",
         "open_log": "Abrir arquivo de log",
         "help_info": "Ajuda e Info",
         "manual": "Manual do usuário",
@@ -1413,7 +1418,10 @@ def _get_engine():
             if now - _engine_last_test < _ENGINE_TEST_COOLDOWN:
                 # Verbindung kürzlich geprüft – direkt zurückgeben
                 return _engine_instance
-            # Test ob Verbindung noch lebt – mit Timeout gegen NEXIS-Hänger
+            # Test ob Verbindung noch lebt – ohne _ptsl_lock zu halten.
+            # gRPC-Verbindungen sind thread-safe, concurrent calls sind OK.
+            # _ptsl_call aktualisiert _engine_last_test bei Erfolg, damit der
+            # Health-Check während aktiver Nutzung nicht feuert.
             test_ok = [False]
             def _test():
                 try:
@@ -1458,6 +1466,7 @@ def _close_engine():
             _engine_instance = None
             _engine_last_test = 0.0
             logging.info("PTSL Engine geschlossen.")
+    _invalidate_session_tracks()
 
 _ptsl_lock = threading.Lock()
 
@@ -1466,6 +1475,44 @@ def _invalidate_engine_health():
     die Verbindung sofort neu prüft. Kein Eingriff in NEXIS/Interplay/Session."""
     global _engine_last_test
     _engine_last_test = 0.0
+
+# ── Session-Track-Cache ───────────────────────────────────────────────────
+# Track-Namen ändern sich nicht während einer Session – einmalig lesen und
+# cachen. Invalidiert wenn die Engine geschlossen wird (Session-Wechsel,
+# Import, Reconnect). Run_play() liest Track-Listen weiterhin live,
+# da dort die Selection in Echtzeit benötigt wird.
+_cached_track_names: list | None = None
+_track_cache_lock = threading.Lock()
+
+def _invalidate_session_tracks():
+    global _cached_track_names
+    with _track_cache_lock:
+        _cached_track_names = None
+
+def refresh_session_tracks(engine) -> bool:
+    """Liest Track-Namen frisch aus PT und befüllt den Cache.
+    Gibt True zurück bei Erfolg."""
+    global _cached_track_names
+    ok, tracks = _ptsl_call(engine.track_list, label="TrackListCache", timeout=10.0)
+    if ok and tracks is not None:
+        names = [t.name for t in tracks]
+        with _track_cache_lock:
+            _cached_track_names = names
+        logging.info(f"Track-Cache befüllt: {len(names)} Spuren.")
+        return True
+    logging.warning("Track-Cache: track_list() fehlgeschlagen – Cache bleibt leer.")
+    return False
+
+def _get_cached_track_names(engine) -> list | None:
+    """Gibt gecachte Track-Namen zurück. Befüllt den Cache wenn leer."""
+    with _track_cache_lock:
+        if _cached_track_names is not None:
+            return list(_cached_track_names)
+    # Cache leer → einmalig laden
+    if refresh_session_tracks(engine):
+        with _track_cache_lock:
+            return list(_cached_track_names) if _cached_track_names is not None else None
+    return None
 
 def _ptsl_call(fn, *args, label: str = "", timeout: float = 15.0):
     """Führt PTSL-Aufruf im Thread aus. Gibt (ok, result) zurück.
@@ -1480,6 +1527,10 @@ def _ptsl_call(fn, *args, label: str = "", timeout: float = 15.0):
             return
         try:
             result[0] = fn(*args)
+            # Erfolgreicher Call = Engine lebt → Health-Check-Timer frisch setzen,
+            # damit der 8s-Cooldown nicht während aktiver Nutzung abläuft.
+            global _engine_last_test
+            _engine_last_test = time.time()
         except Exception as e:
             error[0] = e
         finally:
@@ -1557,17 +1608,16 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
             logging.error("PTSL Engine nicht verfügbar – Abbruch.")
             return
 
-        # ── 1. Session-Spuren lesen & mit Konfiguration abgleichen ─────
-        ok_tl, all_tracks = _ptsl_call(engine.track_list, label="TrackList", timeout=5.0)
-        if not ok_tl or all_tracks is None:
+        # ── 1. Session-Spuren aus Cache – kein PTSL-Call wenn bereits bekannt ─
+        pt_names = _get_cached_track_names(engine)
+        if pt_names is None:
             logging.error("Konnte Session-Spuren nicht lesen (PTSL Timeout) – Abbruch.")
             return
 
-        pt_names     = [t.name for t in all_tracks]
         rec_want     = set(t for t in target_tracks if t in pt_names)
         mon_want     = set(t for t in monitor_tracks if t in pt_names)
 
-        logging.info(f"Session-Spuren: {pt_names}")
+        logging.info(f"Session-Spuren (gecacht): {pt_names}")
         logging.info(f"Record SOLL:    {sorted(rec_want)}")
         logging.info(f"Monitor SOLL:   {sorted(mon_want)}")
 
@@ -1584,11 +1634,12 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
         time.sleep(0.2)  # CHANGE: Settling nach Pre-Roll setzen
 
         # ── Schritt 2: Record Enable (3 Versuche) ───────────────────────
+        # Timeout 15s: NEXIS-Schreiblast kann set_track_record_enable_state 10-11s verzögern
         rec_ok = False
         for attempt in range(3):
             ok, _ = _ptsl_call(
                 engine.set_track_record_enable_state, sorted(rec_want), True,
-                label=f"RecEnable#{attempt+1}", timeout=5.0
+                label=f"RecEnable#{attempt+1}", timeout=15.0
             )
             if ok:
                 logging.info(f"Record Enable AN: {sorted(rec_want)}")
@@ -1729,7 +1780,7 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
                 for attempt in range(3):
                     ok, _ = _ptsl_call(
                         engine.set_track_record_enable_state, sorted(rec_want), False,
-                        label=f"RecDisable#{attempt+1}", timeout=5.0
+                        label=f"RecDisable#{attempt+1}", timeout=15.0
                     )
                     if ok:
                         logging.info("Record Disable OK")
@@ -2035,22 +2086,24 @@ def run_stop():
         if _play_custom_active:
             time.sleep(0.3)
             logging.info("Stop: Custom Play war aktiv – Mute-States wiederherstellen (KH2 entmuten, ST Abh muten)...")
-            for attempt in range(3):
-                ok_kh2, _ = _ptsl_call(
-                    engine.set_track_mute_state,
-                    ["KH2"], False,
-                    label=f"StopUnmuteKH2#{attempt+1}", timeout=5.0
-                )
-                ok_st, _ = _ptsl_call(
-                    engine.set_track_mute_state,
-                    ["ST Abh"], True,
-                    label=f"StopMuteSTAbh#{attempt+1}", timeout=5.0
-                )
-                if ok_kh2 and ok_st:
-                    logging.info("Stop: Mute-States wiederherstellen OK")
-                    break
-                logging.warning(f"Stop: Mute-States wiederherstellen FEHLER (Versuch {attempt+1}/3)")
-                time.sleep(0.5 * (attempt + 1))
+            # Kein Retry-Sleep: wenn Track nicht in Session vorhanden schlägt ok immer fehl
+            ok_kh2, _ = _ptsl_call(
+                engine.set_track_mute_state,
+                ["KH2"], False,
+                label="StopUnmuteKH2", timeout=5.0
+            )
+            ok_st, _ = _ptsl_call(
+                engine.set_track_mute_state,
+                ["ST Abh"], True,
+                label="StopMuteSTAbh", timeout=5.0
+            )
+            if ok_kh2 and ok_st:
+                logging.info("Stop: Mute-States wiederherstellen OK")
+            else:
+                if not ok_kh2:
+                    logging.warning("Stop: KH2 entmuten FEHLER (Track ggf. nicht in Session)")
+                if not ok_st:
+                    logging.warning("Stop: ST Abh muten FEHLER (Track ggf. nicht in Session)")
             _play_custom_active = False
 
         logging.info("Stop: abgeschlossen.")
@@ -3460,19 +3513,25 @@ def _protools_selection_context(engine):
         
     # 2. Edit-Mode-Optionen sichern und Links aktivieren
     try:
-        opt_res = engine.client.run_command(pt.GetEditModeOptions, {})
+        _, opt_res = _ptsl_call(
+            lambda: engine.client.run_command(pt.GetEditModeOptions, {}),
+            label="GetEditModeOptions", timeout=5.0
+        )
         if opt_res and "edit_mode_options" in opt_res:
             orig_options = dict(opt_res["edit_mode_options"])
-            
+
         new_opts = dict(orig_options) if orig_options else {}
         new_opts["link_timeline_and_edit_selection"] = True
         new_opts["link_track_and_edit_selection"] = True
-        
+
         logging.info("  PT: Link Timeline & Link Track aktivieren...")
-        engine.client.run_command(pt.SetEditModeOptions, {"edit_mode_options": new_opts})
+        _ptsl_call(
+            lambda: engine.client.run_command(pt.SetEditModeOptions, {"edit_mode_options": new_opts}),
+            label="SetEditModeOptions", timeout=5.0
+        )
     except Exception as e:
         logging.warning(f"  Edit-Mode-Optionen konnten nicht gesetzt/gesichert werden: {e}")
-        
+
     try:
         yield
     finally:
@@ -3480,7 +3539,10 @@ def _protools_selection_context(engine):
         logging.info("  PT: Originale Edit-Optionen und Tools wiederherstellen...")
         try:
             if orig_options:
-                engine.client.run_command(pt.SetEditModeOptions, {"edit_mode_options": orig_options})
+                _ptsl_call(
+                    lambda: engine.client.run_command(pt.SetEditModeOptions, {"edit_mode_options": orig_options}),
+                    label="RestoreEditModeOptions", timeout=5.0
+                )
         except Exception as e:
             logging.warning(f"  Edit-Mode-Optionen Wiederherstellung fehlgeschlagen: {e}")
         try:
@@ -4640,6 +4702,7 @@ class PunchBuddyApp(rumps.App):
 
         self.settings_item      = rumps.MenuItem(t("settings"),  callback=self._on_unified_settings)
         self.open_log_item      = rumps.MenuItem(t("open_log"), callback=self._on_open_log)
+        self.refresh_tracks_item = rumps.MenuItem(t("refresh_tracks"), callback=self._on_refresh_tracks)
 
         # ── Menuestruktur ────────────────────────────────────────────────
         
@@ -4665,6 +4728,7 @@ class PunchBuddyApp(rumps.App):
         # 2. Einstellungen (nur noch Fenster – URLs sind im Webtrigger-Tab)
         self.menu.add(rumps.separator)
         self.menu.add(self.settings_item)
+        self.menu.add(self.refresh_tracks_item)
         self.menu.add(self.open_log_item)
 
         
@@ -4701,6 +4765,10 @@ class PunchBuddyApp(rumps.App):
             time.sleep(2.0)  # Kurz warten bis PT vollständig bereit
             logging.info("=== Startup: Pre-Roll auf AUS stellen ===")
             restore_preroll()
+            # Track-Cache beim Start befüllen – erspart PTSL-Call beim ersten Record
+            eng = _get_engine()
+            if eng is not None:
+                refresh_session_tracks(eng)
 
         threading.Thread(target=_startup_preroll_check, daemon=True, name="StartupPreRoll").start()
 
@@ -4778,62 +4846,36 @@ class PunchBuddyApp(rumps.App):
     def _start_http(self):
         app_ref = self
 
+        class _ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
         class Handler(http.server.BaseHTTPRequestHandler):
+            def _fire(self, fn):
+                """Antwortet sofort mit 200 OK und führt fn in eigenem Thread aus."""
+                self.send_response(200)
+                self.send_header("Content-type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"OK")
+                threading.Thread(target=fn, daemon=True).start()
+
             def do_GET(self):
                 if self.path == "/trigger":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger()
+                    self._fire(app_ref._trigger)
                 elif self.path == "/trigger2":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger_b()
+                    self._fire(app_ref._trigger_b)
                 elif self.path == "/import":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger_import()
+                    self._fire(app_ref._trigger_import)
                 elif self.path == "/export_wav":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger_export_wav()
+                    self._fire(app_ref._trigger_export_wav)
                 elif self.path == "/export_aaf":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger_export_aaf()
+                    self._fire(app_ref._trigger_export_aaf)
                 elif self.path == "/export_interplay":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger_export_interplay()
+                    self._fire(app_ref._trigger_export_interplay)
                 elif self.path == "/play":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger_play()
+                    self._fire(app_ref._trigger_play)
                 elif self.path == "/play_custom":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger_play_custom()
-                elif self.path == "/stop":
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                    app_ref._trigger_stop()
+                    self._fire(app_ref._trigger_play_custom)
                 elif self.path.startswith("/preset/"):
                     try:
                         preset_num = int(self.path.split("/preset/")[1])
@@ -4861,15 +4903,14 @@ class PunchBuddyApp(rumps.App):
                 pass  # kein HTTP-Logging in Konsole
 
         try:
-            socketserver.TCPServer.allow_reuse_address = True
             port = self.settings.get("http_port", 8899)
             bind_host = self.settings.get("http_bind_host", "127.0.0.1")
             actual_bind = "127.0.0.1" if bind_host == "127.0.0.1" else "0.0.0.0"
-            
+
             self.httpd = None
             for attempt in range(4):
                 try:
-                    self.httpd = socketserver.TCPServer((actual_bind, port), Handler)
+                    self.httpd = _ThreadingHTTPServer((actual_bind, port), Handler)
                     break
                 except OSError as e:
                     if attempt < 3:
@@ -4877,7 +4918,7 @@ class PunchBuddyApp(rumps.App):
                         time.sleep(0.5)
                     else:
                         logging.warning(f"Port {port} dauerhaft belegt – weiche auf freien Port aus (wird NICHT gespeichert)...")
-                        self.httpd = socketserver.TCPServer((actual_bind, 0), Handler)
+                        self.httpd = _ThreadingHTTPServer((actual_bind, 0), Handler)
                         port = self.httpd.server_address[1]
             self._http_port = port
             self._http_bind_host_display = bind_host
@@ -4892,7 +4933,6 @@ class PunchBuddyApp(rumps.App):
             logging.info(f"  /export_interplay → Interplay Export")
             logging.info(f"  /play       → Play/Stop (Toggle)")
             logging.info(f"  /play_custom → Play Custom (Mute KH2/Unmute ST Abh)")
-            logging.info(f"  /stop       → Stop (dediziert)")
             logging.info(f"  /preset/{{1-8}} → Preset 1-8 laden")
         except Exception as e:
             self._http_port = 8899  # Fallback für URL-Anzeige
@@ -4922,10 +4962,6 @@ class PunchBuddyApp(rumps.App):
     def _trigger_play_custom(self):
         logging.info(">>> TRIGGER PLAY CUSTOM <<<")
         threading.Thread(target=run_play_custom, daemon=True).start()
-
-    def _trigger_stop(self):
-        logging.info(">>> TRIGGER STOP <<<")
-        threading.Thread(target=run_stop, daemon=True).start()
 
     def _trigger_b(self):
         logging.info(">>> TRIGGER B <<<")
@@ -4970,6 +5006,7 @@ class PunchBuddyApp(rumps.App):
         self.interplay_export_item.title = t("export_interplay")
         self.import_item.title = t("interplay_import_start")
         self.settings_item.title = t("settings")
+        self.refresh_tracks_item.title = t("refresh_tracks")
         self.open_log_item.title = t("open_log")
         self.export_menu.title = t("tab_export")
         self.help_menu.title = t("help_info")
@@ -5031,8 +5068,9 @@ class PunchBuddyApp(rumps.App):
         try:
             engine = _get_engine()
             if engine is not None:
-                all_tracks = engine.track_list()
-                track_names = [t.name for t in all_tracks]
+                ok, all_tracks = _ptsl_call(engine.track_list, label="SettingsTrackList", timeout=5.0)
+                if ok and all_tracks:
+                    track_names = [t.name for t in all_tracks]
         except Exception as e:
             logging.warning(f"Konnte Spuren nicht aus Pro Tools lesen: {e}")
 
@@ -5041,6 +5079,21 @@ class PunchBuddyApp(rumps.App):
         except Exception as e:
             logging.error(f"Fehler beim Oeffnen des Fensters: {e}", exc_info=True)
             rumps.alert(t("alert_error"), f"Fenster konnte nicht geoeffnet werden:\n{e}")
+
+    def _on_refresh_tracks(self, _):
+        logging.info(">>> MENU 'Spuren neu einlesen' <<<")
+        _invalidate_session_tracks()
+        eng = _get_engine()
+        if eng is None:
+            rumps.alert(t("alert_error"), "PTSL nicht verfügbar.")
+            return
+        ok = refresh_session_tracks(eng)
+        if ok:
+            with _track_cache_lock:
+                n = len(_cached_track_names) if _cached_track_names else 0
+            rumps.notification("PunchBuddy", t("refresh_tracks"), f"{n} Spuren eingelesen.")
+        else:
+            rumps.alert(t("alert_error"), "Spuren konnten nicht gelesen werden.")
 
     def _on_open_log(self, _):
         logging.info(">>> MENU 'Log File oeffnen' <<<")
@@ -5956,7 +6009,10 @@ class PunchBuddyApp(rumps.App):
             if engine is None:
                 rumps.alert("Fehler", "PTSL Engine nicht verfügbar.")
                 return
-            all_tracks = engine.track_list()
+            ok, all_tracks = _ptsl_call(engine.track_list, label="ConfigTrackList", timeout=5.0)
+            if not ok or not all_tracks:
+                rumps.alert("Fehler", "Konnte Spuren nicht aus Pro Tools lesen:\nTimeout")
+                return
             track_names = [t.name for t in all_tracks]
         except Exception as e:
             rumps.alert("Fehler", f"Konnte Spuren nicht aus Pro Tools lesen:\n{e}")
@@ -6874,27 +6930,7 @@ def _cleanup_watchdog():
                     pass
             _watchdog_proc = None
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Keep-Alive Thread (PTSL)
-# ─────────────────────────────────────────────────────────────────────────────
-def _keepalive_loop():
-    """Wird einmal pro Minute ausgefuehrt. Pingt die PTSL Engine an, 
-    falls diese gerade nicht verwendet wird (niedrige Priorität)."""
-    while True:
-        time.sleep(60)
-        if _ptsl_lock.acquire(blocking=False):
-            try:
-                if _engine_instance is not None:
-                    _engine_instance.ptsl_version()
-            except Exception as e:
-                logging.debug(f"Keepalive ping fehlgeschlagen: {e}")
-            finally:
-                _ptsl_lock.release()
-
 if __name__ == "__main__":
-    import threading
-    t_keep = threading.Thread(target=_keepalive_loop, daemon=True, name="PTSLKeepalive")
-    t_keep.start()
 
     import sys
     import subprocess as _sp
