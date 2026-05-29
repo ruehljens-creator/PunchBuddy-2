@@ -1414,42 +1414,58 @@ _ENGINE_TEST_COOLDOWN = 8.0  # Sekunden zwischen Health-Checks
 
 def _get_engine():
     """Gibt eine wiederverwendbare PTSL-Engine zurück. Reconnect bei Fehler.
-    Health-Check wird max. alle _ENGINE_TEST_COOLDOWN Sekunden ausgeführt,
-    um bei frequenten Aufrufen keine 3s-Timeouts zu erzeugen.
+    Health-Check wird max. alle _ENGINE_TEST_COOLDOWN Sekunden ausgeführt.
+    _engine_lock wird NIE während des t.join() gehalten – konkurrierende
+    Trigger-Threads blockieren so nicht hinter dem Health-Check-Timeout.
     """
     global _engine_instance, _engine_last_test
+
+    # ── Schnellpfad: Lock kurz holen, Referenz lesen, sofort freigeben ───
     with _engine_lock:
-        if _engine_instance is not None:
-            now = time.time()
-            if now - _engine_last_test < _ENGINE_TEST_COOLDOWN:
-                # Verbindung kürzlich geprüft – direkt zurückgeben
-                return _engine_instance
-            # Test ob Verbindung noch lebt – ohne _ptsl_lock zu halten.
-            # gRPC-Verbindungen sind thread-safe, concurrent calls sind OK.
-            # _ptsl_call aktualisiert _engine_last_test bei Erfolg, damit der
-            # Health-Check während aktiver Nutzung nicht feuert.
-            test_ok = [False]
-            def _test():
-                try:
-                    _engine_instance.transport_state()
-                    test_ok[0] = True
-                except Exception:
-                    pass
-            t = threading.Thread(target=_test, daemon=True, name="EngineTest")
-            t.start()
-            t.join(timeout=10.0)  # 10s – NEXIS kann PTSL-Antworten verzögern
+        instance = _engine_instance
+        last_test = _engine_last_test
+
+    if instance is not None:
+        now = time.time()
+        if now - last_test < _ENGINE_TEST_COOLDOWN:
+            return instance
+
+        # Optimistisch _engine_last_test vorstellen: andere Threads überspringen
+        # den Health-Check während dieser läuft und geben die bestehende Engine zurück.
+        with _engine_lock:
+            _engine_last_test = now
+
+        # Health-Check AUSSERHALB des Locks (join kann bis 10s dauern)
+        test_ok = [False]
+        def _test():
+            try:
+                instance.transport_state()
+                test_ok[0] = True
+            except Exception:
+                pass
+        t = threading.Thread(target=_test, daemon=True, name="EngineTest")
+        t.start()
+        t.join(timeout=10.0)
+
+        with _engine_lock:
             if test_ok[0]:
                 _engine_last_test = time.time()
-                return _engine_instance
+                return _engine_instance  # ggf. zwischenzeitlich ersetzt
             else:
                 logging.warning("PTSL Engine: Verbindung verloren/blockiert – reconnect...")
-                try:
-                    _engine_instance.close()
-                except Exception:
-                    pass
-                _engine_instance = None
+                if _engine_instance is instance:
+                    try:
+                        instance.close()
+                    except Exception:
+                        pass
+                    _engine_instance = None
+                elif _engine_instance is not None:
+                    return _engine_instance  # anderer Thread hat bereits reconnected
 
-        # Neue Engine erstellen
+    # ── Neue Engine erstellen ─────────────────────────────────────────────
+    with _engine_lock:
+        if _engine_instance is not None:
+            return _engine_instance  # anderer Thread war schneller
         try:
             eng = ptsl.Engine(company_name="PunchBuddy", application_name="PunchBuddy")
             _engine_instance = eng
@@ -1882,7 +1898,7 @@ def run_play_custom():
         _running = True
     _set_busy(True)
     try:
-        cfg = load_settings()
+        cfg = _app_ref.settings if _app_ref is not None else load_settings()
         ch1 = cfg.get("play_custom_ch1_track", "")
         ch1_mute_start = cfg.get("play_custom_ch1_mute_start", True)
         ch2 = cfg.get("play_custom_ch2_track", "")
@@ -2100,7 +2116,7 @@ def run_stop():
         global _play_custom_active
         if _play_custom_active:
             time.sleep(0.3)
-            cfg = load_settings()
+            cfg = _app_ref.settings if _app_ref is not None else load_settings()
             ch1 = cfg.get("play_custom_ch1_track", "")
             ch1_mute_stop = cfg.get("play_custom_ch1_mute_stop", False)
             ch2 = cfg.get("play_custom_ch2_track", "")
@@ -2135,7 +2151,7 @@ def run_goto_start():
     if engine is None:
         logging.error("PTSL Engine nicht verfügbar – Abbruch (GotoStart).")
         return
-    tc = settings.get("export_start_tc", "10:00:00:00") + ".00"
+    tc = load_settings().get("export_start_tc", "10:00:00:00") + ".00"
     logging.info(f">>> GOTO START: {tc} <<<")
     ok, _ = _ptsl_call(
         lambda: engine.set_timeline_selection(in_time=tc, out_time=tc),
