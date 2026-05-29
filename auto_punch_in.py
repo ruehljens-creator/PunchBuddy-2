@@ -4847,6 +4847,7 @@ class PunchBuddyApp(rumps.App):
 
 
         self._start_http()
+        self._start_keepalive()
 
         # ── Startup: Pre-Roll sicherstellen dass AUS ────────────────────────
         def _startup_preroll_check():
@@ -5039,6 +5040,30 @@ class PunchBuddyApp(rumps.App):
                 pass
             self.httpd = None
         self._start_http()
+
+    def _start_keepalive(self):
+        """Startet einen Hintergrund-Thread der alle 30s transport_state() abfragt.
+        Hält die PTSL-Verbindung warm und verhindert den NEXIS-Cold-Start-Delay."""
+        _KEEPALIVE_INTERVAL = 30.0
+
+        def _loop():
+            while True:
+                time.sleep(_KEEPALIVE_INTERVAL)
+                # Nicht pingen während Aufnahme oder Import läuft
+                if _running or _import_running:
+                    continue
+                with _engine_lock:
+                    eng = _engine_instance
+                if eng is None:
+                    continue
+                try:
+                    eng.transport_state()
+                    logging.debug("KeepAlive: transport_state() OK")
+                except Exception as e:
+                    logging.debug(f"KeepAlive: transport_state() fehlgeschlagen: {e}")
+
+        threading.Thread(target=_loop, daemon=True, name="PTSLKeepAlive").start()
+        logging.info("PTSL Keep-Alive gestartet (Intervall: 30s)")
 
     def _trigger(self):
         logging.info(">>> TRIGGER A <<<")
