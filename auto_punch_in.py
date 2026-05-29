@@ -204,6 +204,12 @@ DEFAULT_SETTINGS = {
     "http_port": 8899,
     "http_bind_host": "127.0.0.1",
     "language": "de",
+    "play_custom_ch1_track": "KH2",
+    "play_custom_ch1_mute_start": True,
+    "play_custom_ch1_mute_stop": False,
+    "play_custom_ch2_track": "ST Abh",
+    "play_custom_ch2_mute_start": False,
+    "play_custom_ch2_mute_stop": True,
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1876,11 +1882,20 @@ def run_play_custom():
         _running = True
     _set_busy(True)
     try:
+        cfg = load_settings()
+        ch1 = cfg.get("play_custom_ch1_track", "")
+        ch1_mute_start = cfg.get("play_custom_ch1_mute_start", True)
+        ch2 = cfg.get("play_custom_ch2_track", "")
+        ch2_mute_start = cfg.get("play_custom_ch2_mute_start", False)
+
         logging.info("Play Custom Start: setting track mute states...")
-        # KH2 mute (True), ST Abh unmute (False)
-        _ptsl_call(engine.set_track_mute_state, ["KH2"], True, label="MuteKH2", timeout=5.0)
-        _ptsl_call(engine.set_track_mute_state, ["ST Abh"], False, label="UnmuteSTAbh", timeout=5.0)
-        
+        if ch1:
+            _ptsl_call(engine.set_track_mute_state, [ch1], ch1_mute_start,
+                       label="PlayCustomMuteCh1", timeout=5.0)
+        if ch2:
+            _ptsl_call(engine.set_track_mute_state, [ch2], ch2_mute_start,
+                       label="PlayCustomMuteCh2", timeout=5.0)
+
         _play_custom_active = True
 
         time.sleep(0.3)
@@ -2085,25 +2100,26 @@ def run_stop():
         global _play_custom_active
         if _play_custom_active:
             time.sleep(0.3)
-            logging.info("Stop: Custom Play war aktiv – Mute-States wiederherstellen (KH2 entmuten, ST Abh muten)...")
-            # Kein Retry-Sleep: wenn Track nicht in Session vorhanden schlägt ok immer fehl
-            ok_kh2, _ = _ptsl_call(
-                engine.set_track_mute_state,
-                ["KH2"], False,
-                label="StopUnmuteKH2", timeout=5.0
-            )
-            ok_st, _ = _ptsl_call(
-                engine.set_track_mute_state,
-                ["ST Abh"], True,
-                label="StopMuteSTAbh", timeout=5.0
-            )
-            if ok_kh2 and ok_st:
+            cfg = load_settings()
+            ch1 = cfg.get("play_custom_ch1_track", "")
+            ch1_mute_stop = cfg.get("play_custom_ch1_mute_stop", False)
+            ch2 = cfg.get("play_custom_ch2_track", "")
+            ch2_mute_stop = cfg.get("play_custom_ch2_mute_stop", True)
+            logging.info(f"Stop: Custom Play war aktiv – Mute-States wiederherstellen "
+                         f"({ch1}→{'mute' if ch1_mute_stop else 'unmute'}, "
+                         f"{ch2}→{'mute' if ch2_mute_stop else 'unmute'})...")
+            ok1, ok2 = True, True
+            if ch1:
+                ok1, _ = _ptsl_call(engine.set_track_mute_state, [ch1], ch1_mute_stop,
+                                    label="StopRestoreCh1", timeout=5.0)
+            if ch2:
+                ok2, _ = _ptsl_call(engine.set_track_mute_state, [ch2], ch2_mute_stop,
+                                    label="StopRestoreCh2", timeout=5.0)
+            if ok1 and ok2:
                 logging.info("Stop: Mute-States wiederherstellen OK")
             else:
-                if not ok_kh2:
-                    logging.warning("Stop: KH2 entmuten FEHLER (Track ggf. nicht in Session)")
-                if not ok_st:
-                    logging.warning("Stop: ST Abh muten FEHLER (Track ggf. nicht in Session)")
+                if not ok1: logging.warning(f"Stop: Mute-Restore '{ch1}' FEHLER (Track ggf. nicht in Session)")
+                if not ok2: logging.warning(f"Stop: Mute-Restore '{ch2}' FEHLER (Track ggf. nicht in Session)")
             _play_custom_active = False
 
         logging.info("Stop: abgeschlossen.")
@@ -2112,6 +2128,23 @@ def run_stop():
         logging.error(f"Fehler in run_stop: {e}", exc_info=True)
     finally:
         _stop_lock.release()
+
+def run_goto_start():
+    """Setzt den Pro Tools Cursor auf den in den Einstellungen definierten Start-Timecode."""
+    engine = _get_engine()
+    if engine is None:
+        logging.error("PTSL Engine nicht verfügbar – Abbruch (GotoStart).")
+        return
+    tc = settings.get("export_start_tc", "10:00:00:00") + ".00"
+    logging.info(f">>> GOTO START: {tc} <<<")
+    ok, _ = _ptsl_call(
+        lambda: engine.set_timeline_selection(in_time=tc, out_time=tc),
+        label="GotoStart", timeout=5.0
+    )
+    if ok:
+        logging.info(f"GotoStart: Cursor auf {tc} gesetzt.")
+    else:
+        logging.warning(f"GotoStart: set_timeline_selection fehlgeschlagen.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Menüleisten-Status (Idle / Busy)
@@ -4582,6 +4615,24 @@ def _show_progress_win(title):
 # ─────────────────────────────────────────────────────────────────────────────
 _config_refs = []  # Wird in _open_config_window befüllt
 
+def _close_existing_settings_window():
+    """Schließt ein noch offenes Einstellungsfenster und gibt alle Referenzen frei.
+    Verhindert den PyObjC-Crash der entsteht wenn _config_refs überschrieben wird
+    während ObjC noch eine schwache Referenz auf den alten target hält."""
+    global _config_refs
+    if not _config_refs:
+        return False  # kein Fenster offen
+    try:
+        win = _config_refs[0]
+        if win.isVisible():
+            win.makeKeyAndOrderFront_(None)
+            return True  # Fenster ist sichtbar → nach vorne bringen, kein neues öffnen
+        win.close()
+    except Exception:
+        pass
+    _config_refs = []
+    return False  # Fenster war geschlossen → neu öffnen erlaubt
+
 # ── Icon-Pfad ermitteln (global, wird für Dock, Fenster und Menüleiste verwendet) ─
 _ICON_PNG_PATH = None
 
@@ -4876,6 +4927,8 @@ class PunchBuddyApp(rumps.App):
                     self._fire(app_ref._trigger_play)
                 elif self.path == "/play_custom":
                     self._fire(app_ref._trigger_play_custom)
+                elif self.path == "/start":
+                    self._fire(app_ref._trigger_start)
                 elif self.path.startswith("/preset/"):
                     try:
                         preset_num = int(self.path.split("/preset/")[1])
@@ -4933,6 +4986,7 @@ class PunchBuddyApp(rumps.App):
             logging.info(f"  /export_interplay → Interplay Export")
             logging.info(f"  /play       → Play/Stop (Toggle)")
             logging.info(f"  /play_custom → Play Custom (Mute KH2/Unmute ST Abh)")
+            logging.info(f"  /start       → Cursor auf Start-Timecode")
             logging.info(f"  /preset/{{1-8}} → Preset 1-8 laden")
         except Exception as e:
             self._http_port = 8899  # Fallback für URL-Anzeige
@@ -4962,6 +5016,9 @@ class PunchBuddyApp(rumps.App):
     def _trigger_play_custom(self):
         logging.info(">>> TRIGGER PLAY CUSTOM <<<")
         threading.Thread(target=run_play_custom, daemon=True).start()
+
+    def _trigger_start(self):
+        threading.Thread(target=run_goto_start, daemon=True).start()
 
     def _trigger_b(self):
         logging.info(">>> TRIGGER B <<<")
@@ -5127,6 +5184,8 @@ class PunchBuddyApp(rumps.App):
             rumps.alert("Fehler", f"Fenster konnte nicht geoeffnet werden:\n{e}")
 
     def _open_settings_window(self):
+        if _close_existing_settings_window():
+            return
         NSWindow          = AppKit.NSWindow
         NSView            = AppKit.NSView
         NSButton          = AppKit.NSButton
@@ -5372,6 +5431,8 @@ class PunchBuddyApp(rumps.App):
 
     def _open_unified_settings_window(self, track_names):
         """Erstellt ein Tab-basiertes Fenster mit Spurenauswahl + Erweiterte Einstellungen."""
+        if _close_existing_settings_window():
+            return
         NSWindow          = AppKit.NSWindow
         NSView            = AppKit.NSView
         NSButton          = AppKit.NSButton
@@ -5786,7 +5847,7 @@ class PunchBuddyApp(rumps.App):
             ("/trigger2",          "Record B"),
             ("/play",              "Play Input/Stop (Toggle)"),
             ("/play_custom",       "Play Custom (KH2/ST Abh)"),
-            ("/stop",              "Stop (dediziert)"),
+            ("/start",             "Cursor → Start-Timecode"),
             ("/export_wav",        "WAV Export"),
             ("/export_aaf",        "AAF Export"),
             ("/export_interplay",  "Interplay Export"),
@@ -5952,11 +6013,81 @@ class PunchBuddyApp(rumps.App):
         t5_view.addSubview_(l_info)
 
         # Tabs hinzufuegen
+        # ── TAB 6: MONITORING ────────────────────────────────────────────
+        tab6 = NSTabViewItem.alloc().initWithIdentifier_("Monitoring")
+        tab6.setLabel_("Monitoring")
+        t6_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
+        tab6.setView_(t6_view)
+
+        t6_y = t6_view.frame().size.height - 20
+
+        lbl_mon_hdr = NSTextField.labelWithString_("Play Custom – Mute-Zustände")
+        lbl_mon_hdr.setFrame_(NSMakeRect(PAD, t6_y, 400, 20))
+        lbl_mon_hdr.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t6_view.addSubview_(lbl_mon_hdr)
+
+        t6_y -= 20
+        lbl_mon_desc = NSTextField.labelWithString_(
+            "Definiert welche Spuren beim Play Custom gemutet oder entmutet werden.")
+        lbl_mon_desc.setFrame_(NSMakeRect(PAD, t6_y, WIN_W - PAD * 2 - 40, 18))
+        lbl_mon_desc.setFont_(NSFont.systemFontOfSize_(11))
+        lbl_mon_desc.setTextColor_(NSColor.secondaryLabelColor())
+        t6_view.addSubview_(lbl_mon_desc)
+
+        t6_y -= 30
+
+        # Spalten-Header
+        for txt, x, w in [("Spur", PAD, 180), ("Mute bei Play-Start", PAD + 190, 140), ("Mute bei Stop", PAD + 340, 120)]:
+            h = NSTextField.labelWithString_(txt)
+            h.setFrame_(NSMakeRect(x, t6_y, w, 18))
+            h.setFont_(NSFont.boldSystemFontOfSize_(11))
+            t6_view.addSubview_(h)
+
+        track_options = [""] + (track_names or [])
+
+        for ch_idx in range(1, 3):
+            t6_y -= 35
+            lbl_ch = NSTextField.labelWithString_(f"Kanal {ch_idx}:")
+            lbl_ch.setFrame_(NSMakeRect(PAD, t6_y + 3, 55, 18))
+            t6_view.addSubview_(lbl_ch)
+
+            track_key    = f"play_custom_ch{ch_idx}_track"
+            mute_s_key   = f"play_custom_ch{ch_idx}_mute_start"
+            mute_end_key = f"play_custom_ch{ch_idx}_mute_stop"
+
+            cur_track     = self.settings.get(track_key, DEFAULT_SETTINGS.get(track_key, ""))
+            cur_mute_s    = self.settings.get(mute_s_key, DEFAULT_SETTINGS.get(mute_s_key, True))
+            cur_mute_end  = self.settings.get(mute_end_key, DEFAULT_SETTINGS.get(mute_end_key, False))
+
+            popup = AppKit.NSPopUpButton.alloc().initWithFrame_(NSMakeRect(PAD + 60, t6_y, 120, 24))
+            popup.removeAllItems()
+            for opt in track_options:
+                popup.addItemWithTitle_(opt)
+            if cur_track in track_options:
+                popup.selectItemWithTitle_(cur_track)
+            t6_view.addSubview_(popup)
+            controls[track_key] = popup
+
+            cb_start = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 190 + 40, t6_y + 2, 20, 20))
+            cb_start.setButtonType_(AppKit.NSButtonTypeSwitch)
+            cb_start.setTitle_("")
+            cb_start.setState_(AppKit.NSOnState if cur_mute_s else AppKit.NSOffState)
+            t6_view.addSubview_(cb_start)
+            controls[mute_s_key] = cb_start
+
+            cb_stop = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 340 + 20, t6_y + 2, 20, 20))
+            cb_stop.setButtonType_(AppKit.NSButtonTypeSwitch)
+            cb_stop.setTitle_("")
+            cb_stop.setState_(AppKit.NSOnState if cur_mute_end else AppKit.NSOffState)
+            t6_view.addSubview_(cb_stop)
+            controls[mute_end_key] = cb_stop
+
         tab_view.addTabViewItem_(tab1)
         tab_view.addTabViewItem_(tab2)
         tab_view.addTabViewItem_(tab3)
         tab_view.addTabViewItem_(tab4)
         tab_view.addTabViewItem_(tab5)
+        tab_view.addTabViewItem_(tab6)
         content.addSubview_(tab_view)
 
         # Target
@@ -6031,6 +6162,8 @@ class PunchBuddyApp(rumps.App):
 
     def _open_config_window(self, track_names):
         """Erstellt natives macOS Fenster mit Checkboxen für jede Spur."""
+        if _close_existing_settings_window():
+            return
         NSWindow          = AppKit.NSWindow
         NSView            = AppKit.NSView
         NSButton          = AppKit.NSButton
@@ -6469,7 +6602,7 @@ if APPKIT_OK:
             self._app.settings["loudness_tracks"] = loud_list
             self._app.settings["play_monitor_tracks"] = play_list
             save_settings(self._app.settings)
-            self._window.orderOut_(None)
+            self._window.close()
             logging.info(f"Spuren-Konfiguration gespeichert:")
             logging.info(f"  Trigger A: Rec={rec_a}, Mon={mon_a}")
             logging.info(f"  Trigger B: Rec={rec_b}, Mon={mon_b}")
@@ -6484,7 +6617,7 @@ if APPKIT_OK:
                 f"Play Mon: {len(play_list)} Spuren")
 
         def onCancel_(self, sender):
-            self._window.orderOut_(None)
+            self._window.close()
 
 
 
@@ -6820,7 +6953,19 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                     raise ValueError(t("msg_extend_count_negative"))
                 self._app.settings["extend_count"] = ext_count
 
-            # 3. Import-Einstellungen speichern
+            # 3. Monitoring / Play Custom speichern
+            for ch_idx in range(1, 3):
+                track_key    = f"play_custom_ch{ch_idx}_track"
+                mute_s_key   = f"play_custom_ch{ch_idx}_mute_start"
+                mute_end_key = f"play_custom_ch{ch_idx}_mute_stop"
+                if track_key in self._controls:
+                    self._app.settings[track_key] = self._controls[track_key].titleOfSelectedItem() or ""
+                if mute_s_key in self._controls:
+                    self._app.settings[mute_s_key] = (self._controls[mute_s_key].state() == AppKit.NSOnState)
+                if mute_end_key in self._controls:
+                    self._app.settings[mute_end_key] = (self._controls[mute_end_key].state() == AppKit.NSOnState)
+
+            # 4. Import-Einstellungen speichern
             if "import_close_session" in self._controls:
                 imp_close = (self._controls["import_close_session"].state() == AppKit.NSOnState)
                 self._app.settings["import_close_session"] = imp_close
@@ -6878,7 +7023,7 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                     self._app.update_menu_titles()
 
             save_settings(self._app.settings)
-            self._window.orderOut_(None)
+            self._window.close()
             logging.info("Alle Einstellungen gespeichert.")
 
             if need_http_restart:
@@ -6891,7 +7036,7 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
             rumps.alert(t("alert_error"), str(e))
 
     def onCancel_(self, sender):
-        self._window.orderOut_(None)
+        self._window.close()
 
     def onPlay_(self, sender):
         self._app._trigger_play()
