@@ -1795,22 +1795,12 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
 
             time.sleep(0.2)  # CHANGE: Settling nach Stopp, PT muss Record-Pfad finalisieren
 
-            # ── Schritt 7: Record Disable (3 Versuche) ───────────────────
-            # CHANGE: Vorgezogen vor Pre-Roll/Monitor, damit PT die Spuren
-            # sauber aus dem Record nimmt bevor Monitor-State geändert wird.
-            if rec_want:
-                for attempt in range(3):
-                    ok, _ = _ptsl_call(
-                        engine.set_track_record_enable_state, sorted(rec_want), False,
-                        label=f"RecDisable#{attempt+1}", timeout=15.0
-                    )
-                    if ok:
-                        logging.info("Record Disable OK")
-                        break
-                    logging.warning(f"Record Disable FEHLER (Versuch {attempt+1}/3)")
-                    time.sleep(0.5 * (attempt + 1))
+            # Schritt 7 (Track RecordDisable) entfernt:
+            # Tracks bleiben nach der Aufnahme armed (blau/punch-ready).
+            # Das entspricht dem normalen TrackPunch-Workflow und verhindert
+            # den NEXIS Cold-Start beim nächsten Record-Trigger nach Idle.
 
-            time.sleep(0.2)  # CHANGE: Settling vor Pre-Roll/Monitor-Änderung
+            time.sleep(0.2)  # Settling vor Transport-Arm-Änderung
 
             # ── Schritt 7b: Transport-Arm AUS (nur wenn wir ihn aktiviert haben) ──
             if not _transport_pre_armed:
@@ -2935,14 +2925,45 @@ def run_interplay_import():
 
         prog["update"](1.0, t("prog_import_done"))
         time.sleep(0.8)
+
+        # ── Post-Import: Record-Tracks armen (NEXIS warm halten) ─────────
+        # Engine reset + frisch verbinden damit wir die neue Session sehen.
+        # Tracks armed lassen → NEXIS hält Dateien offen → kein Cold-Start
+        # beim nächsten Record-Trigger, auch nach längerer Idle-Zeit.
+        try:
+            _close_engine()
+            _eng_post = _get_engine()
+            if _eng_post is not None:
+                _cfg_post = _app_ref.settings if _app_ref is not None else load_settings()
+                _arm_tracks = []
+                for _key in ("tracks", "tracks_b"):
+                    for _tr in _cfg_post.get(_key, []):
+                        if _tr and _tr not in _arm_tracks:
+                            _arm_tracks.append(_tr)
+                _pt_post = _get_cached_track_names(_eng_post)
+                _arm_want = sorted(tr for tr in _arm_tracks if _pt_post and tr in _pt_post)
+                if _arm_want:
+                    _ok_arm, _ = _ptsl_call(
+                        _eng_post.set_track_record_enable_state, _arm_want, True,
+                        label="PostImportArm", timeout=20.0
+                    )
+                    if _ok_arm:
+                        logging.info(f"Post-Import: Tracks armed (NEXIS warm): {_arm_want}")
+                    else:
+                        logging.warning("Post-Import: Track arm fehlgeschlagen (unkritisch).")
+                else:
+                    logging.info("Post-Import: Keine passenden Record-Tracks zum Armen gefunden.")
+        except Exception as _e_arm:
+            logging.warning(f"Post-Import Arm fehlgeschlagen (unkritisch): {_e_arm}")
+
         logging.info("=== INTERPLAY IMPORT ENDE ===")
     except Exception as e:
         logging.error(f"Import Fehler: {e}", exc_info=True)
         if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()
-        # Engine nach Import schließen: Pro Tools hat jetzt eine neue Session,
-        # der alte Singleton ist ungültig. Nächster Aufruf verbindet sich frisch.
+        # Engine nach Import schließen: Nächster Aufruf verbindet sich frisch.
+        # Tracks bleiben in PT armed – NEXIS-Dateien bleiben offen.
         _close_engine()
         with _import_lock:
             _import_running = False
