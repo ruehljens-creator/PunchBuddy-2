@@ -78,141 +78,18 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
-def _setup_log_dir():
-    """Erstellt das Log-Verzeichnis, robust gegen TCC und alte Dateien."""
-    candidates = [
-        os.path.expanduser("~/.punchbuddy"),
-        os.path.expanduser("~/Library/Logs/PunchBuddy"),
-        "/tmp/PunchBuddy",
-    ]
-    for d in candidates:
-        try:
-            # os.path.exists() kann unter TCC selbst EPERM werfen
-            try:
-                exists = os.path.exists(d)
-                is_dir = os.path.isdir(d) if exists else False
-            except OSError:
-                continue  # TCC blockiert Zugriff – nächster Kandidat
-
-            if exists and not is_dir:
-                continue  # Existiert als Datei/Symlink – überspringen
-
-            os.makedirs(d, exist_ok=True)
-            # Schreibtest
-            test = os.path.join(d, ".writetest")
-            with open(test, "w") as f:
-                f.write("ok")
-            os.remove(test)
-            return d
-        except (OSError, PermissionError):
-            continue
-    return "/tmp"
-
-_LOG_DIR = _setup_log_dir()
-LOG_PATH = os.path.join(_LOG_DIR, "PunchBuddy.log")
-
-def _trim_log(max_age_hours=24):
-    """Entfernt Log-Einträge die älter als max_age_hours sind."""
-    if not os.path.exists(LOG_PATH):
-        return
-    try:
-        from datetime import datetime, timedelta
-        cutoff = datetime.now() - timedelta(hours=max_age_hours)
-        today = datetime.now().date()
-        kept = []
-        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                # Log-Format: "HH:MM:SS ..." – kein Datum, also heute annehmen
-                # Wenn die Datei über Mitternacht geht, werden ältere Zeilen
-                # anhand des Dateiänderungsdatums beurteilt
-                try:
-                    ts_str = line[:8]  # "HH:MM:SS"
-                    h, m, s = int(ts_str[0:2]), int(ts_str[3:5]), int(ts_str[6:8])
-                    line_time = datetime.combine(today, datetime.min.time().replace(hour=h, minute=m, second=s))
-                    # Falls Zeitstempel > jetzt → war gestern
-                    if line_time > datetime.now():
-                        line_time -= timedelta(days=1)
-                    if line_time >= cutoff:
-                        kept.append(line)
-                except (ValueError, IndexError):
-                    # Zeile ohne gültigen Timestamp (Traceback etc.) → behalten
-                    kept.append(line)
-        # Nur schreiben wenn tatsächlich Zeilen entfernt wurden
-        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
-            original_count = sum(1 for _ in f)
-        if len(kept) < original_count:
-            with open(LOG_PATH, "w", encoding="utf-8") as f:
-                f.writelines(kept)
-    except Exception:
-        pass  # Log-Trimming darf niemals das Script blockieren
-
-_trim_log(24)
-
-# Expliziter Logger-Setup (basicConfig wird ignoriert wenn grpc/rumps
-# bereits logging initialisiert haben)
-_log_formatter = logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
-
-_file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-_file_handler.setFormatter(_log_formatter)
-_file_handler.setLevel(logging.INFO)
-
-_console_handler = logging.StreamHandler()
-_console_handler.setFormatter(_log_formatter)
-_console_handler.setLevel(logging.INFO)
-
-_root_logger = logging.getLogger()
-_root_logger.setLevel(logging.INFO)
-# Alte Handler entfernen (falls basicConfig doch schon lief)
-_root_logger.handlers.clear()
-_root_logger.addHandler(_file_handler)
-_root_logger.addHandler(_console_handler)
+# Logging/Pfade ausgelagert nach punchbuddy/log.py
+from punchbuddy.log import _setup_log_dir, _LOG_DIR, LOG_PATH, _trim_log
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Einstellungen
 # ─────────────────────────────────────────────────────────────────────────────
-SETTINGS_PATH = os.path.join(_LOG_DIR, "settings.json")
-DEFAULT_SETTINGS = {
-    "tracks":          ["ST", "A  IT", "OGA", "Mus", "Spr", "Spr 2"],
-    "monitor_tracks":  ["ST", "A  IT", "OGA", "Mus", "Spr"],
-    "tracks_b":        [],
-    "monitor_tracks_b": [],
-    "play_monitor_tracks": [],
-    "export_tracks":   ["ST", "A  IT", "OGA", "Mus", "Spr"],
-    "video_track":     "Video 1",
-    "export_start_tc":     "10:00:00:00",
-    "loudness_enabled":    True,
-    "loudness_tracks":     ["ST"],
-    "target_lufs":         -23.0,
-    "max_truepeak":        -3.0,
-    "extend_count":        7,
-    "wav_export_enabled":  False,
-    "aaf_export_enabled":  False,
-    "interplay_enabled":   False,
-    "interplay_workspace": "001-aktuelles [fad-nexis]",
-    "interplay_workspace_steps": 17,
-    "export_error_keywords":   "error,fail,fehler,unsuccessful,could not,unable,problem,warning,aborted,abgebrochen",
-    "export_success_keywords": "success,complete,finished,done,exported,erfolgreich,abgeschlossen,fertig",
-    "interplay_rename_enabled": False,
-    "interplay_rename_trim_start": 0,
-    "interplay_rename_trim_end": 0,
-    "interplay_rename_prefix": "",
-    "interplay_rename_suffix": "",
-    "track_presets": [
-        {"name": f"Preset {i+1}", "rec_a": [], "mon_a": [], "rec_b": [], "mon_b": [], "export": []}
-        for i in range(8)
-    ],
-    "import_close_session": True,
-    "http_port": 8899,
-    "http_bind_host": "127.0.0.1",
-    "webtrigger_token": "",
-    "language": "de",
-    "play_custom_ch1_track": "KH2",
-    "play_custom_ch1_mute_start": True,
-    "play_custom_ch1_mute_stop": False,
-    "play_custom_ch2_track": "ST Abh",
-    "play_custom_ch2_mute_start": False,
-    "play_custom_ch2_mute_stop": True,
-}
+# Einstellungen ausgelagert nach punchbuddy/config.py
+from punchbuddy.config import (
+    SETTINGS_PATH, DEFAULT_SETTINGS, _deep_merge, _PRESET_TEMPLATE,
+    load_settings, save_settings, _migrate_settings,
+    _OLD_SETTINGS_DIR, _NEW_SETTINGS_DIR,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Mehrsprachigkeit / Localization
@@ -222,18 +99,6 @@ from punchbuddy.i18n import (
     TRANSLATIONS, t, load_app_language, set_language, get_language,
 )
 
-# ── Migration: ~/.autopunchin → ~/.punchbuddy ─────────────────────────────
-_OLD_SETTINGS_DIR = os.path.expanduser("~/.autopunchin")
-_NEW_SETTINGS_DIR = os.path.dirname(SETTINGS_PATH)
-
-def _migrate_settings():
-    """Migriert alte Einstellungen von ~/.autopunchin nach ~/.punchbuddy."""
-    if os.path.isdir(_OLD_SETTINGS_DIR) and not os.path.isdir(_NEW_SETTINGS_DIR):
-        try:
-            shutil.copytree(_OLD_SETTINGS_DIR, _NEW_SETTINGS_DIR)
-            logging.info(f"Settings migriert: {_OLD_SETTINGS_DIR} → {_NEW_SETTINGS_DIR}")
-        except Exception as e:
-            logging.warning(f"Settings-Migration fehlgeschlagen: {e}")
 
 
 def init_runtime():
@@ -244,46 +109,6 @@ def init_runtime():
     load_app_language(SETTINGS_PATH)
     _migrate_settings()
 
-def _deep_merge(default, override):
-    """Rekursives Merge: verschachtelte dicts werden tief gemischt; für Listen
-    und Skalare gewinnt `override`. So erreichen neu hinzugekommene Default-Keys
-    auch alte Settings-Dateien, ohne vorhandene Nutzerwerte zu überschreiben."""
-    if isinstance(default, dict) and isinstance(override, dict):
-        out = dict(default)
-        for k, v in override.items():
-            out[k] = _deep_merge(default[k], v) if k in default else v
-        return out
-    return override
-
-
-# Template eines Preset-Eintrags – fehlende (neu hinzugekommene) Keys in alten
-# gespeicherten Presets werden hieraus aufgefüllt.
-_PRESET_TEMPLATE = {"name": "", "rec_a": [], "mon_a": [],
-                    "rec_b": [], "mon_b": [], "export": []}
-
-
-def load_settings():
-    if os.path.exists(SETTINGS_PATH):
-        try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            merged = _deep_merge(copy.deepcopy(DEFAULT_SETTINGS), data)
-            # Preset-Einträge mit dem Template auffüllen (override gewinnt je Key)
-            presets = merged.get("track_presets")
-            if isinstance(presets, list):
-                merged["track_presets"] = [
-                    {**_PRESET_TEMPLATE, **p} if isinstance(p, dict) else p
-                    for p in presets
-                ]
-            return merged
-        except Exception as e:
-            logging.error(f"Settings laden: {e}")
-    return copy.deepcopy(DEFAULT_SETTINGS)
-
-def save_settings(s):
-    os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
-    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(s, f, indent=2, ensure_ascii=False)
 
 
 def webtrigger_token_ok(expected: str, supplied: str) -> bool:

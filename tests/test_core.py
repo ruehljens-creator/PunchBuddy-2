@@ -9,6 +9,7 @@ import grpc
 import pytest
 
 import auto_punch_in as a
+import punchbuddy.config as cfg
 
 
 # ── _deep_merge ───────────────────────────────────────────────────────────
@@ -36,7 +37,7 @@ def test_load_settings_backfills_new_default_keys(tmp_path, monkeypatch):
     settings_file = tmp_path / "settings.json"
     # Alte Datei ohne den (neueren) Key webtrigger_token
     settings_file.write_text(json.dumps({"http_port": 1234}))
-    monkeypatch.setattr(a, "SETTINGS_PATH", str(settings_file))
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", str(settings_file))
 
     s = a.load_settings()
     assert s["http_port"] == 1234                      # Nutzerwert bleibt
@@ -48,7 +49,7 @@ def test_load_settings_backfills_preset_entry_keys(tmp_path, monkeypatch):
     settings_file = tmp_path / "settings.json"
     # Preset-Eintrag ohne 'export' (neu hinzugekommener Key)
     settings_file.write_text(json.dumps({"track_presets": [{"name": "P1", "rec_a": ["ST"]}]}))
-    monkeypatch.setattr(a, "SETTINGS_PATH", str(settings_file))
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", str(settings_file))
 
     s = a.load_settings()
     p = s["track_presets"][0]
