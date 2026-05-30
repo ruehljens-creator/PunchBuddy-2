@@ -30,7 +30,7 @@ DEFAULT_SETTINGS = {
     "aaf_reference_export_path": "",
     # AAF-Reference-Vorgaben (fix laut Workflow)
     "aaf_reference_bit_depth":   24,
-    "aaf_reference_handle_ms":   2000,
+    "aaf_reference_handle_ms":   1000,
     "interplay_enabled":   False,
     "interplay_workspace": "001-aktuelles [fad-nexis]",
     "interplay_workspace_steps": 17,

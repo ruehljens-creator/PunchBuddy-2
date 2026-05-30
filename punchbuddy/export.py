@@ -1774,53 +1774,25 @@ tell application "System Events"
         end if
         delay 0.5
 
-        -- 2. Audio Media Options: Format-Dropdown gezielt auf "Embedded" setzen
-        -- Group 3 = "Audio Media Options", Popup 3 darin = "Format"
+        -- 2. Audio Media Options: Format = Embedded (robust, per Menüinhalt
+        --    identifiziert statt fragiler Pfeiltasten-Zählung)
         try
-            set audioGroup to group 3 of window 1
-            set formatPopup to pop up button 3 of audioGroup
-            set currentFormat to value of formatPopup
-            
-            if currentFormat is not "Embedded" then
-                -- Format-Dropdown klicken und "Embedded" auswaehlen
-                click formatPopup
-                delay 0.3
-                -- 4x Pfeiltaste nach unten = "Embedded"
-                key code 125
-                delay 0.1
-                key code 125
-                delay 0.1
-                key code 125
-                delay 0.1
-                key code 125
-                delay 0.1
-                key code 36 -- Enter
-                delay 0.3
-            end if
-        on error errMsg
-            -- Fallback: versuche ueber die Gruppe mit dem Titel
-            try
-                set allGroups to every group of window 1
-                repeat with g in allGroups
-                    try
-                        if title of g contains "Audio" then
-                            set formatPopup to pop up button 3 of g
-                            click formatPopup
+            set audioGroup to (first group of window 1 whose title is "Audio Media Options")
+            repeat with p in (every pop up button of audioGroup)
+                try
+                    if (exists menu item "Embedded" of menu 1 of p) then
+                        if (value of p as text) is not "Embedded" then
+                            click p
                             delay 0.3
-                            key code 125
-                            delay 0.1
-                            key code 125
-                            delay 0.1
-                            key code 125
-                            delay 0.1
-                            key code 125
-                            delay 0.1
-                            key code 36
-                            exit repeat
+                            click menu item "Embedded" of menu 1 of p
+                            delay 0.4
                         end if
-                    end try
-                end repeat
-            end try
+                        exit repeat
+                    end if
+                end try
+            end repeat
+        on error errMsg
+            return "ERROR:Audio options (embedded) failed: " & errMsg
         end try
 
 
