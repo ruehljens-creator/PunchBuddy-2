@@ -202,6 +202,18 @@ def _get_engine():
             return None
 
 
+def current_engine():
+    """Gibt die aktuelle Engine-Instanz zurück ODER None – ohne zu verbinden.
+    Für den Keep-Alive, der nur eine bereits offene Verbindung pingen will."""
+    return _engine_instance
+
+
+def cached_track_count() -> int:
+    """Anzahl der aktuell gecachten Track-Namen (0 wenn leer)."""
+    with _track_cache_lock:
+        return len(_cached_track_names) if _cached_track_names else 0
+
+
 def _safe_close(eng):
     try:
         eng.close()
