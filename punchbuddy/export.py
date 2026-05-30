@@ -232,11 +232,13 @@ def _wait_for_pt_modal_dismissed(log_path, log_pos, timeout=5.0):
 
     logging.debug("  Interplay: Modal-Dismiss Timeout – weiter")
     time.sleep(0.3)
-def _run_applescript(script):
-    """Fuehrt ein AppleScript aus und gibt (returncode, stdout, stderr) zurueck."""
+def _run_applescript(script, timeout=30):
+    """Fuehrt ein AppleScript aus und gibt (returncode, stdout, stderr) zurueck.
+    timeout: Sekunden bis zum Abbruch des osascript-Prozesses. Für AAF-Exporte
+    großzügig wählen – das Einbetten/Schreiben großer Medien dauert lange."""
     proc = subprocess.run(
         ["osascript", "-e", script],
-        capture_output=True, text=True, timeout=30
+        capture_output=True, text=True, timeout=timeout
     )
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
@@ -1773,40 +1775,50 @@ tell application "System Events"
         end if
         delay 0.5
 
-        -- 2. Audio Media Options: Format = "Embedded".
-        --    Embedded ist der LETZTE Eintrag im Format-Popup. Popup per Wert
-        --    finden (auslesbar), öffnen, genügend Pfeil-nach-unten (Überschuss
-        --    bleibt am letzten Eintrag = Embedded), Enter bestätigt.
+        -- 2. Audio Media Options: Format-Dropdown gezielt auf "Embedded" setzen
+        -- Group 3 = "Audio Media Options", Popup 3 darin = "Format"
         try
-            set audioGroup to (first group of window 1 whose title is "Audio Media Options")
-            set fmtIdx to 0
-            set i to 0
-            repeat with p in (every pop up button of audioGroup)
-                set i to i + 1
-                set pv to ""
-                try
-                    set pv to (value of p as text)
-                end try
-                if pv is in {{"WAV", "AIFF", "MXF", "Embedded"}} then
-                    set fmtIdx to i
-                    exit repeat
-                end if
-            end repeat
-            if fmtIdx > 0 then
-                set fp to pop up button fmtIdx of audioGroup
-                if (value of fp as text) is not "Embedded" then
-                    click fp
-                    delay 0.4
-                    repeat 6 times
-                        key code 125
-                        delay 0.06
-                    end repeat
-                    key code 36
-                    delay 0.4
-                end if
+            set audioGroup to group 3 of window 1
+            set formatPopup to pop up button 3 of audioGroup
+            set currentFormat to value of formatPopup
+
+            if currentFormat is not "Embedded" then
+                click formatPopup
+                delay 0.3
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 36 -- Enter
+                delay 0.3
             end if
         on error errMsg
-            return "ERROR:Audio options (embedded) failed: " & errMsg
+            try
+                set allGroups to every group of window 1
+                repeat with g in allGroups
+                    try
+                        if title of g contains "Audio" then
+                            set formatPopup to pop up button 3 of g
+                            click formatPopup
+                            delay 0.3
+                            key code 125
+                            delay 0.1
+                            key code 125
+                            delay 0.1
+                            key code 125
+                            delay 0.1
+                            key code 125
+                            delay 0.1
+                            key code 36
+                            exit repeat
+                        end if
+                    end try
+                end repeat
+            end try
         end try
 
 
@@ -1998,7 +2010,7 @@ def _do_aaf_export(session_name, session_dir, export_dir=None):
     )
 
     logging.info(f"  AAF: Exportiere nach {export_dir}")
-    rc, out, err = _run_applescript(script)
+    rc, out, err = _run_applescript(script, timeout=300)
     if "ERROR" in out:
         logging.error(f"  AAF AppleScript Fehler: {out}")
     else:
@@ -2437,7 +2449,7 @@ def _do_aaf_reference_export(session_name, session_dir, export_dir, settings):
     )
     logging.info(f"  AAF-Reference: Exportiere nach {export_dir} "
                  f"(WAV {bit_depth}-bit, Handle {handle_ms}ms)")
-    rc, out, err = _run_applescript(script)
+    rc, out, err = _run_applescript(script, timeout=300)
     if "ERROR" in out:
         logging.error(f"  AAF-Reference AppleScript Fehler: {out}")
     else:
