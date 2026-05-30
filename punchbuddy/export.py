@@ -2108,8 +2108,264 @@ def run_aaf_export_standalone(export_tracks, settings):
 # from source media, Bit Depth 24, Handle = aaf_reference_handle_ms. Die exakte
 # Dialog-Navigation ist versionsspezifisch und wird per Live-Diagnose kalibriert.
 # Solange _AAF_REFERENCE_CALIBRATED False ist, bricht der Export sicher ab.
-_AAF_REFERENCE_CALIBRATED = False
-_AAF_REFERENCE_SCRIPT_TEMPLATE = None  # wird nach Diagnose gesetzt
+_AAF_REFERENCE_CALIBRATED = True
+_AAF_REFERENCE_SCRIPT_TEMPLATE = '''
+set exportPath to "{export_path}"
+
+tell application "Pro Tools" to activate
+delay 0.5
+
+tell application "System Events"
+    tell process "Pro Tools"
+        set frontmost to true
+        delay 0.3
+
+        -- Datei > Export > Selected Tracks as New AAF/OMF...
+        try
+            click menu item "Selected Tracks as New AAF/OMF..." of menu of menu item "Export" of menu "File" of menu bar 1
+        on error
+            try
+                click menu item "Selected Tracks as New AAF/OMF…" of menu of menu item "Export" of menu "File" of menu bar 1
+            on error
+                return "ERROR:Menu item not found"
+            end try
+        end try
+
+        -- 1. Warte auf "Export to OMF/AAF" Fenster
+        delay 1.5
+        set exportWinFound to false
+        repeat 30 times
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    if name of w contains "Export to OMF" or name of w contains "Export to AAF" or name of w contains "OMF/AAF" then
+                        set exportWinFound to true
+                        exit repeat
+                    end if
+                end repeat
+                if exportWinFound then exit repeat
+            end try
+            delay 0.5
+        end repeat
+
+        if not exportWinFound then
+            return "ERROR:Export to OMF/AAF dialog not found"
+        end if
+        delay 0.5
+
+        -- 2. Audio Media Options: Format=Consolidate from source media, {bit_depth}-bit, WAV, Handle {handle_ms}
+        try
+            set audioGroup to (first group of window 1 whose title is "Audio Media Options")
+
+            -- Format-Popup (enthält "Consolidate from source media")
+            repeat with p in (every pop up button of audioGroup)
+                try
+                    if (exists menu item "Consolidate from source media" of menu 1 of p) then
+                        if (value of p as text) is not "Consolidate from source media" then
+                            click p
+                            delay 0.3
+                            click menu item "Consolidate from source media" of menu 1 of p
+                            delay 0.4
+                        end if
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            delay 0.3
+
+            -- Bit-Depth-Popup (enthält "16" → eindeutig die Bit-Tiefe)
+            repeat with p in (every pop up button of audioGroup)
+                try
+                    if (exists menu item "16" of menu 1 of p) then
+                        if (value of p as text) is not "{bit_depth}" then
+                            click p
+                            delay 0.3
+                            click menu item "{bit_depth}" of menu 1 of p
+                            delay 0.3
+                        end if
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            delay 0.2
+
+            -- Dateiformat-Popup (enthält "WAV")
+            repeat with p in (every pop up button of audioGroup)
+                try
+                    if (exists menu item "WAV" of menu 1 of p) then
+                        if (value of p as text) is not "WAV" then
+                            click p
+                            delay 0.3
+                            click menu item "WAV" of menu 1 of p
+                            delay 0.3
+                        end if
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            delay 0.2
+
+            -- Handle-Size-Textfeld auf {handle_ms} setzen
+            try
+                set hf to text field 1 of audioGroup
+                set focused of hf to true
+                delay 0.2
+                keystroke "a" using command down
+                delay 0.1
+                keystroke "{handle_ms}"
+                delay 0.1
+                key code 48
+                delay 0.2
+            end try
+        on error errMsg
+            return "ERROR:Audio options failed: " & errMsg
+        end try
+
+        delay 0.3
+
+        -- 3. Dialog mit Enter bestaetigen
+        key code 36
+        delay 1.5
+
+        -- 4. Warte auf "Publishing Options" Fenster
+        set pubWinFound to false
+        repeat 30 times
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    if name of w contains "Publishing" then
+                        set pubWinFound to true
+                        exit repeat
+                    end if
+                end repeat
+                if pubWinFound then exit repeat
+            end try
+            delay 0.5
+        end repeat
+
+        if not pubWinFound then
+            return "ERROR:Publishing Options dialog not found"
+        end if
+        delay 0.5
+
+        -- 5. Pfeiltaste rechts + "_Audio" tippen
+        key code 124
+        delay 0.1
+        keystroke "_Audio"
+        delay 0.3
+
+        -- 6. Enter zum Bestaetigen
+        key code 36
+        delay 1.5
+
+        -- 7. Warte auf "Save" Dialog
+        set saveWinFound to false
+        repeat 30 times
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    if name of w contains "Save" or name of w contains "Speichern" then
+                        set saveWinFound to true
+                        exit repeat
+                    end if
+                end repeat
+                if saveWinFound then exit repeat
+            end try
+            try
+                if exists sheet 1 of window 1 then
+                    set saveWinFound to true
+                    exit repeat
+                end if
+            end try
+            delay 0.5
+        end repeat
+
+        if not saveWinFound then
+            return "ERROR:Save dialog not found"
+        end if
+        delay 0.5
+
+        -- 8. Zum Export-Ordner navigieren via Cmd+Shift+G
+        keystroke "g" using {{command down, shift down}}
+        delay 0.8
+
+        keystroke "a" using command down
+        delay 0.1
+        keystroke exportPath
+        delay 0.3
+
+        key code 36
+        delay 0.8
+
+        -- 9. Save mit Enter
+        key code 36
+        delay 1.5
+
+        -- 9b. Replace-Dialog abfangen
+        try
+            if exists button "Yes" of window 1 then
+                click button "Yes" of window 1
+                delay 0.5
+            end if
+        end try
+        try
+            if exists button "Ja" of window 1 then
+                click button "Ja" of window 1
+                delay 0.5
+            end if
+        end try
+
+        -- 10. Warte bis Export abgeschlossen
+        repeat 180 times
+            set stillBusy to false
+            try
+                if exists button "Yes" of window 1 then
+                    click button "Yes" of window 1
+                    delay 0.5
+                end if
+            end try
+            try
+                if exists button "Ja" of window 1 then
+                    click button "Ja" of window 1
+                    delay 0.5
+                end if
+            end try
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    set wName to name of w
+                    if wName contains "Export" or wName contains "Save" or wName contains "Publishing" or wName contains "Bouncing" or wName contains "Writing" then
+                        set stillBusy to true
+                        exit repeat
+                    end if
+                    if wName is "" then
+                        try
+                            if exists button "Yes" of w then
+                                click button "Yes" of w
+                                set stillBusy to true
+                                exit repeat
+                            end if
+                        end try
+                        try
+                            if exists button "Ja" of w then
+                                click button "Ja" of w
+                                set stillBusy to true
+                                exit repeat
+                            end if
+                        end try
+                    end if
+                end repeat
+            end try
+            if not stillBusy then exit repeat
+            delay 1.0
+        end repeat
+
+        delay 1.0
+
+    end tell
+end tell
+return "OK"
+'''
 
 
 def _do_aaf_reference_export(session_name, session_dir, export_dir, settings):
