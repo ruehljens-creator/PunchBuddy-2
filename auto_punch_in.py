@@ -29,6 +29,7 @@ import gc
 import select
 import shutil
 import glob
+import copy
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dock-Name + Prozessname SOFORT setzen (VOR import rumps / AppKit)
@@ -1082,8 +1083,6 @@ def t(key):
         val = TRANSLATIONS["en"].get(key, key)
     return val
 
-# Start up load language
-load_app_language()
 # ── Migration: ~/.autopunchin → ~/.punchbuddy ─────────────────────────────
 _OLD_SETTINGS_DIR = os.path.expanduser("~/.autopunchin")
 _NEW_SETTINGS_DIR = os.path.dirname(SETTINGS_PATH)
@@ -1097,24 +1096,66 @@ def _migrate_settings():
         except Exception as e:
             logging.warning(f"Settings-Migration fehlgeschlagen: {e}")
 
-_migrate_settings()
+
+def init_runtime():
+    """Einmalige Laufzeit-Initialisierung mit Seiteneffekten (Sprache laden,
+    Settings migrieren). Wird aus dem __main__-Block aufgerufen, NICHT beim
+    Modul-Import – so bleibt `import auto_punch_in` nebenwirkungsfrei (testbar).
+    Idempotent."""
+    load_app_language()
+    _migrate_settings()
+
+def _deep_merge(default, override):
+    """Rekursives Merge: verschachtelte dicts werden tief gemischt; für Listen
+    und Skalare gewinnt `override`. So erreichen neu hinzugekommene Default-Keys
+    auch alte Settings-Dateien, ohne vorhandene Nutzerwerte zu überschreiben."""
+    if isinstance(default, dict) and isinstance(override, dict):
+        out = dict(default)
+        for k, v in override.items():
+            out[k] = _deep_merge(default[k], v) if k in default else v
+        return out
+    return override
+
+
+# Template eines Preset-Eintrags – fehlende (neu hinzugekommene) Keys in alten
+# gespeicherten Presets werden hieraus aufgefüllt.
+_PRESET_TEMPLATE = {"name": "", "rec_a": [], "mon_a": [],
+                    "rec_b": [], "mon_b": [], "export": []}
+
 
 def load_settings():
     if os.path.exists(SETTINGS_PATH):
         try:
             with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            merged = DEFAULT_SETTINGS.copy()
-            merged.update(data)
+            merged = _deep_merge(copy.deepcopy(DEFAULT_SETTINGS), data)
+            # Preset-Einträge mit dem Template auffüllen (override gewinnt je Key)
+            presets = merged.get("track_presets")
+            if isinstance(presets, list):
+                merged["track_presets"] = [
+                    {**_PRESET_TEMPLATE, **p} if isinstance(p, dict) else p
+                    for p in presets
+                ]
             return merged
         except Exception as e:
             logging.error(f"Settings laden: {e}")
-    return DEFAULT_SETTINGS.copy()
+    return copy.deepcopy(DEFAULT_SETTINGS)
 
 def save_settings(s):
     os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
         json.dump(s, f, indent=2, ensure_ascii=False)
+
+
+def webtrigger_token_ok(expected: str, supplied: str) -> bool:
+    """True, wenn der Webtrigger-Request autorisiert ist. Leeres `expected`
+    bedeutet kein Schutz (nur sinnvoll bei Bind auf 127.0.0.1). Sonst
+    Konstantzeit-Vergleich gegen Timing-Angriffe."""
+    expected = expected or ""
+    if not expected:
+        return True
+    import hmac
+    return hmac.compare_digest(supplied or "", expected)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CGEvent – Tastendruck direkt an Pro Tools (non-blocking)
@@ -1200,10 +1241,26 @@ def _send_key(vk: int, cmd: bool = False) -> bool:
         logging.error(f"send_key vk={vk} cmd={cmd}: {e}")
         return False
 
+# Validierter PID-Cache pro App-Name. Spart auf Hot-Paths (Key-Sends an PT/
+# Interplay während Export) die NSWorkspace-Iteration + bis zu zwei pgrep-Forks.
+# Vor jeder Rückgabe wird die PID mit os.kill(pid, 0) gegen den laufenden Prozess
+# geprüft – nach App-Neustart wird der Eintrag automatisch verworfen.
+_app_pid_cache: dict = {}
+
+
 def _app_pid(app_name: str):
-    """Ermittelt die PID einer App anhand ihres Prozessnamens.
-    Nutzt NSWorkspace (leerzeichentolerant) als primäre Methode, pgrep als Fallback.
-    """
+    """Ermittelt die PID einer App anhand ihres Prozessnamens (mit validiertem
+    Cache). Nutzt NSWorkspace (leerzeichentolerant) als primäre Methode,
+    pgrep als Fallback."""
+    cached = _app_pid_cache.get(app_name)
+    if cached is not None:
+        try:
+            os.kill(cached, 0)
+            return cached
+        except OSError:
+            _app_pid_cache.pop(app_name, None)
+
+    found = None
     # NSWorkspace: normalisiert Leerzeichen, damit "interplayAccess" == "Interplay Access"
     try:
         from AppKit import NSWorkspace
@@ -1212,26 +1269,32 @@ def _app_pid(app_name: str):
         for app in ws.runningApplications():
             ln = app.localizedName() or ""
             if name_norm in ln.lower().replace(" ", ""):
-                return app.processIdentifier()
+                found = app.processIdentifier()
+                break
     except Exception:
         pass
     # Fallback: pgrep exakt, dann ohne -x
-    try:
-        out = subprocess.run(
-            ["pgrep", "-xi", app_name],
-            capture_output=True, text=True, timeout=2
-        ).stdout.strip()
-        if out:
-            return int(out.split("\n")[0])
-        out = subprocess.run(
-            ["pgrep", "-i", app_name],
-            capture_output=True, text=True, timeout=2
-        ).stdout.strip()
-        if out:
-            return int(out.split("\n")[0])
-    except Exception:
-        pass
-    return None
+    if found is None:
+        try:
+            out = subprocess.run(
+                ["pgrep", "-xi", app_name],
+                capture_output=True, text=True, timeout=2
+            ).stdout.strip()
+            if out:
+                found = int(out.split("\n")[0])
+            else:
+                out = subprocess.run(
+                    ["pgrep", "-i", app_name],
+                    capture_output=True, text=True, timeout=2
+                ).stdout.strip()
+                if out:
+                    found = int(out.split("\n")[0])
+        except Exception:
+            pass
+
+    if found is not None:
+        _app_pid_cache[app_name] = found
+    return found
 
 def _send_key_to_app(vk: int, app_name: str, cmd: bool = False,
                       shift: bool = False, ctrl: bool = False) -> bool:
@@ -1428,94 +1491,98 @@ def restore_preroll(engine=None):
 _engine_instance = None
 _engine_lock = threading.Lock()
 
-_engine_last_test = 0.0  # Zeitstempel des letzten erfolgreichen Health-Checks
-_ENGINE_TEST_COOLDOWN = 8.0  # Sekunden zwischen Health-Checks
+# Harte gRPC-Deadline pro PTSL-Befehl. py-ptsl reicht selbst kein timeout an den
+# gRPC-Stub durch, wodurch ein hängender Call (z. B. NEXIS-Cold-Start) ewig
+# blockieren konnte. _install_grpc_deadline() injiziert deshalb eine echte
+# Deadline; _ptsl_call setzt den konkreten Wert pro Aufruf via Thread-Local.
+_GRPC_CALL_DEADLINE = 15.0
+_grpc_deadline_tls = threading.local()
+
+
+def _current_grpc_deadline() -> float:
+    return getattr(_grpc_deadline_tls, "value", _GRPC_CALL_DEADLINE)
+
+
+def _install_grpc_deadline(engine):
+    """Hüllt SendGrpcRequest des gRPC-Stubs so, dass jeder Call eine echte
+    Deadline erhält (DEADLINE_EXCEEDED statt unbegrenztem Hängen)."""
+    try:
+        raw = engine.client.raw_client
+        orig = raw.SendGrpcRequest
+        if getattr(orig, "_pb_deadline_wrapped", False):
+            return
+
+        def _with_deadline(request, *args, **kwargs):
+            kwargs.setdefault("timeout", _current_grpc_deadline())
+            return orig(request, *args, **kwargs)
+
+        _with_deadline._pb_deadline_wrapped = True
+        raw.SendGrpcRequest = _with_deadline
+    except Exception as e:
+        logging.warning(f"gRPC-Deadline-Wrapper nicht installiert: {e}")
+
 
 def _get_engine():
-    """Gibt eine wiederverwendbare PTSL-Engine zurück. Reconnect bei Fehler.
-    Health-Check wird max. alle _ENGINE_TEST_COOLDOWN Sekunden ausgeführt.
-    _engine_lock wird NIE während des t.join() gehalten – konkurrierende
-    Trigger-Threads blockieren so nicht hinter dem Health-Check-Timeout.
+    """Wiederverwendbare PTSL-Engine (Singleton). Verbindet bei Bedarf neu.
+
+    Kein proaktiver Health-Check mehr: Da jeder Call eine harte gRPC-Deadline
+    hat (_install_grpc_deadline), werden tote/blockierte Verbindungen reaktiv
+    erkannt – ein fehlgeschlagener _ptsl_call verwirft die Instanz via
+    _reset_engine(), der nächste _get_engine() verbindet neu. Der Keep-Alive
+    hält die Verbindung zusätzlich warm.
     """
-    global _engine_instance, _engine_last_test
-
-    # ── Schnellpfad: Lock kurz holen, Referenz lesen, sofort freigeben ───
-    with _engine_lock:
-        instance = _engine_instance
-        last_test = _engine_last_test
-
-    if instance is not None:
-        now = time.time()
-        if now - last_test < _ENGINE_TEST_COOLDOWN:
-            return instance
-
-        # Optimistisch _engine_last_test vorstellen: andere Threads überspringen
-        # den Health-Check während dieser läuft und geben die bestehende Engine zurück.
-        with _engine_lock:
-            _engine_last_test = now
-
-        # Health-Check AUSSERHALB des Locks (join kann bis 10s dauern)
-        test_ok = [False]
-        def _test():
-            try:
-                instance.transport_state()
-                test_ok[0] = True
-            except Exception:
-                pass
-        t = threading.Thread(target=_test, daemon=True, name="EngineTest")
-        t.start()
-        t.join(timeout=10.0)
-
-        with _engine_lock:
-            if test_ok[0]:
-                _engine_last_test = time.time()
-                return _engine_instance  # ggf. zwischenzeitlich ersetzt
-            else:
-                logging.warning("PTSL Engine: Verbindung verloren/blockiert – reconnect...")
-                if _engine_instance is instance:
-                    try:
-                        instance.close()
-                    except Exception:
-                        pass
-                    _engine_instance = None
-                elif _engine_instance is not None:
-                    return _engine_instance  # anderer Thread hat bereits reconnected
-
-    # ── Neue Engine erstellen ─────────────────────────────────────────────
+    global _engine_instance
     with _engine_lock:
         if _engine_instance is not None:
-            return _engine_instance  # anderer Thread war schneller
+            return _engine_instance
         try:
             eng = ptsl.Engine(company_name="PunchBuddy", application_name="PunchBuddy")
+            _install_grpc_deadline(eng)
             _engine_instance = eng
-            _engine_last_test = time.time()
             logging.info("PTSL verbunden.")
             return eng
         except Exception as e:
             logging.error(f"PTSL Verbindung fehlgeschlagen: {e}")
             return None
 
-def _close_engine():
-    """Schliesst die Singleton-Engine explizit und setzt Health-Check-Timer zurück."""
-    global _engine_instance, _engine_last_test
+
+def _safe_close(eng):
+    try:
+        eng.close()
+    except Exception:
+        pass
+
+
+def _reset_engine():
+    """Verwirft die aktuelle Engine-Instanz → nächster _get_engine() verbindet
+    neu. Wird bei Verbindungsfehlern (gRPC-Deadline/RpcError) aufgerufen.
+    Das close() läuft im Hintergrund, damit ein toter Channel den Aufrufer
+    nicht blockiert."""
+    global _engine_instance
     with _engine_lock:
-        if _engine_instance is not None:
-            try:
-                _engine_instance.close()
-            except Exception:
-                pass
-            _engine_instance = None
-            _engine_last_test = 0.0
-            logging.info("PTSL Engine geschlossen.")
+        dead = _engine_instance
+        _engine_instance = None
+    if dead is not None:
+        threading.Thread(target=_safe_close, args=(dead,), daemon=True,
+                         name="EngineClose").start()
+
+
+# Rückwärtskompatibler Alias: frühere Aufrufer riefen _invalidate_engine_health.
+_invalidate_engine_health = _reset_engine
+
+
+def _close_engine():
+    """Schliesst die Singleton-Engine explizit (Session-Wechsel/Import/Quit)."""
+    global _engine_instance
+    with _engine_lock:
+        dead = _engine_instance
+        _engine_instance = None
+    if dead is not None:
+        _safe_close(dead)
+        logging.info("PTSL Engine geschlossen.")
     _invalidate_session_tracks()
 
 _ptsl_lock = threading.Lock()
-
-def _invalidate_engine_health():
-    """Setzt den Health-Check-Timer zurück, damit der nächste _get_engine()-Aufruf
-    die Verbindung sofort neu prüft. Kein Eingriff in NEXIS/Interplay/Session."""
-    global _engine_last_test
-    _engine_last_test = 0.0
 
 # ── Session-Track-Cache ───────────────────────────────────────────────────
 # Track-Namen ändern sich nicht während einer Session – einmalig lesen und
@@ -1556,42 +1623,43 @@ def _get_cached_track_names(engine) -> list | None:
     return None
 
 def _ptsl_call(fn, *args, label: str = "", timeout: float = 15.0):
-    """Führt PTSL-Aufruf im Thread aus. Gibt (ok, result) zurück.
-    Bei Timeout oder Exception wird der Health-Check-Timer invalidiert,
-    damit _get_engine() beim nächsten Aufruf sofort die Verbindung prüft."""
-    result = [None]
-    error  = [None]
+    """Führt einen PTSL-Aufruf serialisiert (über _ptsl_lock) und mit harter
+    gRPC-Deadline aus. Gibt (ok, result) zurück.
 
-    def _run():
-        if not _ptsl_lock.acquire(timeout=6.0):  # 6s – NEXIS kann vorherigen Befehl verzögern
-            error[0] = TimeoutError("PTSL Blockiert")
-            return
-        try:
-            result[0] = fn(*args)
-            # Erfolgreicher Call = Engine lebt → Health-Check-Timer frisch setzen,
-            # damit der 8s-Cooldown nicht während aktiver Nutzung abläuft.
-            global _engine_last_test
-            _engine_last_test = time.time()
-        except Exception as e:
-            error[0] = e
-        finally:
-            _ptsl_lock.release()
+    `timeout` ist jetzt die echte gRPC-Deadline des Calls: ein hängender Befehl
+    wird vom gRPC-Stack mit DEADLINE_EXCEEDED abgebrochen, statt – wie früher –
+    einen verwaisten Thread und gehaltenen Lock zu hinterlassen.
 
-    t = threading.Thread(target=_run, daemon=True, name=label or fn.__name__)
-    t.start()
-    t.join(timeout=timeout)
-
-    if t.is_alive():
-        logging.warning(f"[{label}] Timeout nach {timeout}s")
-        _invalidate_engine_health()  # Verbindung könnte tot sein – sofort neu prüfen
+    Nur echte Verbindungsfehler (grpc.RpcError) verwerfen die Engine; ein
+    fachlicher CommandError lässt die Verbindung bestehen.
+    """
+    if not _ptsl_lock.acquire(timeout=6.0):  # 6s – NEXIS kann vorherigen Befehl verzögern
+        logging.warning(f"[{label}] PTSL-Lock nicht erhalten (6s)")
         return False, None
-    if error[0]:
-        if isinstance(error[0], TimeoutError):
-            return False, None
-        logging.error(f"[{label}] Fehler: {error[0]}")
-        _invalidate_engine_health()  # Verbindungsfehler – sofort neu prüfen
-        return False, error[0]
-    return True, result[0]
+
+    _grpc_deadline_tls.value = timeout
+    try:
+        return True, fn(*args)
+    except Exception as e:
+        is_rpc = False
+        is_timeout = False
+        try:
+            import grpc
+            if isinstance(e, grpc.RpcError):
+                is_rpc = True
+                is_timeout = (e.code() == grpc.StatusCode.DEADLINE_EXCEEDED)
+        except Exception:
+            pass
+        if is_timeout:
+            logging.warning(f"[{label}] gRPC-Deadline ({timeout}s) überschritten")
+        else:
+            logging.error(f"[{label}] Fehler: {e}")
+        if is_rpc:
+            _reset_engine()  # Verbindung tot/blockiert → nächster Call reconnectet
+        return False, (None if is_timeout else e)
+    finally:
+        _grpc_deadline_tls.value = _GRPC_CALL_DEADLINE
+        _ptsl_lock.release()
 
 def _show_error(title: str, msg: str):
     """Zeigt Fehler-Dialog (non-blocking)."""
@@ -4969,16 +5037,11 @@ class PunchBuddyApp(rumps.App):
 
             def _authorized(self, query):
                 """Prüft das Webtrigger-Token, falls eines konfiguriert ist.
-                Token via ?token=… oder X-Auth-Token-Header. Leeres Token =
-                kein Schutz (nur sinnvoll bei Bind auf 127.0.0.1)."""
+                Token via ?token=… oder X-Auth-Token-Header."""
                 expected = app_ref.settings.get("webtrigger_token", "") or ""
-                if not expected:
-                    return True
                 supplied = (query.get("token", [""])[0]
                             or self.headers.get("X-Auth-Token", ""))
-                # Konstantzeit-Vergleich gegen Timing-Angriffe
-                import hmac
-                return hmac.compare_digest(supplied, expected)
+                return webtrigger_token_ok(expected, supplied)
 
             def do_GET(self):
                 from urllib.parse import urlparse, parse_qs
@@ -5114,11 +5177,14 @@ class PunchBuddyApp(rumps.App):
                     eng = _engine_instance
                 if eng is None:
                     continue
-                try:
-                    eng.transport_state()
+                # Über _ptsl_call: serialisiert via _ptsl_lock (kein Race mit
+                # echten Befehlen) und mit gRPC-Deadline. Ein Fehler verwirft
+                # die Engine, der nächste Trigger verbindet frisch neu.
+                ok, _ = _ptsl_call(eng.transport_state, label="KeepAlive", timeout=10.0)
+                if ok:
                     logging.debug("KeepAlive: transport_state() OK")
-                except Exception as e:
-                    logging.debug(f"KeepAlive: transport_state() fehlgeschlagen: {e}")
+                else:
+                    logging.debug("KeepAlive: transport_state() fehlgeschlagen")
 
         threading.Thread(target=_loop, daemon=True, name="PTSLKeepAlive").start()
         logging.info("PTSL Keep-Alive gestartet (Intervall: 30s)")
@@ -7263,6 +7329,10 @@ def _cleanup_watchdog():
             _watchdog_proc = None
 
 if __name__ == "__main__":
+
+    # Laufzeit-Initialisierung mit Seiteneffekten (Sprache, Settings-Migration).
+    # Bewusst hier statt auf Modulebene → Import bleibt nebenwirkungsfrei.
+    init_runtime()
 
     import sys
     import subprocess as _sp
