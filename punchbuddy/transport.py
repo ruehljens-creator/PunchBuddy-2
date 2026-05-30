@@ -22,6 +22,9 @@ from punchbuddy.engine import (
 _stop_lock    = threading.Lock()  # verhindert gleichzeitige Stop-Aufrufe
 
 def run_punch_in(target_tracks: list, monitor_tracks: list = None):
+    # Recording-Skript: Input-Monitoring wird NICHT umgeschaltet – Pro Tools
+    # übernimmt das selbst. (Die Play-Input-Logik in run_play bleibt davon
+    # unberührt.) monitor_tracks bleibt nur für Aufrufer-Kompatibilität.
     with state.running_lock:
         if state.running:
             logging.warning("Läuft bereits – Trigger ignoriert.")
@@ -29,14 +32,9 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
         state.running = True
     _set_busy(True)
 
-    # Fallback: wenn keine Monitor-Spuren angegeben, alle Record-Spuren nehmen
-    if monitor_tracks is None:
-        monitor_tracks = list(target_tracks)
-
     try:
         logging.info("=== PunchBuddy START ===")
         logging.info(f"Record-Spuren: {target_tracks}")
-        logging.info(f"Monitor-Spuren: {monitor_tracks}")
 
         engine = _get_engine()
         if engine is None:
@@ -50,11 +48,9 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
             return
 
         rec_want     = set(t for t in target_tracks if t in pt_names)
-        mon_want     = set(t for t in monitor_tracks if t in pt_names)
 
         logging.info(f"Session-Spuren (gecacht): {pt_names}")
         logging.info(f"Record SOLL:    {sorted(rec_want)}")
-        logging.info(f"Monitor SOLL:   {sorted(mon_want)}")
 
         if not rec_want:
             logging.warning("Keine Record-Spuren in der Session gefunden – Abbruch.")
@@ -85,27 +81,11 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
         if not rec_ok:
             logging.warning("Record Enable fehlgeschlagen – mache trotzdem weiter.")
 
-        time.sleep(0.3)  # CHANGE: Settling – PT muss Rec-Enable verarbeiten bevor Monitor-State geändert wird
+        time.sleep(0.3)  # Settling – PT muss Rec-Enable verarbeiten
 
-        # ── Schritt 3: Input Monitor AUS (3 Versuche) ────────────────────
-        # AUSKOMMENTIERT AUF WUNSCH (kann später bei Bedarf wieder aktiviert werden)
-        """
-        if mon_want:
-            logging.info(f"Input Monitor AUS für: {sorted(mon_want)}...")
-            for attempt in range(3):
-                ok, _ = _ptsl_call(
-                    engine.set_track_input_monitor_state, sorted(mon_want), False,
-                    label=f"MonOff#{attempt+1}", timeout=5.0
-                )
-                if ok:
-                    logging.info("Input Monitor AUS OK")
-                    break
-                logging.warning(f"Input Monitor AUS FEHLER (Versuch {attempt+1}/3)")
-                time.sleep(0.5 * (attempt + 1))
-        """
+        # Recording: kein Input-Monitor-Umschalten (Pro Tools macht das selbst).
 
-        time.sleep(0.5)  # CHANGE: Settling – Monitor-State-Wechsel muss stabilisieren bevor F12.
-                         # Das ist der wahrscheinliche Fix gegen Digital-Null an Clip-Boundaries.
+        time.sleep(0.5)  # Settling bevor Aufnahme startet
 
         # CHANGE: Defensives Logging der Timeline-Selection vor F12.
         # Falls das Problem nochmal auftritt, sehen wir genau was PT hatte.
@@ -225,24 +205,8 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
 
             # ── Schritt 8: Pre-Roll AUS ──────────────────────────────────
             restore_preroll(engine)
-            time.sleep(0.2)  # CHANGE: Settling nach Pre-Roll-Aus
-
-            # ── Schritt 9: Input Monitor EIN (3 Versuche) ────────────────
-            # AUSKOMMENTIERT AUF WUNSCH (kann später bei Bedarf wieder aktiviert werden)
-            """
-            if mon_want:
-                logging.info(f"Input Monitor EIN für: {sorted(mon_want)}...")
-                for attempt in range(3):
-                    ok, _ = _ptsl_call(
-                        engine.set_track_input_monitor_state, sorted(mon_want), True,
-                        label=f"MonOn#{attempt+1}", timeout=5.0
-                    )
-                    if ok:
-                        logging.info("Input Monitor EIN OK")
-                        break
-                    logging.warning(f"Input Monitor EIN FEHLER (Versuch {attempt+1}/3)")
-                    time.sleep(0.5 * (attempt + 1))
-            """
+            time.sleep(0.2)  # Settling nach Pre-Roll-Aus
+            # Recording: kein Input-Monitor-Umschalten (Pro Tools macht das selbst).
         else:
             logging.warning("Transport nicht bestätigt gestoppt – State-Wiederherstellung übersprungen.")
             # Pre-Roll trotzdem zurücksetzen (gefahrlos)
