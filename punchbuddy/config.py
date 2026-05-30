@@ -24,6 +24,13 @@ DEFAULT_SETTINGS = {
     "extend_count":        7,
     "wav_export_enabled":  False,
     "aaf_export_enabled":  False,
+    # Custom Export-Pfade (leer = Standard <session>/export)
+    "wav_export_path":           "",
+    "aaf_embedded_export_path":  "",
+    "aaf_reference_export_path": "",
+    # AAF-Reference-Vorgaben (fix laut Workflow)
+    "aaf_reference_bit_depth":   24,
+    "aaf_reference_handle_ms":   1000,
     "interplay_enabled":   False,
     "interplay_workspace": "001-aktuelles [fad-nexis]",
     "interplay_workspace_steps": 17,

@@ -152,7 +152,8 @@ from punchbuddy.engine import (
 # Export-/Interplay-Funktionen ausgelagert nach punchbuddy/export.py
 from punchbuddy.export import (
     run_interplay_import, run_interplay_export, run_export,
-    run_wav_export_standalone, run_aaf_export_standalone, _detect_video_track,
+    run_wav_export_standalone, run_aaf_export_standalone,
+    run_aaf_reference_export_standalone, _detect_video_track,
 )
 
 # Lautheits-Normalisierung ausgelagert nach punchbuddy/loudness.py
@@ -305,7 +306,8 @@ class PunchBuddyApp(rumps.App):
 
         # ── Export ────────────────────────────────────────────────────────
         self.wav_export_item   = rumps.MenuItem(t("export_wav"),  callback=self._on_start_export_wav)
-        self.aaf_export_item   = rumps.MenuItem(t("export_aaf"),  callback=self._on_start_export_aaf)
+        self.aaf_export_item   = rumps.MenuItem(t("export_aaf_embedded"),  callback=self._on_start_export_aaf)
+        self.aaf_ref_export_item = rumps.MenuItem(t("export_aaf_reference"), callback=self._on_start_export_aaf_reference)
         self.interplay_export_item = rumps.MenuItem(t("export_interplay"), callback=self._on_start_export_interplay)
 
         self.import_item       = rumps.MenuItem(t("interplay_import_start"),  callback=self._on_start_import)
@@ -329,6 +331,7 @@ class PunchBuddyApp(rumps.App):
         self.export_menu = rumps.MenuItem(t("tab_export"))
         self.export_menu.add(self.wav_export_item)
         self.export_menu.add(self.aaf_export_item)
+        self.export_menu.add(self.aaf_ref_export_item)
         self.export_menu.add(self.interplay_export_item)
         self.menu.add(self.export_menu)
 
@@ -499,8 +502,10 @@ class PunchBuddyApp(rumps.App):
                     self._fire(app_ref._trigger_import)
                 elif path == "/export_wav":
                     self._fire(app_ref._trigger_export_wav)
-                elif path == "/export_aaf":
+                elif path == "/export_aaf" or path == "/export_aaf_embedded":
                     self._fire(app_ref._trigger_export_aaf)
+                elif path == "/export_aaf_reference":
+                    self._fire(app_ref._trigger_export_aaf_reference)
                 elif path == "/export_interplay":
                     self._fire(app_ref._trigger_export_interplay)
                 elif path == "/play":
@@ -577,6 +582,8 @@ class PunchBuddyApp(rumps.App):
             logging.info(f"  /export   → Export (komplett)")
             logging.info(f"  /import   → Interplay Import")
             logging.info(f"  /export_wav → WAV Export")
+            logging.info(f"  /export_aaf / /export_aaf_embedded → AAF Embedded")
+            logging.info(f"  /export_aaf_reference → AAF Reference")
             logging.info(f"  /export_interplay → Interplay Export")
             logging.info(f"  /play       → Play/Stop (Toggle)")
             logging.info(f"  /play_custom → Play Custom (Mute KH2/Unmute ST Abh)")
@@ -660,10 +667,16 @@ class PunchBuddyApp(rumps.App):
         threading.Thread(target=run_wav_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
 
     def _trigger_export_aaf(self):
-        logging.info(">>> AAF EXPORT TRIGGER <<<")
+        logging.info(">>> AAF EMBEDDED EXPORT TRIGGER <<<")
         _dispatch_main(lambda: _set_busy(True))
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
         threading.Thread(target=run_aaf_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
+
+    def _trigger_export_aaf_reference(self):
+        logging.info(">>> AAF REFERENCE EXPORT TRIGGER <<<")
+        _dispatch_main(lambda: _set_busy(True))
+        export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
+        threading.Thread(target=run_aaf_reference_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
 
     def _trigger_export_interplay(self):
         logging.info(">>> INTERPLAY EXPORT TRIGGER <<<")
@@ -679,7 +692,8 @@ class PunchBuddyApp(rumps.App):
         self.play_item.title = t("play_input")
         self.play_custom_item.title = t("play_custom")
         self.wav_export_item.title = t("export_wav")
-        self.aaf_export_item.title = t("export_aaf")
+        self.aaf_export_item.title = t("export_aaf_embedded")
+        self.aaf_ref_export_item.title = t("export_aaf_reference")
         self.interplay_export_item.title = t("export_interplay")
         self.import_item.title = t("interplay_import_start")
         self.settings_item.title = t("settings")
@@ -783,8 +797,12 @@ class PunchBuddyApp(rumps.App):
         self._trigger_export_wav()
 
     def _on_start_export_aaf(self, _):
-        logging.info(">>> MENU 'AAF Export' <<<")
+        logging.info(">>> MENU 'AAF Export (Embedded)' <<<")
         self._trigger_export_aaf()
+
+    def _on_start_export_aaf_reference(self, _):
+        logging.info(">>> MENU 'AAF Export (Reference)' <<<")
+        self._trigger_export_aaf_reference()
 
     def _on_start_export_interplay(self, _):
         logging.info(">>> MENU 'Interplay Export' <<<")
@@ -1069,7 +1087,7 @@ class PunchBuddyApp(rumps.App):
         NSBezelStyleRounded = AppKit.NSBezelStyleRounded
 
         WIN_W = 680
-        WIN_H = 850
+        WIN_H = 1020
         PAD = 20
         BUTTON_H = 50
 
@@ -1235,6 +1253,42 @@ class PunchBuddyApp(rumps.App):
         tf_tp = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 230, t2_y, 80, 22))
         tf_tp.setStringValue_(str(self.settings.get("max_truepeak", -3.0)))
         t2_view.addSubview_(tf_tp); controls["max_truepeak"] = tf_tp
+
+        # ── Export-Pfade (leer = Standard <Session>/export) ──
+        t2_y -= 26
+        h_paths = NSTextField.labelWithString_(t("lbl_export_paths"))
+        h_paths.setFrame_(NSMakeRect(PAD, t2_y, WIN_W - PAD * 2, 20))
+        h_paths.setFont_(NSFont.boldSystemFontOfSize_(12))
+        t2_view.addSubview_(h_paths)
+
+        self._export_path_browse_buttons = []
+        for _key, _lblkey in (("wav_export_path", "lbl_wav_path"),
+                              ("aaf_embedded_export_path", "lbl_aaf_emb_path"),
+                              ("aaf_reference_export_path", "lbl_aaf_ref_path")):
+            t2_y -= 26
+            _l = NSTextField.labelWithString_(t(_lblkey))
+            _l.setFrame_(NSMakeRect(PAD, t2_y + 2, 150, 18))
+            _l.setFont_(NSFont.systemFontOfSize_(11))
+            t2_view.addSubview_(_l)
+            _tf = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 155, t2_y, 290, 22))
+            _tf.setStringValue_(self.settings.get(_key, "") or "")
+            _tf.setFont_(NSFont.systemFontOfSize_(11))
+            t2_view.addSubview_(_tf); controls[_key] = _tf
+            _btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 450, t2_y, 110, 22))
+            _btn.setTitle_(t("btn_browse"))
+            _btn.setBezelStyle_(NSBezelStyleRounded)
+            _btn.setFont_(NSFont.systemFontOfSize_(11))
+            _btn.setTag_(len(self._export_path_browse_buttons))
+            t2_view.addSubview_(_btn)
+            self._export_path_browse_buttons.append((_btn, _tf))
+
+        # Browse-Buttons mit NSOpenPanel-Target verdrahten
+        _br_target = _ExportPathBrowseTarget.alloc().init()
+        _br_target._fields = [tf for (_b, tf) in self._export_path_browse_buttons]
+        for _b, _tf in self._export_path_browse_buttons:
+            _b.setTarget_(_br_target)
+            _b.setAction_(objc.selector(_br_target.onBrowse_, signature=b'v@:@'))
+        self._export_path_browse_target = _br_target
 
         # ── Trennlinie ──
         t2_y -= 20
@@ -1506,9 +1560,10 @@ class PunchBuddyApp(rumps.App):
             ("/play",              "Play Input/Stop (Toggle)"),
             ("/play_custom",       "Play Custom (KH2/ST Abh)"),
             ("/start",             "Cursor → Start-Timecode"),
-            ("/export_wav",        "WAV Export"),
-            ("/export_aaf",        "AAF Export"),
-            ("/export_interplay",  "Interplay Export"),
+            ("/export_wav",            "WAV Export"),
+            ("/export_aaf_embedded",   "AAF Export (Embedded)"),
+            ("/export_aaf_reference",  "AAF Export (Reference)"),
+            ("/export_interplay",      "Interplay Export"),
             ("/import",            "Interplay Import"),
         ]
 
@@ -2344,6 +2399,28 @@ if APPKIT_OK:
         def onCancel_(self, sender):
             self._window.close()
 
+class _ExportPathBrowseTarget(AppKit.NSObject):
+    """ObjC Target für die 'Durchsuchen…'-Buttons der Export-Pfade.
+    Öffnet einen NSOpenPanel (nur Ordner) und schreibt den Pfad ins zugehörige Feld."""
+
+    def onBrowse_(self, sender):
+        try:
+            tag = sender.tag()
+            fields = getattr(self, '_fields', None)
+            if not fields or not (0 <= tag < len(fields)):
+                return
+            panel = AppKit.NSOpenPanel.openPanel()
+            panel.setCanChooseDirectories_(True)
+            panel.setCanChooseFiles_(False)
+            panel.setAllowsMultipleSelection_(False)
+            panel.setPrompt_(t("btn_browse"))
+            if panel.runModal() == AppKit.NSModalResponseOK:
+                url = panel.URLs()[0]
+                fields[tag].setStringValue_(url.path())
+        except Exception as e:
+            logging.error(f"Export-Pfad Browse: {e}")
+
+
 class _WebtriggerCopyTarget(AppKit.NSObject):
     """ObjC Target für die Kopieren-Buttons im Webtrigger-Tab."""
 
@@ -2628,6 +2705,12 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
             if "export_success_keywords" in self._controls:
                 self._app.settings["export_success_keywords"] = (
                     self._controls["export_success_keywords"].stringValue().strip())
+
+            # Custom Export-Pfade
+            for _pkey in ("wav_export_path", "aaf_embedded_export_path",
+                          "aaf_reference_export_path"):
+                if _pkey in self._controls:
+                    self._app.settings[_pkey] = self._controls[_pkey].stringValue().strip()
 
             if "extend_count" in self._controls:
                 ext_count = int(self._controls["extend_count"].stringValue())

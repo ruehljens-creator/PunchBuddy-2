@@ -34,6 +34,23 @@ from punchbuddy.uikit import _show_progress_win, _dispatch_main
 _export_lock = threading.Lock()
 
 
+def _resolve_export_dir(custom_path, session_dir):
+    """Ermittelt den Ziel-Exportordner. Ein nicht-leerer custom_path wird
+    verwendet (und bei Bedarf angelegt); sonst der Standard <session>/export.
+    Fällt bei nicht anlegbarem Custom-Pfad auf den Standard zurück."""
+    default_dir = os.path.join(session_dir, "export")
+    custom = (custom_path or "").strip()
+    if custom:
+        try:
+            os.makedirs(custom, exist_ok=True)
+            return custom
+        except Exception as e:
+            logging.warning(f"  Custom-Exportpfad '{custom}' nicht nutzbar ({e}) – "
+                            f"nutze Standard {default_dir}")
+    os.makedirs(default_dir, exist_ok=True)
+    return default_dir
+
+
 def _detect_video_track(engine, settings=None):
     """Erkennt die Videospur automatisch via PTSL (type=4).
     Fallback auf settings['video_track'] wenn nichts gefunden."""
@@ -215,11 +232,13 @@ def _wait_for_pt_modal_dismissed(log_path, log_pos, timeout=5.0):
 
     logging.debug("  Interplay: Modal-Dismiss Timeout – weiter")
     time.sleep(0.3)
-def _run_applescript(script):
-    """Fuehrt ein AppleScript aus und gibt (returncode, stdout, stderr) zurueck."""
+def _run_applescript(script, timeout=30):
+    """Fuehrt ein AppleScript aus und gibt (returncode, stdout, stderr) zurueck.
+    timeout: Sekunden bis zum Abbruch des osascript-Prozesses. Für AAF-Exporte
+    großzügig wählen – das Einbetten/Schreiben großer Medien dauert lange."""
     proc = subprocess.run(
         ["osascript", "-e", script],
-        capture_output=True, text=True, timeout=30
+        capture_output=True, text=True, timeout=timeout
     )
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
@@ -1360,7 +1379,8 @@ def run_export(export_tracks, video_track=None, settings=None):
             try:
                 session_path = engine.session_path()
                 s_dir = os.path.dirname(session_path)
-                _do_wav_export(export_tracks, s_dir, min_mtime=export_start_time - 10.0)
+                _do_wav_export(export_tracks, s_dir, min_mtime=export_start_time - 10.0,
+                               export_dir=_resolve_export_dir(settings.get("wav_export_path"), s_dir))
             except Exception as e:
                 logging.error(f"  WAV Export Fehler: {e}")
         else:
@@ -1373,7 +1393,8 @@ def run_export(export_tracks, video_track=None, settings=None):
                 session_path = engine.session_path()
                 s_dir = os.path.dirname(session_path)
                 s_name = os.path.splitext(os.path.basename(session_path))[0]
-                _do_aaf_export(s_name, s_dir)
+                _do_aaf_export(s_name, s_dir,
+                               export_dir=_resolve_export_dir(settings.get("aaf_embedded_export_path"), s_dir))
             except Exception as e:
                 logging.error(f"  AAF Export Fehler: {e}")
         else:
@@ -1477,46 +1498,47 @@ def _protools_selection_context(engine):
 # WAV Export - Konsolidierte Dateien in Export-Ordner kopieren
 # -----------------------------------------------------------------------------
 def _trim_overhangs(engine, export_tracks, in_time, video_end):
-    """Löscht Überhänge (Pre/Post-Material) pro Spur außerhalb der Export-Range."""
-    logging.info(f"  Ueberhaenge loeschen ({len(export_tracks)} Spuren)...")
-    for track_name in export_tracks:
-        # Pre-Material (vor Start-TC) löschen
-        engine.select_all_clips_on_track(track_name)
-        time.sleep(0.1)
-        engine.set_timeline_selection(
-            in_time="00:00:00:00.00",
-            out_time=in_time
-        )
-        time.sleep(0.1)
-        try:
-            engine.clear()
-        except Exception:
-            pass
+    """Löscht Überhänge (Pre/Post-Material) außerhalb der Export-Range.
 
-        # Post-Material (nach Video-Ende) löschen
-        engine.select_all_clips_on_track(track_name)
+    Gebündelt: statt pro Spur einzeln wird die Pre-Region (vor Start-TC) bzw.
+    Post-Region (nach Video-Ende) ÜBER ALLE Export-Spuren gleichzeitig
+    selektiert und in EINEM Clear gelöscht. Das ersetzt 2×N Einzelschritte
+    durch 2 Sammel-Schritte und ist deutlich schneller.
+    """
+    logging.info(f"  Ueberhaenge loeschen ({len(export_tracks)} Spuren, gebündelt)...")
+
+    def _clear_range(in_t, out_t):
+        engine.select_tracks_by_name(export_tracks)
         time.sleep(0.1)
-        engine.set_timeline_selection(
-            in_time=video_end,
-            out_time="23:59:59:24.00"
-        )
+        engine.set_timeline_selection(in_time=in_t, out_time=out_t)
+        time.sleep(0.1)
+        # Auswahl als Edit-Selection über alle Export-Spuren ausdehnen
+        engine.extend_selection_to_target_tracks(export_tracks)
         time.sleep(0.1)
         try:
             engine.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug(f"  Clear {in_t}->{out_t}: {e}")
+        time.sleep(0.1)
+
+    # Pre-Material (vor Start-TC) über ALLE Spuren auf einmal
+    _clear_range("00:00:00:00.00", in_time)
+    # Post-Material (nach Video-Ende) über ALLE Spuren auf einmal
+    _clear_range(video_end, "23:59:59:24.00")
 
     logging.info("  Ueberhaenge geloescht")
 
 
 # -----------------------------------------------------------------------------
-def _do_wav_export(export_tracks, session_dir, min_mtime=None):
+def _do_wav_export(export_tracks, session_dir, min_mtime=None, export_dir=None):
     """Kopiert die konsolidierten WAV-Dateien in den Export-Ordner.
     Unterstützt sowohl Stereo-Interleaved als auch Split-Mono (.L.wav/.R.wav).
     Bei Split-Mono werden L+R zu einer Stereo-Interleaved-Datei zusammengeführt.
+    export_dir: optionaler Zielordner (Standard: <session>/export).
     """
     audio_dir = os.path.join(session_dir, "Audio Files")
-    export_dir = os.path.join(session_dir, "export")
+    if export_dir is None:
+        export_dir = os.path.join(session_dir, "export")
     os.makedirs(export_dir, exist_ok=True)
 
     if not os.path.isdir(audio_dir):
@@ -1692,7 +1714,9 @@ def run_wav_export_standalone(export_tracks, settings):
                 _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
 
         prog["update"](0.88, t("prog_copy_wav"))
-        _do_wav_export(export_tracks, session_dir, min_mtime=export_start_time - 10.0)
+        wav_dir = _resolve_export_dir(settings.get("wav_export_path"), session_dir)
+        _do_wav_export(export_tracks, session_dir, min_mtime=export_start_time - 10.0,
+                       export_dir=wav_dir)
         prog["update"](1.0, t("prog_wav_done"))
         time.sleep(0.8)
         logging.info("=== WAV EXPORT (Standalone) ENDE ===")
@@ -1757,12 +1781,10 @@ tell application "System Events"
             set audioGroup to group 3 of window 1
             set formatPopup to pop up button 3 of audioGroup
             set currentFormat to value of formatPopup
-            
+
             if currentFormat is not "Embedded" then
-                -- Format-Dropdown klicken und "Embedded" auswaehlen
                 click formatPopup
                 delay 0.3
-                -- 4x Pfeiltaste nach unten = "Embedded"
                 key code 125
                 delay 0.1
                 key code 125
@@ -1775,7 +1797,6 @@ tell application "System Events"
                 delay 0.3
             end if
         on error errMsg
-            -- Fallback: versuche ueber die Gruppe mit dem Titel
             try
                 set allGroups to every group of window 1
                 repeat with g in allGroups
@@ -1896,6 +1917,29 @@ tell application "System Events"
             end if
         end try
 
+        -- 9c. "Open"-Dialog "Please choose a folder for converted audio files"
+        --     bestätigen (erscheint bei externen Medien NACH dem .aaf-Save;
+        --     der angezeigte Ordner ist bereits der Export-Ordner).
+        repeat 24 times
+            set destDone to false
+            try
+                repeat with w in (every window)
+                    if (name of w is "Open") then
+                        try
+                            click button "Open" of w
+                        on error
+                            key code 36
+                        end try
+                        set destDone to true
+                        delay 0.8
+                        exit repeat
+                    end if
+                end repeat
+            end try
+            if destDone then exit repeat
+            delay 0.5
+        end repeat
+
         -- 10. Warte bis Export abgeschlossen
         repeat 180 times
             set stillBusy to false
@@ -1954,9 +1998,11 @@ return "OK"
 '''
 
 
-def _do_aaf_export(session_name, session_dir):
-    """Exportiert die selektierten Spuren als AAF mit Embedded Audio."""
-    export_dir = os.path.join(session_dir, "export")
+def _do_aaf_export(session_name, session_dir, export_dir=None):
+    """Exportiert die selektierten Spuren als AAF mit Embedded Audio.
+    export_dir: optionaler Zielordner (Standard: <session>/export)."""
+    if export_dir is None:
+        export_dir = os.path.join(session_dir, "export")
     os.makedirs(export_dir, exist_ok=True)
 
     script = _AAF_EXPORT_SCRIPT_TEMPLATE.format(
@@ -1964,7 +2010,7 @@ def _do_aaf_export(session_name, session_dir):
     )
 
     logging.info(f"  AAF: Exportiere nach {export_dir}")
-    rc, out, err = _run_applescript(script)
+    rc, out, err = _run_applescript(script, timeout=300)
     if "ERROR" in out:
         logging.error(f"  AAF AppleScript Fehler: {out}")
     else:
@@ -2063,12 +2109,406 @@ def run_aaf_export_standalone(export_tracks, settings):
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
         time.sleep(0.2)
 
-        _do_aaf_export(session_name, session_dir)
+        aaf_dir = _resolve_export_dir(settings.get("aaf_embedded_export_path"), session_dir)
+        _do_aaf_export(session_name, session_dir, export_dir=aaf_dir)
         prog["update"](1.0, t("prog_aaf_done"))
         time.sleep(0.8)
         logging.info("=== AAF EXPORT (Standalone) ENDE ===")
     except Exception as e:
         logging.error(f"AAF Export Fehler: {e}", exc_info=True)
+        if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
+    finally:
+        if prog: prog["close"]()
+        _set_busy(False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AAF Reference Export (externe WAV 24-bit, Consolidate-from-source mit Handle)
+# ─────────────────────────────────────────────────────────────────────────────
+# Wird im Pro-Tools-„Export to OMF/AAF"-Dialog gesetzt: Format = Copy/Consolidate
+# from source media, Bit Depth 24, Handle = aaf_reference_handle_ms. Die exakte
+# Dialog-Navigation ist versionsspezifisch und wird per Live-Diagnose kalibriert.
+# Solange _AAF_REFERENCE_CALIBRATED False ist, bricht der Export sicher ab.
+_AAF_REFERENCE_CALIBRATED = True
+_AAF_REFERENCE_SCRIPT_TEMPLATE = '''
+set exportPath to "{export_path}"
+
+tell application "Pro Tools" to activate
+delay 0.5
+
+tell application "System Events"
+    tell process "Pro Tools"
+        set frontmost to true
+        delay 0.3
+
+        -- Datei > Export > Selected Tracks as New AAF/OMF...
+        try
+            click menu item "Selected Tracks as New AAF/OMF..." of menu of menu item "Export" of menu "File" of menu bar 1
+        on error
+            try
+                click menu item "Selected Tracks as New AAF/OMF…" of menu of menu item "Export" of menu "File" of menu bar 1
+            on error
+                return "ERROR:Menu item not found"
+            end try
+        end try
+
+        -- 1. Warte auf "Export to OMF/AAF" Fenster
+        delay 1.5
+        set exportWinFound to false
+        repeat 30 times
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    if name of w contains "Export to OMF" or name of w contains "Export to AAF" or name of w contains "OMF/AAF" then
+                        set exportWinFound to true
+                        exit repeat
+                    end if
+                end repeat
+                if exportWinFound then exit repeat
+            end try
+            delay 0.5
+        end repeat
+
+        if not exportWinFound then
+            return "ERROR:Export to OMF/AAF dialog not found"
+        end if
+        delay 0.5
+
+        -- 2. Audio Media Options: Format=Consolidate from source media, {bit_depth}-bit, WAV, Handle {handle_ms}
+        -- Index-basiert wie beim (bewährten) Embedded-Block: Popup 1 = Copy
+        -- Option, Popup 2 = Bit Depth, Popup 3 = Format. Überschuss-sichere
+        -- Pfeiltasten (Up = zum ersten, Down = zum letzten Eintrag).
+        try
+            set audioGroup to group 3 of window 1
+
+            -- Copy Option (Popup 1) = "Consolidate from source media" (= erster Eintrag)
+            set copPopup to pop up button 1 of audioGroup
+            if (value of copPopup as text) is not "Consolidate from source media" then
+                click copPopup
+                delay 0.3
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 36
+                delay 0.3
+            end if
+
+            -- Bit Depth (Popup 2) = "{bit_depth}" (24 = letzter Eintrag)
+            set bitPopup to pop up button 2 of audioGroup
+            if (value of bitPopup as text) is not "{bit_depth}" then
+                click bitPopup
+                delay 0.3
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 36
+                delay 0.3
+            end if
+
+            -- Format (Popup 3) = "WAV" (= erster Eintrag)
+            set fmtPopup to pop up button 3 of audioGroup
+            if (value of fmtPopup as text) is not "WAV" then
+                click fmtPopup
+                delay 0.3
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 36
+                delay 0.3
+            end if
+
+            -- Handle-Size-Textfeld auf {handle_ms} setzen
+            try
+                set hf to text field 1 of audioGroup
+                set focused of hf to true
+                delay 0.2
+                keystroke "a" using command down
+                delay 0.1
+                keystroke "{handle_ms}"
+                delay 0.1
+                key code 48
+                delay 0.2
+            end try
+        on error errMsg
+            return "ERROR:Audio options failed: " & errMsg
+        end try
+
+        delay 0.3
+
+        -- 3. Dialog mit Enter bestaetigen
+        key code 36
+        delay 1.5
+
+        -- 4. Warte auf "Publishing Options" Fenster
+        set pubWinFound to false
+        repeat 30 times
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    if name of w contains "Publishing" then
+                        set pubWinFound to true
+                        exit repeat
+                    end if
+                end repeat
+                if pubWinFound then exit repeat
+            end try
+            delay 0.5
+        end repeat
+
+        if not pubWinFound then
+            return "ERROR:Publishing Options dialog not found"
+        end if
+        delay 0.5
+
+        -- 5. Pfeiltaste rechts + "_Audio" tippen
+        key code 124
+        delay 0.1
+        keystroke "_Audio"
+        delay 0.3
+
+        -- 6. Enter zum Bestaetigen
+        key code 36
+        delay 1.5
+
+        -- 7. Warte auf "Save" Dialog
+        set saveWinFound to false
+        repeat 30 times
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    if name of w contains "Save" or name of w contains "Speichern" then
+                        set saveWinFound to true
+                        exit repeat
+                    end if
+                end repeat
+                if saveWinFound then exit repeat
+            end try
+            try
+                if exists sheet 1 of window 1 then
+                    set saveWinFound to true
+                    exit repeat
+                end if
+            end try
+            delay 0.5
+        end repeat
+
+        if not saveWinFound then
+            return "ERROR:Save dialog not found"
+        end if
+        delay 0.5
+
+        -- 8. Zum Export-Ordner navigieren via Cmd+Shift+G
+        keystroke "g" using {{command down, shift down}}
+        delay 0.8
+
+        keystroke "a" using command down
+        delay 0.1
+        keystroke exportPath
+        delay 0.3
+
+        key code 36
+        delay 0.8
+
+        -- 9. Save mit Enter
+        key code 36
+        delay 1.5
+
+        -- 9b. Replace-Dialog abfangen
+        try
+            if exists button "Yes" of window 1 then
+                click button "Yes" of window 1
+                delay 0.5
+            end if
+        end try
+        try
+            if exists button "Ja" of window 1 then
+                click button "Ja" of window 1
+                delay 0.5
+            end if
+        end try
+
+        -- 9c. "Open"-Dialog "Please choose a folder for converted audio files"
+        --     bestätigen (erscheint bei externen Medien NACH dem .aaf-Save;
+        --     der angezeigte Ordner ist bereits der Export-Ordner).
+        repeat 24 times
+            set destDone to false
+            try
+                repeat with w in (every window)
+                    if (name of w is "Open") then
+                        try
+                            click button "Open" of w
+                        on error
+                            key code 36
+                        end try
+                        set destDone to true
+                        delay 0.8
+                        exit repeat
+                    end if
+                end repeat
+            end try
+            if destDone then exit repeat
+            delay 0.5
+        end repeat
+
+        -- 10. Warte bis Export abgeschlossen
+        repeat 180 times
+            set stillBusy to false
+            try
+                if exists button "Yes" of window 1 then
+                    click button "Yes" of window 1
+                    delay 0.5
+                end if
+            end try
+            try
+                if exists button "Ja" of window 1 then
+                    click button "Ja" of window 1
+                    delay 0.5
+                end if
+            end try
+            try
+                set allWins to every window
+                repeat with w in allWins
+                    set wName to name of w
+                    if wName contains "Export" or wName contains "Save" or wName contains "Publishing" or wName contains "Bouncing" or wName contains "Writing" then
+                        set stillBusy to true
+                        exit repeat
+                    end if
+                    if wName is "" then
+                        try
+                            if exists button "Yes" of w then
+                                click button "Yes" of w
+                                set stillBusy to true
+                                exit repeat
+                            end if
+                        end try
+                        try
+                            if exists button "Ja" of w then
+                                click button "Ja" of w
+                                set stillBusy to true
+                                exit repeat
+                            end if
+                        end try
+                    end if
+                end repeat
+            end try
+            if not stillBusy then exit repeat
+            delay 1.0
+        end repeat
+
+        delay 1.0
+
+    end tell
+end tell
+return "OK"
+'''
+
+
+def _do_aaf_reference_export(session_name, session_dir, export_dir, settings):
+    """Exportiert die selektierten Spuren als AAF mit externen Referenz-WAVs
+    (24-bit, Consolidate-from-source mit Handle). Pfad: export_dir."""
+    os.makedirs(export_dir, exist_ok=True)
+    if not _AAF_REFERENCE_CALIBRATED or not _AAF_REFERENCE_SCRIPT_TEMPLATE:
+        msg = ("AAF-Reference-Dialogautomation noch nicht kalibriert – Export "
+               "abgebrochen. (Bitte Diagnose-Schritt ausführen.)")
+        logging.error("  " + msg)
+        _show_error(t("alert_error"), msg)
+        return
+    handle_ms = settings.get("aaf_reference_handle_ms", 2000)
+    bit_depth = settings.get("aaf_reference_bit_depth", 24)
+    script = _AAF_REFERENCE_SCRIPT_TEMPLATE.format(
+        export_path=export_dir.replace('"', '\\"'),
+        handle_ms=handle_ms, bit_depth=bit_depth,
+    )
+    logging.info(f"  AAF-Reference: Exportiere nach {export_dir} "
+                 f"(WAV {bit_depth}-bit, Handle {handle_ms}ms)")
+    rc, out, err = _run_applescript(script, timeout=300)
+    if "ERROR" in out:
+        logging.error(f"  AAF-Reference AppleScript Fehler: {out}")
+    else:
+        logging.info(f"  AAF-Reference Export abgeschlossen: {out}")
+
+
+def run_aaf_reference_export_standalone(export_tracks, settings):
+    """Standalone AAF Reference Export.
+
+    KEIN Pre-Consolidate / Trim / Loudness – Quellmaterial bleibt intakt, damit
+    der AAF-Dialog Consolidate-from-source mit Handle erzeugen kann.
+    """
+    prog = None
+    try:
+        logging.info("=== AAF REFERENCE EXPORT (Standalone) START ===")
+        _set_busy(True)
+        prog = _show_progress_win(t("prog_title_aaf"))
+        prog["update"](0.05, t("prog_connect_pt"))
+        engine = _get_engine()
+        if engine is None:
+            logging.error("PTSL Engine nicht verfuegbar.")
+            return
+        session_path = engine.session_path()
+        session_dir = os.path.dirname(session_path)
+        session_name = os.path.splitext(os.path.basename(session_path))[0]
+
+        # Spuren einblenden + selektieren
+        prog["update"](0.10, t("prog_prep_tracks"))
+        try:
+            engine.set_track_hidden_state(export_tracks, False)
+            time.sleep(0.25)
+        except Exception as e:
+            logging.warning(f"  Spuren einblenden: {e}")
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.3)
+
+        # Video-Ende ermitteln
+        prog["update"](0.20, t("prog_get_video_end"))
+        in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
+        video_track = _detect_video_track(engine, settings)
+        video_end = None
+        try:
+            engine.select_all_clips_on_track(video_track)
+            time.sleep(0.3)
+            video_sel = engine.get_timeline_selection()
+            video_end = video_sel[1]
+            logging.info(f"  Video: {video_sel[0]} -> {video_end}")
+        except Exception as e:
+            logging.error(f"  Fehler Videospur '{video_track}': {e}")
+        if not video_end or video_end == "00:00:00:00.00":
+            logging.error("  Video-Ende nicht ermittelt – Abbruch.")
+            return
+
+        if os.path.basename(session_dir) == "Session File Backups":
+            session_dir = os.path.dirname(session_dir)
+
+        # Selektion setzen (KEIN Trim/Consolidate/Loudness – Handles brauchen Quellmaterial)
+        prog["update"](0.50, t("prog_aaf_export"))
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.2)
+        engine.set_timeline_selection(in_time=in_time, out_time=video_end)
+        time.sleep(0.2)
+        engine.extend_selection_to_target_tracks(export_tracks)
+        time.sleep(0.3)
+
+        export_dir = _resolve_export_dir(settings.get("aaf_reference_export_path"), session_dir)
+        _do_aaf_reference_export(session_name, session_dir, export_dir, settings)
+        prog["update"](1.0, t("prog_aaf_done"))
+        time.sleep(0.8)
+        logging.info("=== AAF REFERENCE EXPORT (Standalone) ENDE ===")
+    except Exception as e:
+        logging.error(f"AAF Reference Export Fehler: {e}", exc_info=True)
         if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()
