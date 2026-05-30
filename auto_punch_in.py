@@ -203,6 +203,7 @@ DEFAULT_SETTINGS = {
     "import_close_session": True,
     "http_port": 8899,
     "http_bind_host": "127.0.0.1",
+    "webtrigger_token": "",
     "language": "de",
     "play_custom_ch1_track": "KH2",
     "play_custom_ch1_mute_start": True,
@@ -280,6 +281,10 @@ TRANSLATIONS = {
         "lbl_restart_required": "(Neustart nach Änderung erforderlich)",
         "lbl_network_interface": "Netzwerk-Interface",
         "lbl_interface": "Interface:",
+        "lbl_webtrigger_token": "Token:",
+        "lbl_webtrigger_token_hint": "Schützt den Webtrigger. Bei Netzwerk-Freigabe Pflicht.",
+        "btn_generate_token": "Erzeugen",
+        "btn_clear_token": "Entfernen",
         "lbl_trigger_urls": "Trigger-URLs (Klicken zum Kopieren)",
         "alert_error": "Fehler",
         "alert_note": "Hinweis",
@@ -447,6 +452,10 @@ TRANSLATIONS = {
         "lbl_restart_required": "(Restart required after change)",
         "lbl_network_interface": "Network Interface",
         "lbl_interface": "Interface:",
+        "lbl_webtrigger_token": "Token:",
+        "lbl_webtrigger_token_hint": "Protects the webtrigger. Required when shared on the network.",
+        "btn_generate_token": "Generate",
+        "btn_clear_token": "Clear",
         "lbl_trigger_urls": "Trigger URLs (Click to copy)",
         "alert_error": "Error",
         "alert_note": "Notice",
@@ -1125,11 +1134,21 @@ _VK_V     = 9    # 'v'
 _cached_pid = None
 
 def _pt_pid():
-    """Pro Tools Prozess-ID ermitteln (mit Caching)."""
+    """Pro Tools Prozess-ID ermitteln (mit Caching).
+
+    Der Cache wird vor jeder Rückgabe gegen den laufenden Prozess validiert:
+    Startet Pro Tools neu (Crash/Update), ist die gecachte PID tot und würde
+    sonst Tastendrücke ins Leere senden (CGEventPostToPid an tote PID).
+    """
     global _cached_pid
-    if _cached_pid:
-        return _cached_pid
-        
+    if _cached_pid is not None:
+        try:
+            os.kill(_cached_pid, 0)  # Signal 0: prüft nur Existenz, sendet nichts
+            return _cached_pid
+        except OSError:
+            logging.info(f"Pro Tools PID {_cached_pid} nicht mehr aktiv – Cache geleert.")
+            _cached_pid = None
+
     try:
         out = subprocess.run(
             ["pgrep", "-x", "Pro Tools"],
@@ -4948,28 +4967,53 @@ class PunchBuddyApp(rumps.App):
                 self.wfile.write(b"OK")
                 threading.Thread(target=fn, daemon=True).start()
 
+            def _authorized(self, query):
+                """Prüft das Webtrigger-Token, falls eines konfiguriert ist.
+                Token via ?token=… oder X-Auth-Token-Header. Leeres Token =
+                kein Schutz (nur sinnvoll bei Bind auf 127.0.0.1)."""
+                expected = app_ref.settings.get("webtrigger_token", "") or ""
+                if not expected:
+                    return True
+                supplied = (query.get("token", [""])[0]
+                            or self.headers.get("X-Auth-Token", ""))
+                # Konstantzeit-Vergleich gegen Timing-Angriffe
+                import hmac
+                return hmac.compare_digest(supplied, expected)
+
             def do_GET(self):
-                if self.path == "/trigger":
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(self.path)
+                path = parsed.path
+                query = parse_qs(parsed.query)
+
+                if not self._authorized(query):
+                    self.send_response(401)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"Unauthorized")
+                    return
+
+                if path == "/trigger":
                     self._fire(app_ref._trigger)
-                elif self.path == "/trigger2":
+                elif path == "/trigger2":
                     self._fire(app_ref._trigger_b)
-                elif self.path == "/import":
+                elif path == "/import":
                     self._fire(app_ref._trigger_import)
-                elif self.path == "/export_wav":
+                elif path == "/export_wav":
                     self._fire(app_ref._trigger_export_wav)
-                elif self.path == "/export_aaf":
+                elif path == "/export_aaf":
                     self._fire(app_ref._trigger_export_aaf)
-                elif self.path == "/export_interplay":
+                elif path == "/export_interplay":
                     self._fire(app_ref._trigger_export_interplay)
-                elif self.path == "/play":
+                elif path == "/play":
                     self._fire(app_ref._trigger_play)
-                elif self.path == "/play_custom":
+                elif path == "/play_custom":
                     self._fire(app_ref._trigger_play_custom)
-                elif self.path == "/start":
+                elif path == "/start":
                     self._fire(app_ref._trigger_start)
-                elif self.path.startswith("/preset/"):
+                elif path.startswith("/preset/"):
                     try:
-                        preset_num = int(self.path.split("/preset/")[1])
+                        preset_num = int(path.split("/preset/")[1])
                         idx = preset_num - 1
                         if app_ref.load_preset_by_index(idx):
                             self.send_response(200)
@@ -4997,6 +5041,20 @@ class PunchBuddyApp(rumps.App):
             port = self.settings.get("http_port", 8899)
             bind_host = self.settings.get("http_bind_host", "127.0.0.1")
             actual_bind = "127.0.0.1" if bind_host == "127.0.0.1" else "0.0.0.0"
+
+            # Sicherheit: Bei Bind auf alle Interfaces (LAN erreichbar) ist ein
+            # Token Pflicht. Fehlt es, wird einmalig eines erzeugt und gespeichert,
+            # damit der Server nicht ungeschützt im Netz steht.
+            if actual_bind == "0.0.0.0" and not self.settings.get("webtrigger_token"):
+                import secrets
+                self.settings["webtrigger_token"] = secrets.token_urlsafe(16)
+                save_settings(self.settings)
+                logging.warning(
+                    "Webtrigger ist im LAN erreichbar (0.0.0.0) – automatisch ein "
+                    "Token erzeugt. Stream-Deck-URLs müssen ?token=… anhängen.")
+            _tok = self.settings.get("webtrigger_token", "")
+            if _tok:
+                logging.info(f"Webtrigger-Token aktiv (an URLs anhängen: ?token={_tok})")
 
             self.httpd = None
             for attempt in range(4):
@@ -5892,6 +5950,41 @@ class PunchBuddyApp(rumps.App):
         l_iface_note.setTextColor_(NSColor.secondaryLabelColor())
         t4_view.addSubview_(l_iface_note)
 
+        # ── Token (Webtrigger-Authentifizierung) ────────────────────────
+        t4_y -= 30
+        l_token = NSTextField.labelWithString_(t("lbl_webtrigger_token"))
+        l_token.setFrame_(NSMakeRect(PAD, t4_y + 2, 80, 20))
+        l_token.setFont_(NSFont.systemFontOfSize_(12))
+        t4_view.addSubview_(l_token)
+
+        tf_token = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 85, t4_y, 260, 22))
+        tf_token.setStringValue_(self.settings.get("webtrigger_token", "") or "")
+        tf_token.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.0))
+        t4_view.addSubview_(tf_token)
+        controls["webtrigger_token"] = tf_token
+
+        btn_gen_token = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 355, t4_y, 90, 22))
+        btn_gen_token.setTitle_(t("btn_generate_token"))
+        btn_gen_token.setBezelStyle_(NSBezelStyleRounded)
+        btn_gen_token.setFont_(NSFont.systemFontOfSize_(11))
+        t4_view.addSubview_(btn_gen_token)
+
+        btn_clear_token = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 450, t4_y, 90, 22))
+        btn_clear_token.setTitle_(t("btn_clear_token"))
+        btn_clear_token.setBezelStyle_(NSBezelStyleRounded)
+        btn_clear_token.setFont_(NSFont.systemFontOfSize_(11))
+        t4_view.addSubview_(btn_clear_token)
+
+        t4_y -= 20
+        l_token_hint = NSTextField.labelWithString_(t("lbl_webtrigger_token_hint"))
+        l_token_hint.setFrame_(NSMakeRect(PAD + 85, t4_y, 460, 18))
+        l_token_hint.setFont_(NSFont.systemFontOfSize_(11))
+        l_token_hint.setTextColor_(NSColor.secondaryLabelColor())
+        t4_view.addSubview_(l_token_hint)
+        self._token_field = tf_token
+        self._token_gen_button = btn_gen_token
+        self._token_clear_button = btn_clear_token
+
         t4_y -= 35
         h_urls = NSTextField.labelWithString_(t("lbl_trigger_urls"))
         h_urls.setFrame_(NSMakeRect(PAD, t4_y, 400, 20))
@@ -5901,6 +5994,8 @@ class PunchBuddyApp(rumps.App):
         port = getattr(self, '_http_port', self.settings.get("http_port", 8899))
         display_host = getattr(self, '_http_bind_host_display',
                                self.settings.get("http_bind_host", "127.0.0.1"))
+        _tok = self.settings.get("webtrigger_token", "") or ""
+        _token_qs = f"?token={_tok}" if _tok else ""
 
         self._webtrigger_urls = []
 
@@ -5918,7 +6013,7 @@ class PunchBuddyApp(rumps.App):
 
         for path, label in _core_entries:
             t4_y -= 28
-            url = f"http://{display_host}:{port}{path}"
+            url = f"http://{display_host}:{port}{path}{_token_qs}"
             self._webtrigger_urls.append((url, label))
             tag_idx = len(self._webtrigger_urls) - 1
 
@@ -5927,13 +6022,13 @@ class PunchBuddyApp(rumps.App):
             l_url.setFont_(NSFont.systemFontOfSize_(12))
             t4_view.addSubview_(l_url)
 
-            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 320, 22))
+            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 405, 22))
             tf_url.setStringValue_(url)
             tf_url.setEditable_(False); tf_url.setSelectable_(True)
             tf_url.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.0))
             t4_view.addSubview_(tf_url)
 
-            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 475, t4_y, 70, 22))
+            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 560, t4_y, 70, 22))
             copy_btn.setTitle_(t("btn_copy"))
             copy_btn.setBezelStyle_(NSBezelStyleRounded)
             copy_btn.setFont_(NSFont.systemFontOfSize_(11))
@@ -5959,7 +6054,7 @@ class PunchBuddyApp(rumps.App):
                 preset_name = presets[idx].get("name", preset_name)
 
             path = f"/preset/{idx+1}"
-            url = f"http://{display_host}:{port}{path}"
+            url = f"http://{display_host}:{port}{path}{_token_qs}"
             self._webtrigger_urls.append((url, preset_name))
             tag_idx = len(self._webtrigger_urls) - 1
 
@@ -5969,13 +6064,13 @@ class PunchBuddyApp(rumps.App):
             l_url.setFont_(NSFont.systemFontOfSize_(12))
             t4_view.addSubview_(l_url)
 
-            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 320, 22))
+            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 405, 22))
             tf_url.setStringValue_(url)
             tf_url.setEditable_(False); tf_url.setSelectable_(True)
             tf_url.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.0))
             t4_view.addSubview_(tf_url)
 
-            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 475, t4_y, 70, 22))
+            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 560, t4_y, 70, 22))
             copy_btn.setTitle_(t("btn_copy"))
             copy_btn.setBezelStyle_(NSBezelStyleRounded)
             copy_btn.setFont_(NSFont.systemFontOfSize_(11))
@@ -5986,11 +6081,21 @@ class PunchBuddyApp(rumps.App):
 
         _wt_target = _WebtriggerCopyTarget.alloc().init()
         _wt_target._app = self
+        _wt_target._token_field = getattr(self, '_token_field', None)
         for sv in t4_view.subviews():
             if isinstance(sv, NSButton) and sv.title() == t("btn_copy"):
                 sv.setTarget_(_wt_target)
                 sv.setAction_(objc.selector(_wt_target.onCopy_, signature=b'v@:@'))
                 self._webtrigger_buttons.append(sv)
+        # Token-Buttons verdrahten
+        if getattr(self, '_token_gen_button', None) is not None:
+            self._token_gen_button.setTarget_(_wt_target)
+            self._token_gen_button.setAction_(
+                objc.selector(_wt_target.onGenerateToken_, signature=b'v@:@'))
+        if getattr(self, '_token_clear_button', None) is not None:
+            self._token_clear_button.setTarget_(_wt_target)
+            self._token_clear_button.setAction_(
+                objc.selector(_wt_target.onClearToken_, signature=b'v@:@'))
         self._wt_target = _wt_target
 
         # ── TAB 5: PRESETS ──────────────────────────────────────────────────
@@ -6756,6 +6861,19 @@ class _WebtriggerCopyTarget(AppKit.NSObject):
     def onCopy_(self, sender):
         self._do_copy(sender)
 
+    def onGenerateToken_(self, sender):
+        """Erzeugt ein neues Token und schreibt es ins Token-Feld."""
+        import secrets
+        field = getattr(self, '_token_field', None)
+        if field is not None:
+            field.setStringValue_(secrets.token_urlsafe(16))
+
+    def onClearToken_(self, sender):
+        """Leert das Token-Feld (Webtrigger danach ungeschützt)."""
+        field = getattr(self, '_token_field', None)
+        if field is not None:
+            field.setStringValue_("")
+
 class _UnifiedSettingsTarget(AppKit.NSObject):
     """ObjC-kompatibles Target fuer das kombinierte Einstellungsfenster."""
 
@@ -7072,6 +7190,13 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                     self._app.settings["http_bind_host"] = new_host
                     if new_host != old_host:
                         need_http_restart = True
+
+            if "webtrigger_token" in self._controls:
+                new_token = self._controls["webtrigger_token"].stringValue().strip()
+                old_token = self._app.settings.get("webtrigger_token", "")
+                self._app.settings["webtrigger_token"] = new_token
+                if new_token != old_token:
+                    need_http_restart = True
 
             # 6. Sprache speichern und Menü-Titel sofort aktualisieren
             if "language" in self._controls:
