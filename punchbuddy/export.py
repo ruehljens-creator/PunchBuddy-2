@@ -55,11 +55,6 @@ def _detect_video_track(engine, settings=None):
 # ─────────────────────────────────────────────────────────────────────────────
 # Hauptautomatisierung
 # ─────────────────────────────────────────────────────────────────────────────
-# Transport-Funktionen ausgelagert nach punchbuddy/transport.py
-from punchbuddy.transport import (
-    _stop_lock, run_punch_in, run_play_custom, run_play, run_stop,
-    run_goto_start, _set_busy, _send_shift_oe,
-)
 
 
 

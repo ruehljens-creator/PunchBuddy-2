@@ -263,10 +263,6 @@ def normalize_track(engine, session_dir, track_name="ST", target_lufs=-23.0, max
 _loudness_win_refs = []  # Hält ObjC-Referenzen am Leben (verhindert PyObjC-Dealloc-Crash)
 
 
-# Geteilte AppKit-Helfer ausgelagert nach punchbuddy/uikit.py
-from punchbuddy.uikit import _dispatch_main, _show_progress_win
-
-
 def _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp):
     """Ruft normalize_track für jede Spur auf und zeigt dabei ein Fortschrittsfenster."""
     import AppKit as _AK
