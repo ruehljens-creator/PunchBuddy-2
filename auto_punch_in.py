@@ -173,22 +173,25 @@ _config_refs = []  # wird in _open_unified_settings_window befüllt
 
 
 def _close_existing_settings_window():
-    """Schließt ein noch offenes Einstellungsfenster und gibt alle Referenzen frei.
-    Verhindert den PyObjC-Crash der entsteht wenn _config_refs überschrieben wird
-    während ObjC noch eine schwache Referenz auf den alten target hält."""
+    """Schließt ein evtl. noch offenes Einstellungsfenster und gibt alle
+    Referenzen frei. Gibt immer False zurück → der Aufrufer baut danach ein
+    frisches Fenster.
+
+    Früher wurde bei `isVisible()` das bestehende Fenster nur nach vorne
+    geholt. Nach einem Speichern (modaler Dialog) lieferte `isVisible()` auf
+    dem bereits geschlossenen Fenster jedoch fälschlich True, wodurch sich das
+    Fenster kein zweites Mal öffnen ließ. Deshalb jetzt: immer schließen +
+    Referenzen leeren + Neuaufbau erlauben."""
     global _config_refs
     if not _config_refs:
         return False  # kein Fenster offen
     try:
         win = _config_refs[0]
-        if win.isVisible():
-            win.makeKeyAndOrderFront_(None)
-            return True  # Fenster ist sichtbar → nach vorne bringen, kein neues öffnen
         win.close()
     except Exception:
         pass
     _config_refs = []
-    return False  # Fenster war geschlossen → neu öffnen erlaubt
+    return False
 
 # ── Icon-Pfad ermitteln (global, wird für Dock, Fenster und Menüleiste verwendet) ─
 _ICON_PNG_PATH = None
@@ -827,6 +830,7 @@ class PunchBuddyApp(rumps.App):
             AppKit.NSBackingStoreBuffered,
             False
         )
+        window.setReleasedWhenClosed_(False)  # Lebenszeit über _config_refs steuern
         window.setTitle_("Einstellungen PunchBuddy")
         window.setLevel_(3)
 
@@ -1076,6 +1080,7 @@ class PunchBuddyApp(rumps.App):
         style = AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(xx, yy, WIN_W, WIN_H), style, AppKit.NSBackingStoreBuffered, False)
+        window.setReleasedWhenClosed_(False)  # Lebenszeit über _config_refs steuern
         window.setTitle_(t("title_settings_window"))
         window.setLevel_(3)
 
@@ -1877,6 +1882,7 @@ class PunchBuddyApp(rumps.App):
             AppKit.NSBackingStoreBuffered,
             False
         )
+        window.setReleasedWhenClosed_(False)  # Lebenszeit über _config_refs steuern
         window.setTitle_("Einstellungen PunchBuddy – Spuren")
         window.setLevel_(3)  # Floating über anderen Fenstern
 
