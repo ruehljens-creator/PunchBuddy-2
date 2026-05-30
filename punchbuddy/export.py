@@ -2175,75 +2175,62 @@ tell application "System Events"
         delay 0.5
 
         -- 2. Audio Media Options: Format=Consolidate from source media, {bit_depth}-bit, WAV, Handle {handle_ms}
+        -- Index-basiert wie beim (bewährten) Embedded-Block: Popup 1 = Copy
+        -- Option, Popup 2 = Bit Depth, Popup 3 = Format. Überschuss-sichere
+        -- Pfeiltasten (Up = zum ersten, Down = zum letzten Eintrag).
         try
-            set audioGroup to (first group of window 1 whose title is "Audio Media Options")
+            set audioGroup to group 3 of window 1
 
-            -- Copy-Option-Popup (Wert enthält "source media") -> "Consolidate
-            --    from source media" = ERSTER Eintrag -> genügend Pfeil-nach-oben.
-            repeat with p in (every pop up button of audioGroup)
-                set pv to ""
-                try
-                    set pv to (value of p as text)
-                end try
-                if pv contains "source media" then
-                    if pv is not "Consolidate from source media" then
-                        click p
-                        delay 0.4
-                        repeat 6 times
-                            key code 126
-                            delay 0.06
-                        end repeat
-                        key code 36
-                        delay 0.4
-                    end if
-                    exit repeat
-                end if
-            end repeat
-            delay 0.2
+            -- Copy Option (Popup 1) = "Consolidate from source media" (= erster Eintrag)
+            set copPopup to pop up button 1 of audioGroup
+            if (value of copPopup as text) is not "Consolidate from source media" then
+                click copPopup
+                delay 0.3
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 36
+                delay 0.3
+            end if
 
-            -- Bit-Depth-Popup (Wert "16"/"24") -> "24" = LETZTER -> Pfeil-nach-unten.
-            repeat with p in (every pop up button of audioGroup)
-                set pv to ""
-                try
-                    set pv to (value of p as text)
-                end try
-                if pv is in {{"16", "24"}} then
-                    if pv is not "{bit_depth}" then
-                        click p
-                        delay 0.4
-                        repeat 6 times
-                            key code 125
-                            delay 0.06
-                        end repeat
-                        key code 36
-                        delay 0.4
-                    end if
-                    exit repeat
-                end if
-            end repeat
-            delay 0.2
+            -- Bit Depth (Popup 2) = "{bit_depth}" (24 = letzter Eintrag)
+            set bitPopup to pop up button 2 of audioGroup
+            if (value of bitPopup as text) is not "{bit_depth}" then
+                click bitPopup
+                delay 0.3
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 125
+                delay 0.1
+                key code 36
+                delay 0.3
+            end if
 
-            -- Dateiformat-Popup -> "WAV" = ERSTER Eintrag -> Pfeil-nach-oben.
-            repeat with p in (every pop up button of audioGroup)
-                set pv to ""
-                try
-                    set pv to (value of p as text)
-                end try
-                if pv is in {{"WAV", "AIFF", "MXF", "Embedded"}} then
-                    if pv is not "WAV" then
-                        click p
-                        delay 0.4
-                        repeat 6 times
-                            key code 126
-                            delay 0.06
-                        end repeat
-                        key code 36
-                        delay 0.4
-                    end if
-                    exit repeat
-                end if
-            end repeat
-            delay 0.2
+            -- Format (Popup 3) = "WAV" (= erster Eintrag)
+            set fmtPopup to pop up button 3 of audioGroup
+            if (value of fmtPopup as text) is not "WAV" then
+                click fmtPopup
+                delay 0.3
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 126
+                delay 0.1
+                key code 36
+                delay 0.3
+            end if
 
             -- Handle-Size-Textfeld auf {handle_ms} setzen
             try
