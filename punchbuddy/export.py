@@ -1774,23 +1774,38 @@ tell application "System Events"
         end if
         delay 0.5
 
-        -- 2. Audio Media Options: Format = Embedded (robust, per Menüinhalt
-        --    identifiziert statt fragiler Pfeiltasten-Zählung)
+        -- 2. Audio Media Options: Format = "Embedded".
+        --    Embedded ist der LETZTE Eintrag im Format-Popup. Popup per Wert
+        --    finden (auslesbar), öffnen, genügend Pfeil-nach-unten (Überschuss
+        --    bleibt am letzten Eintrag = Embedded), Enter bestätigt.
         try
             set audioGroup to (first group of window 1 whose title is "Audio Media Options")
+            set fmtIdx to 0
+            set i to 0
             repeat with p in (every pop up button of audioGroup)
+                set i to i + 1
+                set pv to ""
                 try
-                    if (exists menu item "Embedded" of menu 1 of p) then
-                        if (value of p as text) is not "Embedded" then
-                            click p
-                            delay 0.3
-                            click menu item "Embedded" of menu 1 of p
-                            delay 0.4
-                        end if
-                        exit repeat
-                    end if
+                    set pv to (value of p as text)
                 end try
+                if pv is in {{"WAV", "AIFF", "MXF", "Embedded"}} then
+                    set fmtIdx to i
+                    exit repeat
+                end if
             end repeat
+            if fmtIdx > 0 then
+                set fp to pop up button fmtIdx of audioGroup
+                if (value of fp as text) is not "Embedded" then
+                    click fp
+                    delay 0.4
+                    repeat 6 times
+                        key code 125
+                        delay 0.06
+                    end repeat
+                    key code 36
+                    delay 0.4
+                end if
+            end if
         on error errMsg
             return "ERROR:Audio options (embedded) failed: " & errMsg
         end try
@@ -2152,51 +2167,70 @@ tell application "System Events"
         try
             set audioGroup to (first group of window 1 whose title is "Audio Media Options")
 
-            -- Format-Popup (enthält "Consolidate from source media")
+            -- Copy-Option-Popup (Wert enthält "source media") -> "Consolidate
+            --    from source media" = ERSTER Eintrag -> genügend Pfeil-nach-oben.
             repeat with p in (every pop up button of audioGroup)
+                set pv to ""
                 try
-                    if (exists menu item "Consolidate from source media" of menu 1 of p) then
-                        if (value of p as text) is not "Consolidate from source media" then
-                            click p
-                            delay 0.3
-                            click menu item "Consolidate from source media" of menu 1 of p
-                            delay 0.4
-                        end if
-                        exit repeat
-                    end if
+                    set pv to (value of p as text)
                 end try
-            end repeat
-            delay 0.3
-
-            -- Bit-Depth-Popup (enthält "16" → eindeutig die Bit-Tiefe)
-            repeat with p in (every pop up button of audioGroup)
-                try
-                    if (exists menu item "16" of menu 1 of p) then
-                        if (value of p as text) is not "{bit_depth}" then
-                            click p
-                            delay 0.3
-                            click menu item "{bit_depth}" of menu 1 of p
-                            delay 0.3
-                        end if
-                        exit repeat
+                if pv contains "source media" then
+                    if pv is not "Consolidate from source media" then
+                        click p
+                        delay 0.4
+                        repeat 6 times
+                            key code 126
+                            delay 0.06
+                        end repeat
+                        key code 36
+                        delay 0.4
                     end if
-                end try
+                    exit repeat
+                end if
             end repeat
             delay 0.2
 
-            -- Dateiformat-Popup (enthält "WAV")
+            -- Bit-Depth-Popup (Wert "16"/"24") -> "24" = LETZTER -> Pfeil-nach-unten.
             repeat with p in (every pop up button of audioGroup)
+                set pv to ""
                 try
-                    if (exists menu item "WAV" of menu 1 of p) then
-                        if (value of p as text) is not "WAV" then
-                            click p
-                            delay 0.3
-                            click menu item "WAV" of menu 1 of p
-                            delay 0.3
-                        end if
-                        exit repeat
-                    end if
+                    set pv to (value of p as text)
                 end try
+                if pv is in {{"16", "24"}} then
+                    if pv is not "{bit_depth}" then
+                        click p
+                        delay 0.4
+                        repeat 6 times
+                            key code 125
+                            delay 0.06
+                        end repeat
+                        key code 36
+                        delay 0.4
+                    end if
+                    exit repeat
+                end if
+            end repeat
+            delay 0.2
+
+            -- Dateiformat-Popup -> "WAV" = ERSTER Eintrag -> Pfeil-nach-oben.
+            repeat with p in (every pop up button of audioGroup)
+                set pv to ""
+                try
+                    set pv to (value of p as text)
+                end try
+                if pv is in {{"WAV", "AIFF", "MXF", "Embedded"}} then
+                    if pv is not "WAV" then
+                        click p
+                        delay 0.4
+                        repeat 6 times
+                            key code 126
+                            delay 0.06
+                        end repeat
+                        key code 36
+                        delay 0.4
+                    end if
+                    exit repeat
+                end if
             end repeat
             delay 0.2
 
