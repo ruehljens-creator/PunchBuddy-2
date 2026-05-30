@@ -1496,34 +1496,33 @@ def _protools_selection_context(engine):
 # WAV Export - Konsolidierte Dateien in Export-Ordner kopieren
 # -----------------------------------------------------------------------------
 def _trim_overhangs(engine, export_tracks, in_time, video_end):
-    """Löscht Überhänge (Pre/Post-Material) pro Spur außerhalb der Export-Range."""
-    logging.info(f"  Ueberhaenge loeschen ({len(export_tracks)} Spuren)...")
-    for track_name in export_tracks:
-        # Pre-Material (vor Start-TC) löschen
-        engine.select_all_clips_on_track(track_name)
-        time.sleep(0.1)
-        engine.set_timeline_selection(
-            in_time="00:00:00:00.00",
-            out_time=in_time
-        )
-        time.sleep(0.1)
-        try:
-            engine.clear()
-        except Exception:
-            pass
+    """Löscht Überhänge (Pre/Post-Material) außerhalb der Export-Range.
 
-        # Post-Material (nach Video-Ende) löschen
-        engine.select_all_clips_on_track(track_name)
+    Gebündelt: statt pro Spur einzeln wird die Pre-Region (vor Start-TC) bzw.
+    Post-Region (nach Video-Ende) ÜBER ALLE Export-Spuren gleichzeitig
+    selektiert und in EINEM Clear gelöscht. Das ersetzt 2×N Einzelschritte
+    durch 2 Sammel-Schritte und ist deutlich schneller.
+    """
+    logging.info(f"  Ueberhaenge loeschen ({len(export_tracks)} Spuren, gebündelt)...")
+
+    def _clear_range(in_t, out_t):
+        engine.select_tracks_by_name(export_tracks)
         time.sleep(0.1)
-        engine.set_timeline_selection(
-            in_time=video_end,
-            out_time="23:59:59:24.00"
-        )
+        engine.set_timeline_selection(in_time=in_t, out_time=out_t)
+        time.sleep(0.1)
+        # Auswahl als Edit-Selection über alle Export-Spuren ausdehnen
+        engine.extend_selection_to_target_tracks(export_tracks)
         time.sleep(0.1)
         try:
             engine.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug(f"  Clear {in_t}->{out_t}: {e}")
+        time.sleep(0.1)
+
+    # Pre-Material (vor Start-TC) über ALLE Spuren auf einmal
+    _clear_range("00:00:00:00.00", in_time)
+    # Post-Material (nach Video-Ende) über ALLE Spuren auf einmal
+    _clear_range(video_end, "23:59:59:24.00")
 
     logging.info("  Ueberhaenge geloescht")
 
