@@ -11,6 +11,7 @@ import pytest
 import auto_punch_in as a
 import punchbuddy.config as cfg
 import punchbuddy.keys as keys
+import punchbuddy.engine as engine
 
 
 # ── _deep_merge ───────────────────────────────────────────────────────────
@@ -157,7 +158,7 @@ def test_ptsl_call_happy_path_sets_deadline():
 
 def test_ptsl_call_command_error_keeps_engine(monkeypatch):
     reset_called = {"n": 0}
-    monkeypatch.setattr(a, "_reset_engine", lambda: reset_called.__setitem__("n", reset_called["n"] + 1))
+    monkeypatch.setattr(engine, "_reset_engine", lambda: reset_called.__setitem__("n", reset_called["n"] + 1))
 
     def fn():
         raise ValueError("fachlicher Fehler")
@@ -170,7 +171,7 @@ def test_ptsl_call_command_error_keeps_engine(monkeypatch):
 
 def test_ptsl_call_rpc_deadline_resets_engine(monkeypatch):
     reset_called = {"n": 0}
-    monkeypatch.setattr(a, "_reset_engine", lambda: reset_called.__setitem__("n", reset_called["n"] + 1))
+    monkeypatch.setattr(engine, "_reset_engine", lambda: reset_called.__setitem__("n", reset_called["n"] + 1))
 
     class _Deadline(grpc.RpcError):
         def code(self):
