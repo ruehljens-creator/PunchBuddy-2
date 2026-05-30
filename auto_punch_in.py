@@ -6022,13 +6022,13 @@ class PunchBuddyApp(rumps.App):
             l_url.setFont_(NSFont.systemFontOfSize_(12))
             t4_view.addSubview_(l_url)
 
-            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 320, 22))
+            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 405, 22))
             tf_url.setStringValue_(url)
             tf_url.setEditable_(False); tf_url.setSelectable_(True)
             tf_url.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.0))
             t4_view.addSubview_(tf_url)
 
-            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 475, t4_y, 70, 22))
+            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 560, t4_y, 70, 22))
             copy_btn.setTitle_(t("btn_copy"))
             copy_btn.setBezelStyle_(NSBezelStyleRounded)
             copy_btn.setFont_(NSFont.systemFontOfSize_(11))
@@ -6064,13 +6064,13 @@ class PunchBuddyApp(rumps.App):
             l_url.setFont_(NSFont.systemFontOfSize_(12))
             t4_view.addSubview_(l_url)
 
-            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 320, 22))
+            tf_url = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t4_y, 405, 22))
             tf_url.setStringValue_(url)
             tf_url.setEditable_(False); tf_url.setSelectable_(True)
             tf_url.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.0))
             t4_view.addSubview_(tf_url)
 
-            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 475, t4_y, 70, 22))
+            copy_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 560, t4_y, 70, 22))
             copy_btn.setTitle_(t("btn_copy"))
             copy_btn.setBezelStyle_(NSBezelStyleRounded)
             copy_btn.setFont_(NSFont.systemFontOfSize_(11))
