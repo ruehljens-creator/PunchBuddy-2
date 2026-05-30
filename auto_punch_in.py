@@ -1087,7 +1087,7 @@ class PunchBuddyApp(rumps.App):
         NSBezelStyleRounded = AppKit.NSBezelStyleRounded
 
         WIN_W = 680
-        WIN_H = 850
+        WIN_H = 1020
         PAD = 20
         BUTTON_H = 50
 
