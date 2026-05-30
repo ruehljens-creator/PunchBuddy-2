@@ -1891,6 +1891,29 @@ tell application "System Events"
             end if
         end try
 
+        -- 9c. "Open"-Dialog "Please choose a folder for converted audio files"
+        --     bestätigen (erscheint bei externen Medien NACH dem .aaf-Save;
+        --     der angezeigte Ordner ist bereits der Export-Ordner).
+        repeat 24 times
+            set destDone to false
+            try
+                repeat with w in (every window)
+                    if (name of w is "Open") then
+                        try
+                            click button "Open" of w
+                        on error
+                            key code 36
+                        end try
+                        set destDone to true
+                        delay 0.8
+                        exit repeat
+                    end if
+                end repeat
+            end try
+            if destDone then exit repeat
+            delay 0.5
+        end repeat
+
         -- 10. Warte bis Export abgeschlossen
         repeat 180 times
             set stillBusy to false
@@ -2286,6 +2309,29 @@ tell application "System Events"
                 delay 0.5
             end if
         end try
+
+        -- 9c. "Open"-Dialog "Please choose a folder for converted audio files"
+        --     bestätigen (erscheint bei externen Medien NACH dem .aaf-Save;
+        --     der angezeigte Ordner ist bereits der Export-Ordner).
+        repeat 24 times
+            set destDone to false
+            try
+                repeat with w in (every window)
+                    if (name of w is "Open") then
+                        try
+                            click button "Open" of w
+                        on error
+                            key code 36
+                        end try
+                        set destDone to true
+                        delay 0.8
+                        exit repeat
+                    end if
+                end repeat
+            end try
+            if destDone then exit repeat
+            delay 0.5
+        end repeat
 
         -- 10. Warte bis Export abgeschlossen
         repeat 180 times
