@@ -30,6 +30,7 @@ import select
 import shutil
 import glob
 import copy
+from punchbuddy import state
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dock-Name + Prozessname SOFORT setzen (VOR import rumps / AppKit)
@@ -124,194 +125,12 @@ def webtrigger_token_ok(expected: str, supplied: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # CGEvent – Tastendruck direkt an Pro Tools (non-blocking)
 # ─────────────────────────────────────────────────────────────────────────────
-# macOS Virtual Key Codes
-_VK_K     = 40   # 'k'
-_VK_F12   = 111  # F12
-_VK_SPACE = 49   # Space
-_VK_R     = 15   # 'r'
-_VK_A     = 0    # 'a'
-_VK_F2    = 120  # F2
-_VK_C     = 8    # 'c'
-_VK_ESC   = 53   # Escape
-_VK_P     = 35   # 'p'
-_VK_V     = 9    # 'v'
-
-_cached_pid = None
-
-def _pt_pid():
-    """Pro Tools Prozess-ID ermitteln (mit Caching).
-
-    Der Cache wird vor jeder Rückgabe gegen den laufenden Prozess validiert:
-    Startet Pro Tools neu (Crash/Update), ist die gecachte PID tot und würde
-    sonst Tastendrücke ins Leere senden (CGEventPostToPid an tote PID).
-    """
-    global _cached_pid
-    if _cached_pid is not None:
-        try:
-            os.kill(_cached_pid, 0)  # Signal 0: prüft nur Existenz, sendet nichts
-            return _cached_pid
-        except OSError:
-            logging.info(f"Pro Tools PID {_cached_pid} nicht mehr aktiv – Cache geleert.")
-            _cached_pid = None
-
-    try:
-        out = subprocess.run(
-            ["pgrep", "-x", "Pro Tools"],
-            capture_output=True, text=True, timeout=2
-        ).stdout.strip()
-        if out:
-            _cached_pid = int(out)
-            return _cached_pid
-        return None
-    except Exception:
-        return None
-
-def _send_key(vk: int, cmd: bool = False) -> bool:
-    """
-    Sendet Tastendruck direkt an Pro Tools via CGEventPostToPid.
-    Non-blocking: kehrt sofort zurück, kein Warten auf PT's Main-Thread.
-    Fallback auf AppleScript wenn Quartz nicht verfügbar.
-    """
-    try:
-        import Quartz
-        pid = _pt_pid()
-        if not pid:
-            logging.warning("send_key: Pro Tools PID nicht gefunden.")
-            return False
-        src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
-        ev_dn = Quartz.CGEventCreateKeyboardEvent(src, vk, True)
-        ev_up = Quartz.CGEventCreateKeyboardEvent(src, vk, False)
-        if cmd:
-            flags = Quartz.kCGEventFlagMaskCommand
-            Quartz.CGEventSetFlags(ev_dn, flags)
-            Quartz.CGEventSetFlags(ev_up, flags)
-        Quartz.CGEventPostToPid(pid, ev_dn)
-        Quartz.CGEventPostToPid(pid, ev_up)
-        return True
-    except ImportError:
-        logging.debug("Quartz nicht verfügbar – AppleScript Fallback")
-        if APPLESCRIPT_OK:
-            char = {_VK_K: "k", _VK_F12: "", _VK_SPACE: " "}.get(vk, "")
-            if char:
-                mod = "{command down}" if cmd else ""
-                script = (
-                    f'tell application "System Events" to tell process "Pro Tools" to '
-                    f'keystroke "{char}"' + (f" using {mod}" if mod else "")
-                )
-                s = NSAppleScript.alloc().initWithSource_(script)
-                s.executeAndReturnError_(None)
-        return False
-    except Exception as e:
-        logging.error(f"send_key vk={vk} cmd={cmd}: {e}")
-        return False
-
-# Validierter PID-Cache pro App-Name. Spart auf Hot-Paths (Key-Sends an PT/
-# Interplay während Export) die NSWorkspace-Iteration + bis zu zwei pgrep-Forks.
-# Vor jeder Rückgabe wird die PID mit os.kill(pid, 0) gegen den laufenden Prozess
-# geprüft – nach App-Neustart wird der Eintrag automatisch verworfen.
-_app_pid_cache: dict = {}
-
-
-def _app_pid(app_name: str):
-    """Ermittelt die PID einer App anhand ihres Prozessnamens (mit validiertem
-    Cache). Nutzt NSWorkspace (leerzeichentolerant) als primäre Methode,
-    pgrep als Fallback."""
-    cached = _app_pid_cache.get(app_name)
-    if cached is not None:
-        try:
-            os.kill(cached, 0)
-            return cached
-        except OSError:
-            _app_pid_cache.pop(app_name, None)
-
-    found = None
-    # NSWorkspace: normalisiert Leerzeichen, damit "interplayAccess" == "Interplay Access"
-    try:
-        from AppKit import NSWorkspace
-        ws = NSWorkspace.sharedWorkspace()
-        name_norm = app_name.lower().replace(" ", "")
-        for app in ws.runningApplications():
-            ln = app.localizedName() or ""
-            if name_norm in ln.lower().replace(" ", ""):
-                found = app.processIdentifier()
-                break
-    except Exception:
-        pass
-    # Fallback: pgrep exakt, dann ohne -x
-    if found is None:
-        try:
-            out = subprocess.run(
-                ["pgrep", "-xi", app_name],
-                capture_output=True, text=True, timeout=2
-            ).stdout.strip()
-            if out:
-                found = int(out.split("\n")[0])
-            else:
-                out = subprocess.run(
-                    ["pgrep", "-i", app_name],
-                    capture_output=True, text=True, timeout=2
-                ).stdout.strip()
-                if out:
-                    found = int(out.split("\n")[0])
-        except Exception:
-            pass
-
-    if found is not None:
-        _app_pid_cache[app_name] = found
-    return found
-
-def _send_key_to_app(vk: int, app_name: str, cmd: bool = False,
-                      shift: bool = False, ctrl: bool = False) -> bool:
-    """
-    Sendet Tastendruck an eine beliebige App via CGEventPostToPid.
-    Umgeht die osascript Accessibility-Einschränkung.
-    """
-    try:
-        import Quartz
-        pid = _app_pid(app_name)
-        if not pid:
-            logging.warning(f"send_key_to_app: '{app_name}' PID nicht gefunden.")
-            return False
-        src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
-        ev_dn = Quartz.CGEventCreateKeyboardEvent(src, vk, True)
-        ev_up = Quartz.CGEventCreateKeyboardEvent(src, vk, False)
-        flags = 0
-        if cmd:
-            flags |= Quartz.kCGEventFlagMaskCommand
-        if shift:
-            flags |= Quartz.kCGEventFlagMaskShift
-        if ctrl:
-            flags |= Quartz.kCGEventFlagMaskControl
-        if flags:
-            Quartz.CGEventSetFlags(ev_dn, flags)
-            Quartz.CGEventSetFlags(ev_up, flags)
-        Quartz.CGEventPostToPid(pid, ev_dn)
-        Quartz.CGEventPostToPid(pid, ev_up)
-        return True
-    except Exception as e:
-        logging.error(f"send_key_to_app vk={vk} app={app_name}: {e}")
-        return False
-
-def _activate_app(app_name: str) -> bool:
-    """Aktiviert eine App (bringt sie in den Vordergrund) via NSWorkspace.
-    Normalisiert Leerzeichen im Namen, damit z.B. "interplayAccess" == "Interplay Access".
-    """
-    try:
-        from AppKit import NSWorkspace
-        ws = NSWorkspace.sharedWorkspace()
-        apps = ws.runningApplications()
-        name_norm = app_name.lower().replace(" ", "")
-        for app in apps:
-            ln = app.localizedName() or ""
-            if name_norm in ln.lower().replace(" ", ""):
-                app.activateWithOptions_(0x01)  # NSApplicationActivateIgnoringOtherApps
-                return True
-        # Fallback: via open command
-        subprocess.run(["open", "-a", app_name], timeout=5, capture_output=True)
-        return True
-    except Exception as e:
-        logging.warning(f"activate_app '{app_name}': {e}")
-        return False
+# Tastatur/PID-Infrastruktur ausgelagert nach punchbuddy/keys.py
+from punchbuddy.keys import (
+    _VK_K, _VK_F12, _VK_SPACE, _VK_R, _VK_A, _VK_F2, _VK_C, _VK_ESC,
+    _VK_P, _VK_V, _VK_OE, _VK_F13, _VK_RETURN, _VK_TAB, _VK_DOWN,
+    _pt_pid, _send_key, _app_pid, _send_key_to_app, _activate_app,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pre-Roll Management (via PTSL – get/set_timeline_selection)
@@ -654,17 +473,14 @@ def _detect_video_track(engine, settings=None):
 # ─────────────────────────────────────────────────────────────────────────────
 # Hauptautomatisierung
 # ─────────────────────────────────────────────────────────────────────────────
-_running      = False
-_running_lock = threading.Lock()
 _stop_lock    = threading.Lock()  # verhindert gleichzeitige Stop-Aufrufe
 
 def run_punch_in(target_tracks: list, monitor_tracks: list = None):
-    global _running
-    with _running_lock:
-        if _running:
+    with state.running_lock:
+        if state.running:
             logging.warning("Läuft bereits – Trigger ignoriert.")
             return
-        _running = True
+        state.running = True
     _set_busy(True)
 
     # Fallback: wenn keine Monitor-Spuren angegeben, alle Record-Spuren nehmen
@@ -892,22 +708,19 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
         logging.error(f"Fehler: {e}", exc_info=True)
     finally:
         gc.collect()
-        with _running_lock:
-            _running = False
+        with state.running_lock:
+            state.running = False
         _set_busy(False)
         logging.info("=== PunchBuddy ENDE ===")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Play (Monitor Auto) Workflow
 # ─────────────────────────────────────────────────────────────────────────────
-_play_monitor_tracks = []
-_play_custom_active = False
 
 def run_play_custom():
     """Play/Stop-Toggle mit speziellen Mute-States für KH2 und ST Abh.
     Stop-Pfad: delegiert an run_stop() – funktioniert auch während einer Aufnahme.
     Start-Pfad: mutet KH2, entmutet ST Abh und startet Playback."""
-    global _running, _play_custom_active
     import ptsl.PTSL_pb2 as pt
 
     engine = _get_engine()
@@ -932,11 +745,11 @@ def run_play_custom():
         return
 
     # ── START-Pfad ───────────────────────────────────────────────────────────
-    with _running_lock:
-        if _running:
+    with state.running_lock:
+        if state.running:
             logging.warning("Play Custom: Script running – start ignored.")
             return
-        _running = True
+        state.running = True
     _set_busy(True)
     try:
         cfg = _app_ref.settings if _app_ref is not None else load_settings()
@@ -953,7 +766,7 @@ def run_play_custom():
             _ptsl_call(engine.set_track_mute_state, [ch2], ch2_mute_start,
                        label="PlayCustomMuteCh2", timeout=5.0)
 
-        _play_custom_active = True
+        state.play_custom_active = True
 
         time.sleep(0.3)
         logging.info("Play Custom Start: starting playback...")
@@ -961,10 +774,10 @@ def run_play_custom():
 
     except Exception as e:
         logging.error(f"Error in run_play_custom: {e}", exc_info=True)
-        _play_custom_active = False
+        state.play_custom_active = False
     finally:
-        with _running_lock:
-            _running = False
+        with state.running_lock:
+            state.running = False
         _set_busy(False)
 
 
@@ -972,10 +785,9 @@ def run_play():
     """Play/Stop-Toggle.
     Stop-Pfad: delegiert an run_stop() – funktioniert auch während einer Aufnahme.
     Start-Pfad: setzt Input Monitor EIN und startet Playback."""
-    global _running, _play_monitor_tracks
     import ptsl.PTSL_pb2 as pt
 
-    # Transport-State zuerst lesen – ohne _running_lock, damit Stop auch während
+    # Transport-State zuerst lesen – ohne state.running_lock, damit Stop auch während
     # einer laufenden Aufnahme (run_punch_in) ausgelöst werden kann.
     engine = _get_engine()
     if engine is None:
@@ -999,11 +811,11 @@ def run_play():
         return
 
     # ── START-Pfad ───────────────────────────────────────────────────────────
-    with _running_lock:
-        if _running:
+    with state.running_lock:
+        if state.running:
             logging.warning("Play: Script läuft bereits – Play-Start ignoriert.")
             return
-        _running = True
+        state.running = True
     _set_busy(True)
     try:
         settings = load_settings()
@@ -1064,11 +876,11 @@ def run_play():
                     break
                 logging.warning(f"Play: Input Monitor EIN FEHLER (Versuch {attempt+1}/3)")
                 time.sleep(0.5 * (attempt + 1))
-            _play_monitor_tracks = list(tracks_to_mon) if mon_ok else []
+            state.play_monitor_tracks = list(tracks_to_mon) if mon_ok else []
             if not mon_ok:
                 logging.warning("Play: Monitor-EIN fehlgeschlagen – keine Spuren gemerkt.")
         else:
-            _play_monitor_tracks = []
+            state.play_monitor_tracks = []
             logging.info("Play: Keine Spur selektiert – starte ohne Monitor-Änderung.")
 
         time.sleep(0.3)
@@ -1078,16 +890,15 @@ def run_play():
     except Exception as e:
         logging.error(f"Fehler in run_play: {e}", exc_info=True)
     finally:
-        with _running_lock:
-            _running = False
+        with state.running_lock:
+            state.running = False
         _set_busy(False)
 
 
 def run_stop():
     """Dedizierter Stop: entspricht der Leertaste in Pro Tools.
-    Stoppt sowohl Play als auch Recording — UNABHÄNGIG von _running,
+    Stoppt sowohl Play als auch Recording — UNABHÄNGIG von state.running,
     damit ein laufender Punch-In jederzeit unterbrochen werden kann."""
-    global _play_monitor_tracks
 
     # Eigener Lock verhindert Doppel-Stop, blockiert aber keine Aufnahme
     if not _stop_lock.acquire(blocking=False):
@@ -1137,13 +948,13 @@ def run_stop():
                     break
 
         # Play-Monitor zurücksetzen falls ein /play aktiv war
-        if _play_monitor_tracks:
+        if state.play_monitor_tracks:
             time.sleep(0.3)
-            logging.info(f"Stop: Input Monitor AUS für {sorted(_play_monitor_tracks)}...")
+            logging.info(f"Stop: Input Monitor AUS für {sorted(state.play_monitor_tracks)}...")
             for attempt in range(3):
                 ok, _ = _ptsl_call(
                     engine.set_track_input_monitor_state,
-                    sorted(_play_monitor_tracks), False,
+                    sorted(state.play_monitor_tracks), False,
                     label=f"StopMonOff#{attempt+1}", timeout=5.0
                 )
                 if ok:
@@ -1151,11 +962,10 @@ def run_stop():
                     break
                 logging.warning(f"Stop: Input Monitor AUS FEHLER (Versuch {attempt+1}/3)")
                 time.sleep(0.5 * (attempt + 1))
-            _play_monitor_tracks = []
+            state.play_monitor_tracks = []
 
         # Play-Custom-Mutes zurücksetzen falls ein /play_custom aktiv war
-        global _play_custom_active
-        if _play_custom_active:
+        if state.play_custom_active:
             time.sleep(0.3)
             cfg = _app_ref.settings if _app_ref is not None else load_settings()
             ch1 = cfg.get("play_custom_ch1_track", "")
@@ -1177,7 +987,7 @@ def run_stop():
             else:
                 if not ok1: logging.warning(f"Stop: Mute-Restore '{ch1}' FEHLER (Track ggf. nicht in Session)")
                 if not ok2: logging.warning(f"Stop: Mute-Restore '{ch2}' FEHLER (Track ggf. nicht in Session)")
-            _play_custom_active = False
+            state.play_custom_active = False
 
         logging.info("Stop: abgeschlossen.")
 
@@ -1223,8 +1033,6 @@ def _set_busy(busy: bool):
 # Export-Workflow
 # ─────────────────────────────────────────────────────────────────────────────
 _export_lock = threading.Lock()
-_export_running = False
-_VK_OE = 41  # Ö auf QWERTZ-Tastatur (= Semicolon-Position auf US)
 _EXTEND_COUNT = 7  # Anzahl Spuren unter V1 die ausgedehnt werden
 
 def _send_shift_oe(count=1):
@@ -1249,10 +1057,6 @@ def _send_shift_oe(count=1):
         logging.error(f"Shift+Ö senden: {e}")
         return False
 
-_VK_F13   = 105   # F13
-_VK_RETURN = 36   # Enter/Return
-_VK_TAB    = 48   # Tab
-_VK_DOWN   = 125  # Arrow Down
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1618,7 +1422,6 @@ def _wait_for_consolidated_files(session_dir, track_names, timeout=10):
 # ─────────────────────────────────────────────────────────────────────────────
 # Interplay Import (Avid Interplay Access → Pro Tools)
 # ─────────────────────────────────────────────────────────────────────────────
-_import_running = False
 _import_lock = threading.Lock()
 
 def _run_applescript_safe(script, timeout=30, label=""):
@@ -1642,12 +1445,11 @@ def _run_applescript_safe(script, timeout=30, label=""):
 
 def run_interplay_import():
     """Führt den Interplay Import (Avid Interplay Access → Pro Tools) schrittweise aus."""
-    global _import_running
     with _import_lock:
-        if _import_running:
+        if state.import_running:
             logging.warning("Import laeuft bereits – ignoriert.")
             return
-        _import_running = True
+        state.import_running = True
     prog = None
     _set_busy(True)
 
@@ -2017,7 +1819,7 @@ def run_interplay_import():
         # Tracks bleiben in PT armed – NEXIS-Dateien bleiben offen.
         _close_engine()
         with _import_lock:
-            _import_running = False
+            state.import_running = False
         _set_busy(False)
 
 
@@ -2454,12 +2256,11 @@ def run_export(export_tracks, video_track=None, settings=None):
       5. Pre/Post-Material loeschen
       6. Export-Spuren am Spurenkopf markieren
     """
-    global _export_running
     with _export_lock:
-        if _export_running:
+        if state.export_running:
             logging.warning("Export laeuft bereits – ignoriert.")
             return
-        _export_running = True
+        state.export_running = True
     _set_busy(True)
     export_start_time = time.time()
 
@@ -2602,7 +2403,7 @@ def run_export(export_tracks, video_track=None, settings=None):
         logging.error(f"Export Fehler: {e}", exc_info=True)
     finally:
         with _export_lock:
-            _export_running = False
+            state.export_running = False
         _set_busy(False)
 
 
@@ -4135,7 +3936,7 @@ class PunchBuddyApp(rumps.App):
             while True:
                 time.sleep(_KEEPALIVE_INTERVAL)
                 # Nicht pingen während Aufnahme oder Import läuft
-                if _running or _import_running:
+                if state.running or state.import_running:
                     continue
                 with _engine_lock:
                     eng = _engine_instance

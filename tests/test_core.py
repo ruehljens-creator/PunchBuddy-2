@@ -10,6 +10,7 @@ import pytest
 
 import auto_punch_in as a
 import punchbuddy.config as cfg
+import punchbuddy.keys as keys
 
 
 # ── _deep_merge ───────────────────────────────────────────────────────────
@@ -77,31 +78,31 @@ def test_token_mismatch_rejected(supplied):
 # ── _pt_pid Cache-Validierung ─────────────────────────────────────────────
 def test_pt_pid_returns_live_cached_pid(monkeypatch):
     import os
-    monkeypatch.setattr(a, "_cached_pid", os.getpid())
+    monkeypatch.setattr(keys, "_cached_pid", os.getpid())
     assert a._pt_pid() == os.getpid()
 
 
 def test_pt_pid_invalidates_dead_cached_pid(monkeypatch):
     # Tote PID im Cache + pgrep liefert nichts → None und Cache geleert
-    monkeypatch.setattr(a, "_cached_pid", 2_000_000_000)
+    monkeypatch.setattr(keys, "_cached_pid", 2_000_000_000)
 
     class _Empty:
         stdout = ""
-    monkeypatch.setattr(a.subprocess, "run", lambda *args, **kw: _Empty())
+    monkeypatch.setattr(keys.subprocess, "run", lambda *args, **kw: _Empty())
     assert a._pt_pid() is None
-    assert a._cached_pid is None
+    assert keys._cached_pid is None
 
 
 # ── _app_pid Cache-Validierung ────────────────────────────────────────────
 def test_app_pid_invalidates_dead_entry(monkeypatch):
-    a._app_pid_cache["GhostApp"] = 2_000_000_000
+    keys._app_pid_cache["GhostApp"] = 2_000_000_000
 
     class _Empty:
         stdout = ""
-    monkeypatch.setattr(a.subprocess, "run", lambda *args, **kw: _Empty())
+    monkeypatch.setattr(keys.subprocess, "run", lambda *args, **kw: _Empty())
     # AppKit-Pfad findet nichts (Name existiert nicht) → pgrep leer → None
     assert a._app_pid("GhostApp") is None
-    assert "GhostApp" not in a._app_pid_cache
+    assert "GhostApp" not in keys._app_pid_cache
 
 
 # ── gRPC-Deadline-Wrapper ─────────────────────────────────────────────────
