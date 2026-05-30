@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "protools": {
+      "command": "/usr/local/bin/python3",
+      "args": ["/Users/admin/PunchBuddy-Apple-Silicone/tools/pt_mcp_server.py"]
+    }
+  }
+}

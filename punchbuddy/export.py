@@ -34,6 +34,23 @@ from punchbuddy.uikit import _show_progress_win, _dispatch_main
 _export_lock = threading.Lock()
 
 
+def _resolve_export_dir(custom_path, session_dir):
+    """Ermittelt den Ziel-Exportordner. Ein nicht-leerer custom_path wird
+    verwendet (und bei Bedarf angelegt); sonst der Standard <session>/export.
+    Fällt bei nicht anlegbarem Custom-Pfad auf den Standard zurück."""
+    default_dir = os.path.join(session_dir, "export")
+    custom = (custom_path or "").strip()
+    if custom:
+        try:
+            os.makedirs(custom, exist_ok=True)
+            return custom
+        except Exception as e:
+            logging.warning(f"  Custom-Exportpfad '{custom}' nicht nutzbar ({e}) – "
+                            f"nutze Standard {default_dir}")
+    os.makedirs(default_dir, exist_ok=True)
+    return default_dir
+
+
 def _detect_video_track(engine, settings=None):
     """Erkennt die Videospur automatisch via PTSL (type=4).
     Fallback auf settings['video_track'] wenn nichts gefunden."""
@@ -1360,7 +1377,8 @@ def run_export(export_tracks, video_track=None, settings=None):
             try:
                 session_path = engine.session_path()
                 s_dir = os.path.dirname(session_path)
-                _do_wav_export(export_tracks, s_dir, min_mtime=export_start_time - 10.0)
+                _do_wav_export(export_tracks, s_dir, min_mtime=export_start_time - 10.0,
+                               export_dir=_resolve_export_dir(settings.get("wav_export_path"), s_dir))
             except Exception as e:
                 logging.error(f"  WAV Export Fehler: {e}")
         else:
@@ -1373,7 +1391,8 @@ def run_export(export_tracks, video_track=None, settings=None):
                 session_path = engine.session_path()
                 s_dir = os.path.dirname(session_path)
                 s_name = os.path.splitext(os.path.basename(session_path))[0]
-                _do_aaf_export(s_name, s_dir)
+                _do_aaf_export(s_name, s_dir,
+                               export_dir=_resolve_export_dir(settings.get("aaf_embedded_export_path"), s_dir))
             except Exception as e:
                 logging.error(f"  AAF Export Fehler: {e}")
         else:
@@ -1510,13 +1529,15 @@ def _trim_overhangs(engine, export_tracks, in_time, video_end):
 
 
 # -----------------------------------------------------------------------------
-def _do_wav_export(export_tracks, session_dir, min_mtime=None):
+def _do_wav_export(export_tracks, session_dir, min_mtime=None, export_dir=None):
     """Kopiert die konsolidierten WAV-Dateien in den Export-Ordner.
     Unterstützt sowohl Stereo-Interleaved als auch Split-Mono (.L.wav/.R.wav).
     Bei Split-Mono werden L+R zu einer Stereo-Interleaved-Datei zusammengeführt.
+    export_dir: optionaler Zielordner (Standard: <session>/export).
     """
     audio_dir = os.path.join(session_dir, "Audio Files")
-    export_dir = os.path.join(session_dir, "export")
+    if export_dir is None:
+        export_dir = os.path.join(session_dir, "export")
     os.makedirs(export_dir, exist_ok=True)
 
     if not os.path.isdir(audio_dir):
@@ -1692,7 +1713,9 @@ def run_wav_export_standalone(export_tracks, settings):
                 _run_loudness_with_progress(engine, session_dir, loud_tracks, target_lufs, max_tp)
 
         prog["update"](0.88, t("prog_copy_wav"))
-        _do_wav_export(export_tracks, session_dir, min_mtime=export_start_time - 10.0)
+        wav_dir = _resolve_export_dir(settings.get("wav_export_path"), session_dir)
+        _do_wav_export(export_tracks, session_dir, min_mtime=export_start_time - 10.0,
+                       export_dir=wav_dir)
         prog["update"](1.0, t("prog_wav_done"))
         time.sleep(0.8)
         logging.info("=== WAV EXPORT (Standalone) ENDE ===")
@@ -1954,9 +1977,11 @@ return "OK"
 '''
 
 
-def _do_aaf_export(session_name, session_dir):
-    """Exportiert die selektierten Spuren als AAF mit Embedded Audio."""
-    export_dir = os.path.join(session_dir, "export")
+def _do_aaf_export(session_name, session_dir, export_dir=None):
+    """Exportiert die selektierten Spuren als AAF mit Embedded Audio.
+    export_dir: optionaler Zielordner (Standard: <session>/export)."""
+    if export_dir is None:
+        export_dir = os.path.join(session_dir, "export")
     os.makedirs(export_dir, exist_ok=True)
 
     script = _AAF_EXPORT_SCRIPT_TEMPLATE.format(
@@ -2063,12 +2088,121 @@ def run_aaf_export_standalone(export_tracks, settings):
         engine.set_timeline_selection(in_time=in_time, out_time=video_end)
         time.sleep(0.2)
 
-        _do_aaf_export(session_name, session_dir)
+        aaf_dir = _resolve_export_dir(settings.get("aaf_embedded_export_path"), session_dir)
+        _do_aaf_export(session_name, session_dir, export_dir=aaf_dir)
         prog["update"](1.0, t("prog_aaf_done"))
         time.sleep(0.8)
         logging.info("=== AAF EXPORT (Standalone) ENDE ===")
     except Exception as e:
         logging.error(f"AAF Export Fehler: {e}", exc_info=True)
+        if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
+    finally:
+        if prog: prog["close"]()
+        _set_busy(False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AAF Reference Export (externe WAV 24-bit, Consolidate-from-source mit Handle)
+# ─────────────────────────────────────────────────────────────────────────────
+# Wird im Pro-Tools-„Export to OMF/AAF"-Dialog gesetzt: Format = Copy/Consolidate
+# from source media, Bit Depth 24, Handle = aaf_reference_handle_ms. Die exakte
+# Dialog-Navigation ist versionsspezifisch und wird per Live-Diagnose kalibriert.
+# Solange _AAF_REFERENCE_CALIBRATED False ist, bricht der Export sicher ab.
+_AAF_REFERENCE_CALIBRATED = False
+_AAF_REFERENCE_SCRIPT_TEMPLATE = None  # wird nach Diagnose gesetzt
+
+
+def _do_aaf_reference_export(session_name, session_dir, export_dir, settings):
+    """Exportiert die selektierten Spuren als AAF mit externen Referenz-WAVs
+    (24-bit, Consolidate-from-source mit Handle). Pfad: export_dir."""
+    os.makedirs(export_dir, exist_ok=True)
+    if not _AAF_REFERENCE_CALIBRATED or not _AAF_REFERENCE_SCRIPT_TEMPLATE:
+        msg = ("AAF-Reference-Dialogautomation noch nicht kalibriert – Export "
+               "abgebrochen. (Bitte Diagnose-Schritt ausführen.)")
+        logging.error("  " + msg)
+        _show_error(t("alert_error"), msg)
+        return
+    handle_ms = settings.get("aaf_reference_handle_ms", 2000)
+    bit_depth = settings.get("aaf_reference_bit_depth", 24)
+    script = _AAF_REFERENCE_SCRIPT_TEMPLATE.format(
+        export_path=export_dir.replace('"', '\\"'),
+        handle_ms=handle_ms, bit_depth=bit_depth,
+    )
+    logging.info(f"  AAF-Reference: Exportiere nach {export_dir} "
+                 f"(WAV {bit_depth}-bit, Handle {handle_ms}ms)")
+    rc, out, err = _run_applescript(script)
+    if "ERROR" in out:
+        logging.error(f"  AAF-Reference AppleScript Fehler: {out}")
+    else:
+        logging.info(f"  AAF-Reference Export abgeschlossen: {out}")
+
+
+def run_aaf_reference_export_standalone(export_tracks, settings):
+    """Standalone AAF Reference Export.
+
+    KEIN Pre-Consolidate / Trim / Loudness – Quellmaterial bleibt intakt, damit
+    der AAF-Dialog Consolidate-from-source mit Handle erzeugen kann.
+    """
+    prog = None
+    try:
+        logging.info("=== AAF REFERENCE EXPORT (Standalone) START ===")
+        _set_busy(True)
+        prog = _show_progress_win(t("prog_title_aaf"))
+        prog["update"](0.05, t("prog_connect_pt"))
+        engine = _get_engine()
+        if engine is None:
+            logging.error("PTSL Engine nicht verfuegbar.")
+            return
+        session_path = engine.session_path()
+        session_dir = os.path.dirname(session_path)
+        session_name = os.path.splitext(os.path.basename(session_path))[0]
+
+        # Spuren einblenden + selektieren
+        prog["update"](0.10, t("prog_prep_tracks"))
+        try:
+            engine.set_track_hidden_state(export_tracks, False)
+            time.sleep(0.25)
+        except Exception as e:
+            logging.warning(f"  Spuren einblenden: {e}")
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.3)
+
+        # Video-Ende ermitteln
+        prog["update"](0.20, t("prog_get_video_end"))
+        in_time = settings.get("export_start_tc", "10:00:00:00") + ".00"
+        video_track = _detect_video_track(engine, settings)
+        video_end = None
+        try:
+            engine.select_all_clips_on_track(video_track)
+            time.sleep(0.3)
+            video_sel = engine.get_timeline_selection()
+            video_end = video_sel[1]
+            logging.info(f"  Video: {video_sel[0]} -> {video_end}")
+        except Exception as e:
+            logging.error(f"  Fehler Videospur '{video_track}': {e}")
+        if not video_end or video_end == "00:00:00:00.00":
+            logging.error("  Video-Ende nicht ermittelt – Abbruch.")
+            return
+
+        if os.path.basename(session_dir) == "Session File Backups":
+            session_dir = os.path.dirname(session_dir)
+
+        # Selektion setzen (KEIN Trim/Consolidate/Loudness – Handles brauchen Quellmaterial)
+        prog["update"](0.50, t("prog_aaf_export"))
+        engine.select_tracks_by_name(export_tracks)
+        time.sleep(0.2)
+        engine.set_timeline_selection(in_time=in_time, out_time=video_end)
+        time.sleep(0.2)
+        engine.extend_selection_to_target_tracks(export_tracks)
+        time.sleep(0.3)
+
+        export_dir = _resolve_export_dir(settings.get("aaf_reference_export_path"), session_dir)
+        _do_aaf_reference_export(session_name, session_dir, export_dir, settings)
+        prog["update"](1.0, t("prog_aaf_done"))
+        time.sleep(0.8)
+        logging.info("=== AAF REFERENCE EXPORT (Standalone) ENDE ===")
+    except Exception as e:
+        logging.error(f"AAF Reference Export Fehler: {e}", exc_info=True)
         if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()
