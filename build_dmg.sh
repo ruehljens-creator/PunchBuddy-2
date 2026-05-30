@@ -65,6 +65,8 @@ echo "=== PyInstaller Build (ARM64): PunchBuddy ==="
   --hidden-import=pyloudnorm \
   --hidden-import=soundfile \
   --hidden-import=numpy \
+  --collect-submodules punchbuddy \
+  --paths "$SCRIPT_DIR" \
   auto_punch_in.py
 
 echo "=== PyInstaller Build (ARM64): PunchBuddy Diagnose ==="
@@ -122,6 +124,8 @@ arch -x86_64 "$PYTHON_X86_64" -m PyInstaller \
   --hidden-import=pyloudnorm \
   --hidden-import=soundfile \
   --hidden-import=numpy \
+  --collect-submodules punchbuddy \
+  --paths "$SCRIPT_DIR" \
   auto_punch_in.py
 
 echo "=== PyInstaller Build (x86_64): PunchBuddy Diagnose ==="

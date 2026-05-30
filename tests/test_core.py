@@ -9,6 +9,9 @@ import grpc
 import pytest
 
 import auto_punch_in as a
+import punchbuddy.config as cfg
+import punchbuddy.keys as keys
+import punchbuddy.engine as engine
 
 
 # ── _deep_merge ───────────────────────────────────────────────────────────
@@ -36,7 +39,7 @@ def test_load_settings_backfills_new_default_keys(tmp_path, monkeypatch):
     settings_file = tmp_path / "settings.json"
     # Alte Datei ohne den (neueren) Key webtrigger_token
     settings_file.write_text(json.dumps({"http_port": 1234}))
-    monkeypatch.setattr(a, "SETTINGS_PATH", str(settings_file))
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", str(settings_file))
 
     s = a.load_settings()
     assert s["http_port"] == 1234                      # Nutzerwert bleibt
@@ -48,7 +51,7 @@ def test_load_settings_backfills_preset_entry_keys(tmp_path, monkeypatch):
     settings_file = tmp_path / "settings.json"
     # Preset-Eintrag ohne 'export' (neu hinzugekommener Key)
     settings_file.write_text(json.dumps({"track_presets": [{"name": "P1", "rec_a": ["ST"]}]}))
-    monkeypatch.setattr(a, "SETTINGS_PATH", str(settings_file))
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", str(settings_file))
 
     s = a.load_settings()
     p = s["track_presets"][0]
@@ -76,31 +79,31 @@ def test_token_mismatch_rejected(supplied):
 # ── _pt_pid Cache-Validierung ─────────────────────────────────────────────
 def test_pt_pid_returns_live_cached_pid(monkeypatch):
     import os
-    monkeypatch.setattr(a, "_cached_pid", os.getpid())
+    monkeypatch.setattr(keys, "_cached_pid", os.getpid())
     assert a._pt_pid() == os.getpid()
 
 
 def test_pt_pid_invalidates_dead_cached_pid(monkeypatch):
     # Tote PID im Cache + pgrep liefert nichts → None und Cache geleert
-    monkeypatch.setattr(a, "_cached_pid", 2_000_000_000)
+    monkeypatch.setattr(keys, "_cached_pid", 2_000_000_000)
 
     class _Empty:
         stdout = ""
-    monkeypatch.setattr(a.subprocess, "run", lambda *args, **kw: _Empty())
+    monkeypatch.setattr(keys.subprocess, "run", lambda *args, **kw: _Empty())
     assert a._pt_pid() is None
-    assert a._cached_pid is None
+    assert keys._cached_pid is None
 
 
 # ── _app_pid Cache-Validierung ────────────────────────────────────────────
 def test_app_pid_invalidates_dead_entry(monkeypatch):
-    a._app_pid_cache["GhostApp"] = 2_000_000_000
+    keys._app_pid_cache["GhostApp"] = 2_000_000_000
 
     class _Empty:
         stdout = ""
-    monkeypatch.setattr(a.subprocess, "run", lambda *args, **kw: _Empty())
+    monkeypatch.setattr(keys.subprocess, "run", lambda *args, **kw: _Empty())
     # AppKit-Pfad findet nichts (Name existiert nicht) → pgrep leer → None
     assert a._app_pid("GhostApp") is None
-    assert "GhostApp" not in a._app_pid_cache
+    assert "GhostApp" not in keys._app_pid_cache
 
 
 # ── gRPC-Deadline-Wrapper ─────────────────────────────────────────────────
@@ -155,7 +158,7 @@ def test_ptsl_call_happy_path_sets_deadline():
 
 def test_ptsl_call_command_error_keeps_engine(monkeypatch):
     reset_called = {"n": 0}
-    monkeypatch.setattr(a, "_reset_engine", lambda: reset_called.__setitem__("n", reset_called["n"] + 1))
+    monkeypatch.setattr(engine, "_reset_engine", lambda: reset_called.__setitem__("n", reset_called["n"] + 1))
 
     def fn():
         raise ValueError("fachlicher Fehler")
@@ -168,7 +171,7 @@ def test_ptsl_call_command_error_keeps_engine(monkeypatch):
 
 def test_ptsl_call_rpc_deadline_resets_engine(monkeypatch):
     reset_called = {"n": 0}
-    monkeypatch.setattr(a, "_reset_engine", lambda: reset_called.__setitem__("n", reset_called["n"] + 1))
+    monkeypatch.setattr(engine, "_reset_engine", lambda: reset_called.__setitem__("n", reset_called["n"] + 1))
 
     class _Deadline(grpc.RpcError):
         def code(self):
