@@ -203,6 +203,7 @@ DEFAULT_SETTINGS = {
     "import_close_session": True,
     "http_port": 8899,
     "http_bind_host": "127.0.0.1",
+    "webtrigger_token": "",
     "language": "de",
     "play_custom_ch1_track": "KH2",
     "play_custom_ch1_mute_start": True,
@@ -1125,11 +1126,21 @@ _VK_V     = 9    # 'v'
 _cached_pid = None
 
 def _pt_pid():
-    """Pro Tools Prozess-ID ermitteln (mit Caching)."""
+    """Pro Tools Prozess-ID ermitteln (mit Caching).
+
+    Der Cache wird vor jeder Rückgabe gegen den laufenden Prozess validiert:
+    Startet Pro Tools neu (Crash/Update), ist die gecachte PID tot und würde
+    sonst Tastendrücke ins Leere senden (CGEventPostToPid an tote PID).
+    """
     global _cached_pid
-    if _cached_pid:
-        return _cached_pid
-        
+    if _cached_pid is not None:
+        try:
+            os.kill(_cached_pid, 0)  # Signal 0: prüft nur Existenz, sendet nichts
+            return _cached_pid
+        except OSError:
+            logging.info(f"Pro Tools PID {_cached_pid} nicht mehr aktiv – Cache geleert.")
+            _cached_pid = None
+
     try:
         out = subprocess.run(
             ["pgrep", "-x", "Pro Tools"],
@@ -4948,28 +4959,53 @@ class PunchBuddyApp(rumps.App):
                 self.wfile.write(b"OK")
                 threading.Thread(target=fn, daemon=True).start()
 
+            def _authorized(self, query):
+                """Prüft das Webtrigger-Token, falls eines konfiguriert ist.
+                Token via ?token=… oder X-Auth-Token-Header. Leeres Token =
+                kein Schutz (nur sinnvoll bei Bind auf 127.0.0.1)."""
+                expected = app_ref.settings.get("webtrigger_token", "") or ""
+                if not expected:
+                    return True
+                supplied = (query.get("token", [""])[0]
+                            or self.headers.get("X-Auth-Token", ""))
+                # Konstantzeit-Vergleich gegen Timing-Angriffe
+                import hmac
+                return hmac.compare_digest(supplied, expected)
+
             def do_GET(self):
-                if self.path == "/trigger":
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(self.path)
+                path = parsed.path
+                query = parse_qs(parsed.query)
+
+                if not self._authorized(query):
+                    self.send_response(401)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"Unauthorized")
+                    return
+
+                if path == "/trigger":
                     self._fire(app_ref._trigger)
-                elif self.path == "/trigger2":
+                elif path == "/trigger2":
                     self._fire(app_ref._trigger_b)
-                elif self.path == "/import":
+                elif path == "/import":
                     self._fire(app_ref._trigger_import)
-                elif self.path == "/export_wav":
+                elif path == "/export_wav":
                     self._fire(app_ref._trigger_export_wav)
-                elif self.path == "/export_aaf":
+                elif path == "/export_aaf":
                     self._fire(app_ref._trigger_export_aaf)
-                elif self.path == "/export_interplay":
+                elif path == "/export_interplay":
                     self._fire(app_ref._trigger_export_interplay)
-                elif self.path == "/play":
+                elif path == "/play":
                     self._fire(app_ref._trigger_play)
-                elif self.path == "/play_custom":
+                elif path == "/play_custom":
                     self._fire(app_ref._trigger_play_custom)
-                elif self.path == "/start":
+                elif path == "/start":
                     self._fire(app_ref._trigger_start)
-                elif self.path.startswith("/preset/"):
+                elif path.startswith("/preset/"):
                     try:
-                        preset_num = int(self.path.split("/preset/")[1])
+                        preset_num = int(path.split("/preset/")[1])
                         idx = preset_num - 1
                         if app_ref.load_preset_by_index(idx):
                             self.send_response(200)
@@ -4997,6 +5033,20 @@ class PunchBuddyApp(rumps.App):
             port = self.settings.get("http_port", 8899)
             bind_host = self.settings.get("http_bind_host", "127.0.0.1")
             actual_bind = "127.0.0.1" if bind_host == "127.0.0.1" else "0.0.0.0"
+
+            # Sicherheit: Bei Bind auf alle Interfaces (LAN erreichbar) ist ein
+            # Token Pflicht. Fehlt es, wird einmalig eines erzeugt und gespeichert,
+            # damit der Server nicht ungeschützt im Netz steht.
+            if actual_bind == "0.0.0.0" and not self.settings.get("webtrigger_token"):
+                import secrets
+                self.settings["webtrigger_token"] = secrets.token_urlsafe(16)
+                save_settings(self.settings)
+                logging.warning(
+                    "Webtrigger ist im LAN erreichbar (0.0.0.0) – automatisch ein "
+                    "Token erzeugt. Stream-Deck-URLs müssen ?token=… anhängen.")
+            _tok = self.settings.get("webtrigger_token", "")
+            if _tok:
+                logging.info(f"Webtrigger-Token aktiv (an URLs anhängen: ?token={_tok})")
 
             self.httpd = None
             for attempt in range(4):
