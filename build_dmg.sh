@@ -198,6 +198,7 @@ chmod +x "$DMG_STAGE/PunchBuddy_Setup.command"
 # Dokumentation mitkopieren (falls vorhanden)
 [ -f "$SCRIPT_DIR/BEDIENUNGSANLEITUNG.md" ]      && cp "$SCRIPT_DIR/BEDIENUNGSANLEITUNG.md"      "$DMG_STAGE/"
 [ -f "$SCRIPT_DIR/TECHNISCHE_DOKUMENTATION.md" ] && cp "$SCRIPT_DIR/TECHNISCHE_DOKUMENTATION.md" "$DMG_STAGE/"
+[ -f "$SCRIPT_DIR/PunchBuddy_Anleitung.html" ]   && cp "$SCRIPT_DIR/PunchBuddy_Anleitung.html"   "$DMG_STAGE/"
 
 # ── 6. DMG erstellen ──────────────────────────────────────────────────────
 echo "=== DMG erstellen ==="
