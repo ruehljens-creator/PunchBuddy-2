@@ -1,263 +1,223 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════
-#  PunchBuddy – macOS Berechtigungen einrichten
+#  PunchBuddy – Geführte Berechtigungs-Einrichtung
 #
-#  Doppelklick zum Ausführen.
-#  Das Script muss im selben Ordner wie die drei .app-Dateien liegen.
-#  Nicht direkt aus dem DMG starten – erst alle Apps kopieren!
+#  Doppelklick zum Ausführen (auch direkt aus dem DMG möglich).
+#
+#  WICHTIG / EHRLICH: macOS lässt es aus Sicherheitsgründen NICHT zu,
+#  Datenschutz-Berechtigungen per Skript zu setzen (die System-Datenbank
+#  TCC.db ist durch SIP geschützt – selbst root darf nicht schreiben).
+#  Dieses Skript erledigt darum alles Automatisierbare und reduziert den
+#  Rest auf „Schalter umlegen": Es kopiert die Apps nach /Programme,
+#  entfernt die Quarantäne, aktiviert den Developer-Mode, startet die
+#  Apps einmal (damit sie von selbst in den Listen auftauchen) und öffnet
+#  anschließend die vier Datenschutz-Bereiche der Reihe nach.
 # ═══════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TCC_DB="/Library/Application Support/com.apple.TCC/TCC.db"
+DEST="/Applications"
 
 APPS=(
     "PunchBuddy.app"
     "PunchBuddy_Watchdog.app"
     "PunchBuddy_Diagnose.app"
 )
-BUNDLE_IDS=(
-    "PunchBuddy"
-    "PunchBuddy_Watchdog"
-    "PunchBuddy_Diagnose"
-)
-SERVICES=(
-    "kTCCServiceAccessibility"
-    "kTCCServiceListenEvent"
-    "kTCCServiceSystemPolicyAllFiles"
-)
-SERVICE_LABELS=(
-    "Bedienungshilfen        (Accessibility)"
-    "Eingabeüberwachung      (Input Monitoring)"
-    "Festplattenvollzugriff  (Full Disk Access)"
+
+# Reihenfolge der Datenschutz-Bereiche (label, settings-anchor, auto-appear?)
+PANES=(
+    "Festplattenvollzugriff (Full Disk Access)|Privacy_AllFiles|nein"
+    "Bedienungshilfen (Accessibility)|Privacy_Accessibility|ja"
+    "Eingabeüberwachung (Input Monitoring)|Privacy_ListenEvent|ja"
+    "Developer Tools|Privacy_DevTools|nein"
 )
 
 ok()   { echo "  ✓  $*"; }
 warn() { echo "  ⚠  $*"; }
 err()  { echo "  ✗  $*"; }
-step() { echo ""; echo "──── $* "; }
+step() { echo ""; echo "──── $* ────────────────────────────────"; }
+pause(){ printf "       %s" "${1:-[Return zum Fortfahren] }"; read -r; }
 
 clear
 echo ""
-echo "  ╔══════════════════════════════════════════════════╗"
-echo "  ║   PunchBuddy – macOS Berechtigungen einrichten  ║"
-echo "  ╚══════════════════════════════════════════════════╝"
+echo "  ╔══════════════════════════════════════════════════════╗"
+echo "  ║   PunchBuddy – Berechtigungen einrichten (geführt)   ║"
+echo "  ╚══════════════════════════════════════════════════════╝"
+echo ""
+echo "  Es werden Rechte für drei Apps eingerichtet:"
+echo "    • PunchBuddy        • PunchBuddy_Watchdog       • PunchBuddy_Diagnose"
+echo ""
+echo "  Benötigte Berechtigungen:"
+echo "    • Festplattenvollzugriff   • Bedienungshilfen"
+echo "    • Eingabeüberwachung       • Developer Tools"
+echo ""
+echo "  Hinweis: Die vier Schalter musst du am Ende selbst umlegen –"
+echo "  macOS erlaubt kein automatisches Setzen. Dieses Skript macht"
+echo "  alles andere und führt dich Schritt für Schritt durch."
+echo ""
+pause "[Return zum Starten] "
+
+# ═══════════════════════════════════════════════════════════════════
+# Schritt 1: Apps nach /Programme kopieren
+# ═══════════════════════════════════════════════════════════════════
+step "Schritt 1: Apps nach /Programme kopieren"
 echo ""
 
-# ── Prüfen ob Script auf schreibgeschütztem Datenträger läuft (DMG) ──
-if ! touch "$SCRIPT_DIR/.setup_write_test" 2>/dev/null; then
-    err "Dieses Script läuft auf einem schreibgeschützten Datenträger (z.B. DMG)."
-    echo ""
-    echo "  Bitte zuerst alle Dateien aus dem DMG in einen beschreibbaren"
-    echo "  Ordner kopieren (z.B. Programme oder Schreibtisch),"
-    echo "  dann PunchBuddy_Setup.command von dort starten."
-    echo ""
-    echo "  Drücke Return zum Beenden..."
-    read -r
-    exit 1
+# Admin-Rechte (für /Programme-Schreibzugriff, Developer-Mode)
+echo "  Das Admin-Passwort wird für Installation + Developer-Mode benötigt."
+if sudo -v 2>/dev/null; then
+    ok "Admin-Berechtigung erteilt"
+    ( while true; do sudo -n true; sleep 50; done ) 2>/dev/null &
+    SUDO_KEEP_PID=$!
+    trap "kill $SUDO_KEEP_PID 2>/dev/null" EXIT
+    HAS_SUDO=true
+else
+    warn "Kein Admin-Zugriff – kopiere ohne sudo (klappt meist trotzdem)."
+    HAS_SUDO=false
 fi
-rm -f "$SCRIPT_DIR/.setup_write_test"
-
-echo "  Richtet folgende Berechtigungen ein:"
-echo "   • Quarantäne entfernen  (Gatekeeper / unsigned App)"
-echo "   • Bedienungshilfen      (Accessibility)"
-echo "   • Eingabeüberwachung    (Input Monitoring)"
-echo "   • Festplattenvollzugriff (Full Disk Access)"
 echo ""
 
-# ═══════════════════════════════════════════════════════════════════
-# Schritt 1: Quarantäne entfernen
-# ═══════════════════════════════════════════════════════════════════
-step "Schritt 1: Quarantäne entfernen"
-echo ""
-
-ALL_FOUND=true
-for app_name in "${APPS[@]}"; do
-    app_path="$SCRIPT_DIR/$app_name"
-    if [ -d "$app_path" ]; then
-        xattr -rd com.apple.quarantine "$app_path" 2>/dev/null
-        ok "$app_name"
+INSTALLED=()
+for app in "${APPS[@]}"; do
+    src="$SCRIPT_DIR/$app"
+    dst="$DEST/$app"
+    if [ ! -d "$src" ]; then
+        # Vielleicht liegen die Apps schon in /Programme (Skript separat gestartet)
+        if [ -d "$dst" ]; then
+            ok "$app – bereits in /Programme"
+            INSTALLED+=("$dst")
+        else
+            warn "$app – nicht gefunden (weder neben dem Skript noch in /Programme)"
+        fi
+        continue
+    fi
+    # Vorhandene Version ersetzen
+    if $HAS_SUDO; then
+        sudo rm -rf "$dst" 2>/dev/null
+        sudo cp -R "$src" "$dst" 2>/dev/null
     else
-        warn "$app_name – nicht gefunden unter $app_path"
-        ALL_FOUND=false
+        rm -rf "$dst" 2>/dev/null
+        cp -R "$src" "$dst" 2>/dev/null
+    fi
+    if [ -d "$dst" ]; then
+        ok "$app → /Programme"
+        INSTALLED+=("$dst")
+    else
+        err "$app – Kopieren fehlgeschlagen"
     fi
 done
 
-if ! $ALL_FOUND; then
-    echo ""
-    warn "Einige Apps nicht gefunden. Sicherstellen, dass dieses Script"
-    warn "im selben Ordner wie PunchBuddy.app etc. liegt."
-fi
-
 # ═══════════════════════════════════════════════════════════════════
-# Schritt 2: Admin-Passwort abfragen
+# Schritt 2: Quarantäne entfernen + ad-hoc signieren
 # ═══════════════════════════════════════════════════════════════════
-step "Schritt 2: Admin-Passwort"
+step "Schritt 2: Gatekeeper – Quarantäne entfernen"
 echo ""
-echo "  Das Admin-Passwort wird für Gatekeeper und Berechtigungen benötigt."
-echo ""
-
-HAS_SUDO=false
-if sudo -v 2>/dev/null; then
-    ok "Admin-Berechtigung erteilt"
-    HAS_SUDO=true
-    # Credential-Timeout im Hintergrund warmhalten
-    ( while true; do sudo -n true; sleep 50; done ) &
-    SUDO_KEEP_PID=$!
-    trap "kill $SUDO_KEEP_PID 2>/dev/null" EXIT
-else
-    err "Kein Admin-Zugriff – Schritte 3 und 4 werden übersprungen."
-fi
+for dst in "${INSTALLED[@]}"; do
+    xattr -dr com.apple.quarantine "$dst" 2>/dev/null
+    # Ad-hoc-Signatur stabilisiert die TCC-Identität nach dem Kopieren
+    codesign --force --deep --sign - "$dst" >/dev/null 2>&1
+    ok "$(basename "$dst")"
+done
 
 # ═══════════════════════════════════════════════════════════════════
-# Schritt 3: Gatekeeper-Ausnahmen
+# Schritt 3: Developer-Mode aktivieren
 # ═══════════════════════════════════════════════════════════════════
-step "Schritt 3: Gatekeeper-Ausnahmen (spctl)"
+step "Schritt 3: Developer-Mode aktivieren"
 echo ""
-
 if $HAS_SUDO; then
-    for app_name in "${APPS[@]}"; do
-        app_path="$SCRIPT_DIR/$app_name"
-        if [ -d "$app_path" ]; then
-            if sudo spctl --add "$app_path" 2>/dev/null; then
-                ok "$app_name"
-            else
-                warn "$app_name – spctl fehlgeschlagen (evtl. bereits eingetragen)"
-            fi
-        fi
-    done
-else
-    warn "Übersprungen (kein sudo)"
-fi
-
-# ═══════════════════════════════════════════════════════════════════
-# Schritt 4: TCC-Berechtigungen
-# ═══════════════════════════════════════════════════════════════════
-step "Schritt 4: Datenschutz-Berechtigungen"
-echo ""
-
-TCC_DONE=false
-
-if ! $HAS_SUDO; then
-    warn "Übersprungen (kein sudo)"
-else
-    # Prüfen ob sqlite3 die TCC.db öffnen kann
-    # (klappt nur wenn das aufrufende Terminal Festplattenvollzugriff hat)
-    if sudo sqlite3 "$TCC_DB" "SELECT count(*) FROM access;" >/dev/null 2>&1; then
-        echo "  TCC-Datenbank zugänglich – setze Berechtigungen automatisch..."
-        echo ""
-
-        # Schema dynamisch auslesen, damit INSERT auf macOS 12–15+ passt
-        SCHEMA_COLS=$(sudo sqlite3 "$TCC_DB" "PRAGMA table_info(access);" 2>/dev/null | awk -F'|' '{print $2}')
-        HAS_BOOT_UUID=false
-        echo "$SCHEMA_COLS" | grep -q "boot_uuid" && HAS_BOOT_UUID=true
-
-        NOW=$(date +%s)
-
-        tcc_insert() {
-            local service="$1" bundle="$2"
-            if $HAS_BOOT_UUID; then
-                sudo sqlite3 "$TCC_DB" \
-                  "INSERT OR REPLACE INTO access
-                     (service, client, client_type, auth_value, auth_reason, auth_version,
-                      indirect_object_identifier, boot_uuid, last_modified)
-                   VALUES
-                     ('$service','$bundle',0,2,4,1,'UNUSED','UNUSED',$NOW);" 2>/dev/null
-            else
-                sudo sqlite3 "$TCC_DB" \
-                  "INSERT OR REPLACE INTO access
-                     (service, client, client_type, auth_value, auth_reason, auth_version,
-                      indirect_object_identifier, last_modified)
-                   VALUES
-                     ('$service','$bundle',0,2,4,1,'UNUSED',$NOW);" 2>/dev/null
-            fi
-        }
-
-        for bundle in "${BUNDLE_IDS[@]}"; do
-            FAIL=false
-            for i in "${!SERVICES[@]}"; do
-                tcc_insert "${SERVICES[$i]}" "$bundle" || FAIL=true
-            done
-            if $FAIL; then
-                warn "$bundle – ein oder mehrere Einträge fehlgeschlagen"
-            else
-                ok "$bundle  →  alle drei Berechtigungen gesetzt"
-            fi
-        done
-
-        TCC_DONE=true
-
+    if sudo /usr/sbin/DevToolsSecurity -enable >/dev/null 2>&1; then
+        ok "Developer-Mode aktiviert (DevToolsSecurity)"
     else
-        echo "  TCC-Datenbank nicht direkt beschreibbar."
-        echo ""
-        echo "  Grund:    Das Terminal hat keinen Festplattenvollzugriff (FDA)."
-        echo "  Lösung A: Terminal.app unter Systemeinstellungen → Datenschutz &"
-        echo "            Sicherheit → Festplattenvollzugriff hinzufügen,"
-        echo "            dann dieses Script erneut starten."
-        echo ""
-        echo "  Lösung B: Berechtigungen jetzt manuell einrichten (wird geführt)."
-        echo ""
-        printf "  Manuelle Einrichtung starten? [j/N] "
-        read -r MANUAL
-        if [[ "$MANUAL" =~ ^[jJyY] ]]; then
-            TCC_DONE=false
-        else
-            echo ""
-            warn "Datenschutz-Berechtigungen müssen manuell eingerichtet werden."
-            TCC_DONE=skip
-        fi
+        warn "DevToolsSecurity nicht verfügbar – im Panel 'Developer Tools' manuell setzen."
     fi
-fi
-
-# ── Geführte manuelle TCC-Einrichtung ────────────────────────────
-if [ "$TCC_DONE" = "false" ]; then
-    echo ""
-    echo "  Systemeinstellungen werden geöffnet."
-    echo "  In jedem Panel: PunchBuddy, PunchBuddy_Watchdog und"
-    echo "  PunchBuddy_Diagnose mit dem (+)-Button hinzufügen."
-    echo ""
-
-    for i in "${!SERVICES[@]}"; do
-        service="${SERVICES[$i]}"
-        label="${SERVICE_LABELS[$i]}"
-        echo "  [$((i+1))/3]  $label"
-
-        case "$service" in
-            kTCCServiceAccessibility)
-                open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null ;;
-            kTCCServiceListenEvent)
-                open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent" 2>/dev/null ;;
-            kTCCServiceSystemPolicyAllFiles)
-                open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null ;;
-        esac
-
-        if [ $i -lt $(( ${#SERVICES[@]} - 1 )) ]; then
-            echo "       Alle drei Apps eingetragen?"
-            printf "       [Return → nächster Bereich] "
-            read -r
-        fi
-    done
+else
+    warn "Übersprungen (kein Admin) – im Panel 'Developer Tools' manuell setzen."
 fi
 
 # ═══════════════════════════════════════════════════════════════════
-# Zusammenfassung
+# Schritt 4: Alte Berechtigungs-Einträge entfernen
+# ═══════════════════════════════════════════════════════════════════
+step "Schritt 4: Alte Berechtigungs-Einträge entfernen"
+echo ""
+echo "  Ein bloßes Überschreiben der App genügt NICHT: In den Datenschutz-"
+echo "  Listen können veraltete Einträge früherer Versionen (oder von anderen"
+echo "  Pfaden wie Downloads) zurückbleiben und die neue Version blockieren."
+echo "  Diese werden jetzt pro App zurückgesetzt – danach registriert sich"
+echo "  die frisch installierte Version sauber neu."
+echo ""
+for dst in "${INSTALLED[@]}"; do
+    bid="$(defaults read "$dst/Contents/Info.plist" CFBundleIdentifier 2>/dev/null)"
+    [ -z "$bid" ] && bid="$(basename "$dst" .app)"
+    # 'All' setzt sämtliche TCC-Dienste für diese Bundle-ID zurück und entfernt
+    # damit auch Duplikate/Alt-Einträge mit gleicher Bundle-ID.
+    tccutil reset All "$bid" >/dev/null 2>&1
+    ok "$(basename "$dst")  ($bid)"
+done
+
+# ═══════════════════════════════════════════════════════════════════
+# Schritt 5: Apps einmal starten → Selbst-Registrierung in den Listen
+# ═══════════════════════════════════════════════════════════════════
+step "Schritt 5: Apps registrieren"
+echo ""
+echo "  Die Apps werden einmal gestartet, damit sie automatisch in den"
+echo "  Listen 'Bedienungshilfen' und 'Eingabeüberwachung' erscheinen."
+echo ""
+for dst in "${INSTALLED[@]}"; do
+    open "$dst" 2>/dev/null && ok "gestartet: $(basename "$dst")"
+done
+echo ""
+echo "  (Die Apps dürfen laufen bleiben – du kannst sie später über ihr"
+echo "   Menüleisten-Symbol beenden.)"
+sleep 3
+
+# ═══════════════════════════════════════════════════════════════════
+# Schritt 6: Datenschutz-Bereiche nacheinander öffnen
+# ═══════════════════════════════════════════════════════════════════
+step "Schritt 6: Berechtigungen erteilen (geführt)"
+echo ""
+echo "  Es werden nacheinander VIER Bereiche geöffnet. In jedem Bereich:"
+echo ""
+echo "    → Schalter für PunchBuddy, PunchBuddy_Watchdog und"
+echo "      PunchBuddy_Diagnose auf EIN stellen."
+echo "    → Falls eine App fehlt: '+'-Knopf → /Programme → App wählen."
+echo "      (Bei Festplattenvollzugriff & Developer Tools ist '+' normal.)"
+echo ""
+pause "[Return → ersten Bereich öffnen] "
+
+idx=1
+total=${#PANES[@]}
+for entry in "${PANES[@]}"; do
+    label="${entry%%|*}"
+    rest="${entry#*|}"
+    anchor="${rest%%|*}"
+    autoappear="${rest##*|}"
+
+    echo ""
+    echo "  [$idx/$total]  $label"
+    if [ "$autoappear" = "ja" ]; then
+        echo "         → Die drei Apps sollten bereits gelistet sein – Schalter auf EIN."
+    else
+        echo "         → '+'-Knopf → /Programme → die drei Apps hinzufügen, Schalter auf EIN."
+    fi
+    open "x-apple.systempreferences:com.apple.preference.security?$anchor" 2>/dev/null \
+        || open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension" 2>/dev/null
+
+    if [ $idx -lt $total ]; then
+        pause "[Erledigt? Return → nächster Bereich] "
+    fi
+    idx=$((idx+1))
+done
+
+# ═══════════════════════════════════════════════════════════════════
+# Abschluss
 # ═══════════════════════════════════════════════════════════════════
 echo ""
 echo "  ══════════════════════════════════════════════════════"
-echo "  Ergebnis:"
+ok "Apps installiert (/Programme), Quarantäne entfernt, signiert"
+$HAS_SUDO && ok "Developer-Mode aktiviert"
+ok "Datenschutz-Bereiche geöffnet – Schalter gesetzt?"
 echo ""
-ok  "Quarantäne entfernt"
-$HAS_SUDO        && ok   "Gatekeeper-Ausnahmen eingetragen" \
-                || warn  "Gatekeeper – übersprungen (kein sudo)"
-[ "$TCC_DONE" = "true" ] \
-                && ok   "Berechtigungen automatisch gesetzt" \
-                || warn  "Berechtigungen – bitte in Systemeinstellungen prüfen"
-echo ""
-if [ "$TCC_DONE" = "true" ]; then
-    echo "  → Empfehlung: macOS kurz ab- und anmelden (oder neu starten)"
-    echo "    damit TCC-Änderungen sofort aktiv werden."
-else
-    echo "  → Nach manueller Einrichtung PunchBuddy neu starten."
-fi
+echo "  → Empfehlung: PunchBuddy einmal beenden und neu starten,"
+echo "    damit alle Berechtigungen greifen."
 echo ""
 echo "  Drücke Return zum Beenden..."
 read -r

@@ -318,9 +318,9 @@
     <div class="step-num">2</div>
     <div class="step-body">
       <h2>Mikrofon pegeln (Auto Gain)</h2>
-      <p>Drücke am <strong>Focusrite Vocaster One</strong> die Taste unten links. Das Gerät misst automatisch die richtige Eingangsempfindlichkeit.</p>
-      <div class="action">Vocaster One <span class="arr">→</span> <strong>Auto Gain-Taste</strong> drücken</div>
-      <p>Anschließend <strong>ca. 10 Sekunden</strong> normal in das Mikrofon sprechen — so wie du später auch aufnehmen wirst. Wenn das Gerät kurz rot aufleuchtet, ist der Vorgang abgeschlossen.</p>
+      <p>Drücke auf dem Stream Deck die Taste <strong>Auto Gain</strong> (oder im PunchBuddy-Menü „Vocaster → Autogain Host"). PunchBuddy startet die automatische Pegelung direkt — du musst nichts mehr am Gerät drücken.</p>
+      <div class="action">Stream Deck <span class="arr">→</span> <strong>Auto Gain</strong></div>
+      <p>Es erscheint ein Fenster „Das automatische Pegeln vom Mikrofon wurde gestartet". Jetzt <strong>ca. 10 Sekunden</strong> mit der Vertonungslautstärke in das Mikrofon sprechen. Das Fenster meldet kurz das Ergebnis und schließt sich von selbst — fertig.</p>
     </div>
   </div>
 
@@ -370,7 +370,7 @@
           <span class="btn-label">Import</span>
         </button>
         <button class="btn" id="btn-pegeln" onclick="sdClick('pegeln')">
-          <div class="btn-badge" style="background:#555;">2</div>
+          <div class="btn-badge">2</div>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="2" width="6" height="11" rx="3"/>
             <path d="M6 11a6 6 0 0012 0"/>
@@ -557,9 +557,9 @@ const sdData = {
     text: 'Startet den automatischen Import einer Sequence aus Avid Interplay Access. Stelle sicher, dass Interplay Access geöffnet und die gewünschte Sequence ausgewählt ist. PunchBuddy erledigt den Rest.<br><br>⚠️ Falls in Pro Tools noch eine andere Session geöffnet ist, speichert PunchBuddy diese automatisch und schließt sie, bevor die neue Sequence importiert wird.'
   },
   pegeln: {
-    tag: 'extra', tagLabel: 'Schritt 2 – Vorbereitung',
-    title: 'Pegeln',
-    text: 'Diese Funktion ist derzeit deaktiviert. Das Pegeln des Mikrofons erfolgt direkt am Focusrite Vocaster One über den Auto Gain-Knopf (unten links am Gerät).'
+    tag: 'main', tagLabel: 'Schritt 2 – Haupt-Workflow',
+    title: 'Pegeln (Auto Gain)',
+    text: 'Startet das automatische Einpegeln des Mikrofons am Focusrite Vocaster — direkt aus PunchBuddy, ohne etwas am Gerät zu drücken. Es erscheint ein Fenster „Das automatische Pegeln vom Mikrofon wurde gestartet". Sprich jetzt ca. 10 Sekunden mit der Vertonungslautstärke ins Mikrofon. Das Fenster meldet kurz das Ergebnis und schließt sich von selbst.'
   },
   recspr: {
     tag: 'main', tagLabel: 'Schritt 3 – Haupt-Workflow',
