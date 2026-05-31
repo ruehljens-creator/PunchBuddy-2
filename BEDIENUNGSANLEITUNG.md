@@ -19,9 +19,10 @@
 10. [Stream Deck & Webtrigger](#10-stream-deck--webtrigger)
 11. [Presets](#11-presets)
 12. [Einstellungen](#12-einstellungen)
-13. [Fortschrittsanzeige](#13-fortschrittsanzeige)
-14. [Watchdog](#14-watchdog)
-15. [Häufige Fragen (FAQ)](#15-häufige-fragen-faq)
+13. [Vocaster (48 V & Autogain)](#13-vocaster-48-v--autogain)
+14. [Fortschrittsanzeige](#14-fortschrittsanzeige)
+15. [Watchdog](#15-watchdog)
+16. [Häufige Fragen (FAQ)](#16-häufige-fragen-faq)
 
 ---
 
@@ -48,12 +49,24 @@ PunchBuddy ist eine macOS-Menüleisten-App, die wiederkehrende Abläufe in **Avi
 
 ### Aus dem DMG
 
-1. `PunchBuddy_Release.dmg` öffnen (Doppelklick)
-2. Im geöffneten Fenster die Datei **`PunchBuddy_Setup.command`** ausführen  
-   → Richtet alle nötigen Berechtigungen ein (Gatekeeper, Accessibility, Input Monitoring, Full Disk Access)
+1. Das DMG öffnen (Doppelklick) – z.B. `PunchBuddy_Intel_Release.dmg`
+2. Die Datei **`PunchBuddy_Setup.command`** ausführen (Doppelklick)  
+   → Kopiert die Apps nach **/Programme**, entfernt die Quarantäne, aktiviert den
+   Developer-Mode und führt dich durch das Erteilen der Berechtigungen
 3. **`PunchBuddy.app`** starten
 
-> **Hinweis:** Beim ersten Start fragt macOS nach Berechtigungen für Accessibility und Input Monitoring. Beide müssen erlaubt werden, damit PunchBuddy Tastendrücke an Pro Tools senden kann.
+### Berechtigungen (wichtig)
+
+PunchBuddy braucht vier macOS-Berechtigungen für **alle drei Apps** (PunchBuddy, Watchdog, Diagnose):
+
+| Berechtigung | Wofür |
+|---|---|
+| **Bedienungshilfen** (Accessibility) | Tastendrücke an Pro Tools senden (Record, Pre-Roll) |
+| **Eingabeüberwachung** (Input Monitoring) | Hotkeys erkennen |
+| **Festplattenvollzugriff** (Full Disk Access) | Diagnose, Zugriff auf Session-/Exportpfade |
+| **Developer Tools** | Hilfsprozesse (Watchdog) starten dürfen |
+
+> **Ehrlicher Hinweis:** macOS erlaubt es aus Sicherheitsgründen **nicht**, diese vier Schalter per Skript automatisch zu setzen (die System-Datenbank ist durch SIP geschützt). Der Setup-Command nimmt dir alles andere ab und **öffnet die vier Bereiche nacheinander** – du musst nur noch die Schalter für die drei Apps auf EIN stellen. Weil der Setup die Apps vorher einmal startet, erscheinen sie meist schon von selbst in den Listen (sonst mit dem **+**-Knopf aus `/Programme` hinzufügen).
 
 ### Enthaltene Apps
 
@@ -62,7 +75,7 @@ PunchBuddy ist eine macOS-Menüleisten-App, die wiederkehrende Abläufe in **Avi
 | `PunchBuddy.app` | Hauptanwendung (Menüleiste) |
 | `PunchBuddy_Watchdog.app` | Überwacht PunchBuddy und startet es bei Absturz neu |
 | `PunchBuddy_Diagnose.app` | Diagnose-Tool zur Fehlersuche |
-| `PunchBuddy_Setup.command` | Einmaliger Setup-Schritt für Berechtigungen |
+| `PunchBuddy_Setup.command` | Geführte Berechtigungs-Einrichtung (einmalig) |
 
 ---
 
@@ -107,6 +120,13 @@ Das Menüleisten-Icon zeigt durch verschiedene Zustände an, was PunchBuddy gera
 │   ├── ─────────────────
 │   └── Sequence umbenennen
 ├── Interplay Import starten
+├── ─────────────────
+├── Vocaster ▶            (nur bei angeschlossenem Vocaster)
+│   ├── Autogain Host
+│   ├── Autogain Guest     (nur Vocaster Two)
+│   ├── ─────────────────
+│   ├── 48V einschalten
+│   └── 48V ausschalten
 ├── ─────────────────
 ├── Einstellungen…
 ├── Log File öffnen
@@ -262,9 +282,13 @@ PunchBuddy startet einen lokalen HTTP-Server und kann über einfache GET-Request
 | `http://[IP]:[Port]/export_aaf` | AAF Export |
 | `http://[IP]:[Port]/export_interplay` | Interplay Export |
 | `http://[IP]:[Port]/import` | Interplay Import |
+| `http://[IP]:[Port]/vocaster/autogain/host` | Vocaster: Autogain Host starten |
+| `http://[IP]:[Port]/vocaster/autogain/guest` | Vocaster: Autogain Guest starten (nur Vocaster Two) |
+| `http://[IP]:[Port]/vocaster/phantom/on` | Vocaster: 48 V einschalten |
+| `http://[IP]:[Port]/vocaster/phantom/off` | Vocaster: 48 V ausschalten |
 
 **Standard:** `http://127.0.0.1:8899/trigger`  
-→ Alle URLs werden im Webtrigger-Tab der Einstellungen angezeigt und können per Klick kopiert werden.
+→ Alle URLs werden im Webtrigger-Tab der Einstellungen angezeigt und können per Klick kopiert werden. Die Vocaster-URLs erscheinen zusätzlich im **Vocaster-Tab** (nur wenn ein Gerät angeschlossen ist).
 
 ### Netzwerk-Interface
 
@@ -309,7 +333,7 @@ Presets speichern **alle PunchBuddy-Einstellungen** in einem benannten Slot und 
 
 ## 12. Einstellungen
 
-Die Einstellungen werden über **Menüleiste → Einstellungen…** geöffnet. Das Fenster hat fünf Tabs:
+Die Einstellungen werden über **Menüleiste → Einstellungen…** geöffnet. Das Fenster hat fünf Tabs (plus einen sechsten **Vocaster**-Tab, sobald ein Vocaster angeschlossen ist):
 
 ### Tab 1: Spurenauswahl
 
@@ -341,9 +365,39 @@ HTTP-Server Port und Netzwerk-Interface, plus Übersicht aller Trigger-URLs zum 
 
 Preset-Verwaltung (Laden, Speichern, Umbenennen, Neu, Löschen).
 
+### Tab 6: Vocaster
+
+> Dieser Tab erscheint **nur**, wenn ein Focusrite **Vocaster One** oder **Vocaster Two** angeschlossen ist.
+
+| Element | Funktion |
+|---|---|
+| **Erkanntes Gerät** | Zeigt das gefundene Modell (z.B. „Vocaster Two") |
+| **48 V beim Start einschalten** | Schaltet die Phantomspeisung automatisch ein, sobald PunchBuddy startet |
+| **Autogain-Webtrigger** | Fertige URLs für Autogain Host/Guest und 48 V ein/aus, je mit Kopieren-Knopf |
+
 ---
 
-## 13. Fortschrittsanzeige
+## 13. Vocaster (48 V & Autogain)
+
+PunchBuddy kann einen angeschlossenen **Focusrite Vocaster One/Two** direkt steuern – die separate **Vocaster Hub** App wird dafür nicht mehr benötigt. PunchBuddy übernimmt die USB-Steuerung selbst.
+
+### 48 V Phantomspeisung
+
+- **Automatisch beim Start:** Einstellungen → Tab „Vocaster" → „48 V beim Start einschalten" aktivieren.
+- **Manuell:** Menü → „Vocaster" → „48 V einschalten / ausschalten", oder per Webtrigger `/vocaster/phantom/on` bzw. `/off`.
+
+### Autogain (Mikrofon automatisch pegeln)
+
+1. Autogain auslösen – per **Stream Deck** (`/vocaster/autogain/host`), per **Menü** („Vocaster → Autogain Host") oder für den Gast-Eingang `…/guest` (nur Vocaster Two).
+2. Es erscheint ein Fenster **„Das automatische Pegeln vom Mikrofon wurde gestartet."** mit Fortschrittsbalken.
+3. Jetzt **ca. 10 Sekunden** mit der Vertonungslautstärke ins Mikrofon sprechen.
+4. Das Fenster zeigt kurz das Ergebnis (z.B. „Pegeln erfolgreich") und **schließt sich von selbst**.
+
+> **Hinweis:** Beim ersten Vocaster-Zugriff beendet PunchBuddy automatisch die „Vocaster Hub"-App, falls sie läuft (sie würde sonst die USB-Verbindung blockieren).
+
+---
+
+## 14. Fortschrittsanzeige
 
 Während Export- und Import-Vorgängen zeigt PunchBuddy ein **schwebendes Fenster** oben rechts auf dem Bildschirm:
 
@@ -354,7 +408,7 @@ Während Export- und Import-Vorgängen zeigt PunchBuddy ein **schwebendes Fenste
 
 ---
 
-## 14. Watchdog
+## 15. Watchdog
 
 `PunchBuddy_Watchdog.app` läuft im Hintergrund und überwacht die Hauptanwendung. Falls PunchBuddy abstürzt oder nicht mehr reagiert, startet der Watchdog es automatisch neu.
 
@@ -367,7 +421,7 @@ Während Export- und Import-Vorgängen zeigt PunchBuddy ein **schwebendes Fenste
 
 ---
 
-## 15. Häufige Fragen (FAQ)
+## 16. Häufige Fragen (FAQ)
 
 **PunchBuddy reagiert nicht auf Stream Deck / externe HTTP-Requests.**  
 → Prüfen Sie im Webtrigger-Tab ob das richtige Netzwerk-Interface gewählt ist. Bei Zugriff von einem anderen Gerät muss ein LAN-Interface (nicht Localhost) gewählt sein.

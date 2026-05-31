@@ -56,6 +56,10 @@ DEFAULT_SETTINGS = {
     "play_custom_ch2_track": "ST Abh",
     "play_custom_ch2_mute_start": False,
     "play_custom_ch2_mute_stop": True,
+    # ── Vocaster ──────────────────────────────────────────────────────────
+    # 48V Phantomspeisung beim Start von PunchBuddy automatisch einschalten
+    # (nur wirksam wenn ein Vocaster One/Two angeschlossen ist).
+    "vocaster_phantom_on_start": False,
 }
 
 

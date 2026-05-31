@@ -76,6 +76,15 @@ try:
 except ImportError:
     APPKIT_OK = False
 
+# ── Vocaster-Integration (optional – nur wenn libusb + Modul vorhanden) ───────
+try:
+    from vocaster_integration import VocasterController
+    VOCASTER_OK = True
+except Exception as _voc_err:
+    VocasterController = None
+    VOCASTER_OK = False
+    logging.getLogger(__name__).debug(f"Vocaster-Integration nicht verfügbar: {_voc_err}")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────────────────────
@@ -373,6 +382,7 @@ class PunchBuddyApp(rumps.App):
 
         self._start_http()
         self._start_keepalive()
+        self._start_vocaster()
 
         # ── Startup: Pre-Roll sicherstellen dass AUS ────────────────────────
         def _startup_preroll_check():
@@ -473,6 +483,31 @@ class PunchBuddyApp(rumps.App):
                 self.wfile.write(b"OK")
                 threading.Thread(target=fn, daemon=True).start()
 
+            def _handle_vocaster(self, app_ref, path):
+                """Vocaster-Webtrigger: /vocaster/autogain/host|guest, /vocaster/phantom/on|off."""
+                voc = getattr(app_ref, "vocaster", None)
+                if voc is None:
+                    self.send_response(503)
+                    self.send_header("Content-type", "text/plain; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write("Kein Vocaster angeschlossen".encode("utf-8"))
+                    return
+                action = {
+                    "/vocaster/autogain/host":  lambda: voc.request_autogain(0, "Host"),
+                    "/vocaster/autogain/guest": lambda: voc.request_autogain(1, "Guest"),
+                    "/vocaster/phantom/on":     lambda: voc.set_phantom(True),
+                    "/vocaster/phantom/off":    lambda: voc.set_phantom(False),
+                }.get(path)
+                if action is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"OK")
+                action()
+
             def _authorized(self, query):
                 """Prüft das Webtrigger-Token, falls eines konfiguriert ist.
                 Token via ?token=… oder X-Auth-Token-Header."""
@@ -514,6 +549,8 @@ class PunchBuddyApp(rumps.App):
                     self._fire(app_ref._trigger_play_custom)
                 elif path == "/start":
                     self._fire(app_ref._trigger_start)
+                elif path.startswith("/vocaster/"):
+                    self._handle_vocaster(app_ref, path)
                 elif path.startswith("/preset/"):
                     try:
                         preset_num = int(path.split("/preset/")[1])
@@ -603,6 +640,89 @@ class PunchBuddyApp(rumps.App):
                 pass
             self.httpd = None
         self._start_http()
+
+    # ── Vocaster-Integration ────────────────────────────────────────────────
+    def _start_vocaster(self):
+        """
+        Initialisiert die Vocaster-Steuerung, falls verfügbar und ein Gerät
+        angeschlossen ist. Richtet den Main-Thread-Driver-Timer ein und schaltet
+        – falls in den Einstellungen aktiviert – beim Start die 48V ein.
+        """
+        self.vocaster = None
+        self._vocaster_info = None
+        if not (VOCASTER_OK and APPKIT_OK):
+            return
+        try:
+            info = VocasterController.detect()
+        except Exception as e:
+            logging.debug(f"Vocaster-Erkennung übersprungen: {e}")
+            info = None
+        if not info:
+            logging.info("Kein Vocaster erkannt – Vocaster-Funktionen inaktiv.")
+            return
+
+        self._vocaster_info = info
+        self.vocaster = VocasterController(notify=self._vocaster_notify)
+        logging.info(f"Vocaster erkannt: {info.get('name')} "
+                     f"({info.get('channels')} Eingang/Eingänge)")
+
+        # Main-Thread-Driver-Timer (treibt Autogain-Fenster + Status-Polling)
+        self._vocaster_timer = rumps.Timer(lambda _t: self.vocaster.drive(), 0.4)
+        self._vocaster_timer.start()
+
+        # Menü für manuelle Steuerung einfügen
+        try:
+            self._build_vocaster_menu(info.get("channels", 1))
+        except Exception as e:
+            logging.debug(f"Vocaster-Menü nicht erstellt: {e}")
+
+        # 48V beim Start einschalten (falls aktiviert)
+        if self.settings.get("vocaster_phantom_on_start", False):
+            logging.info("Vocaster: 48V beim Start aktiviert – schalte ein.")
+            self.vocaster.set_phantom(True, announce=True)
+
+    def _build_vocaster_menu(self, channels):
+        """Fügt ein Vocaster-Untermenü (manuelle Steuerung) vor 'Hilfe & Info' ein."""
+        voc_menu = rumps.MenuItem("Vocaster")
+        voc_menu.add(rumps.MenuItem(t("vocaster_menu_autogain_host"),
+                                    callback=self._on_vocaster_autogain_host))
+        if channels >= 2:
+            voc_menu.add(rumps.MenuItem(t("vocaster_menu_autogain_guest"),
+                                        callback=self._on_vocaster_autogain_guest))
+        voc_menu.add(rumps.separator)
+        voc_menu.add(rumps.MenuItem(t("vocaster_menu_phantom_on"),
+                                    callback=self._on_vocaster_phantom_on))
+        voc_menu.add(rumps.MenuItem(t("vocaster_menu_phantom_off"),
+                                    callback=self._on_vocaster_phantom_off))
+        self._vocaster_menu = voc_menu
+        try:
+            self.menu.insert_before(t("help_info"), voc_menu)
+            self.menu.insert_before(t("help_info"), rumps.separator)
+        except Exception:
+            self.menu.add(voc_menu)
+
+    def _on_vocaster_autogain_host(self, _):
+        if self.vocaster:
+            self.vocaster.request_autogain(0, "Host")
+
+    def _on_vocaster_autogain_guest(self, _):
+        if self.vocaster:
+            self.vocaster.request_autogain(1, "Guest")
+
+    def _on_vocaster_phantom_on(self, _):
+        if self.vocaster:
+            self.vocaster.set_phantom(True)
+
+    def _on_vocaster_phantom_off(self, _):
+        if self.vocaster:
+            self.vocaster.set_phantom(False)
+
+    @staticmethod
+    def _vocaster_notify(title, subtitle, message):
+        try:
+            rumps.notification(title, subtitle, message)
+        except Exception:
+            pass
 
     def _start_keepalive(self):
         """Startet einen Hintergrund-Thread der alle 30s transport_state() abfragt.
@@ -1805,12 +1925,111 @@ class PunchBuddyApp(rumps.App):
             t6_view.addSubview_(cb_stop)
             controls[mute_end_key] = cb_stop
 
+        # ── TAB 7: VOCASTER (nur wenn Gerät erkannt) ────────────────────────
+        tab7 = None
+        if getattr(self, "vocaster", None) is not None and self._vocaster_info:
+            voc_info = self._vocaster_info
+            voc_channels = voc_info.get("channels", 1)
+
+            tab7 = NSTabViewItem.alloc().initWithIdentifier_("Vocaster")
+            tab7.setLabel_(t("tab_vocaster"))
+            t7_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
+            tab7.setView_(t7_view)
+
+            t7_y = t7_view.frame().size.height - 35
+
+            # Erkanntes Gerät
+            l_dev = NSTextField.labelWithString_(
+                f"{t('lbl_vocaster_device')}  {voc_info.get('name', 'Vocaster')}")
+            l_dev.setFrame_(NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 20))
+            l_dev.setFont_(NSFont.boldSystemFontOfSize_(13))
+            t7_view.addSubview_(l_dev)
+
+            # 48V beim Start – Checkbox
+            t7_y -= 34
+            cb_phantom = NSButton.alloc().initWithFrame_(
+                NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 22))
+            cb_phantom.setButtonType_(AppKit.NSButtonTypeSwitch)
+            cb_phantom.setTitle_(t("lbl_vocaster_phantom_start"))
+            cb_phantom.setState_(
+                AppKit.NSOnState if self.settings.get("vocaster_phantom_on_start", False)
+                else AppKit.NSOffState)
+            t7_view.addSubview_(cb_phantom)
+            controls["vocaster_phantom_on_start"] = cb_phantom
+
+            t7_y -= 20
+            l_ph_hint = NSTextField.labelWithString_(t("lbl_vocaster_phantom_hint"))
+            l_ph_hint.setFrame_(NSMakeRect(PAD + 22, t7_y, WIN_W - PAD * 2 - 60, 18))
+            l_ph_hint.setFont_(NSFont.systemFontOfSize_(11))
+            l_ph_hint.setTextColor_(NSColor.secondaryLabelColor())
+            t7_view.addSubview_(l_ph_hint)
+
+            # Webtrigger-URLs
+            t7_y -= 22
+            sep_v = AppKit.NSBox.alloc().initWithFrame_(
+                NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 1))
+            sep_v.setBoxType_(AppKit.NSBoxSeparator)
+            t7_view.addSubview_(sep_v)
+
+            t7_y -= 26
+            h_vurls = NSTextField.labelWithString_(t("lbl_vocaster_autogain_urls"))
+            h_vurls.setFrame_(NSMakeRect(PAD, t7_y, 400, 20))
+            h_vurls.setFont_(NSFont.boldSystemFontOfSize_(13))
+            t7_view.addSubview_(h_vurls)
+
+            _voc_entries = [("/vocaster/autogain/host", t("lbl_vocaster_autogain_host"))]
+            if voc_channels >= 2:
+                _voc_entries.append(("/vocaster/autogain/guest", t("lbl_vocaster_autogain_guest")))
+            _voc_entries.append(("/vocaster/phantom/on",  t("lbl_vocaster_phantom_on")))
+            _voc_entries.append(("/vocaster/phantom/off", t("lbl_vocaster_phantom_off")))
+
+            for vpath, vlabel in _voc_entries:
+                t7_y -= 28
+                vurl = f"http://{display_host}:{port}{vpath}{_token_qs}"
+                self._webtrigger_urls.append((vurl, vlabel))
+                v_tag = len(self._webtrigger_urls) - 1
+
+                l_vu = NSTextField.labelWithString_(f"{vlabel}:")
+                l_vu.setFrame_(NSMakeRect(PAD, t7_y + 2, 140, 18))
+                l_vu.setFont_(NSFont.systemFontOfSize_(12))
+                t7_view.addSubview_(l_vu)
+
+                tf_vu = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 145, t7_y, 405, 22))
+                tf_vu.setStringValue_(vurl)
+                tf_vu.setEditable_(False); tf_vu.setSelectable_(True)
+                tf_vu.setFont_(NSFont.monospacedSystemFontOfSize_weight_(11, 0.0))
+                t7_view.addSubview_(tf_vu)
+
+                cp_btn = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 560, t7_y, 70, 22))
+                cp_btn.setTitle_(t("btn_copy"))
+                cp_btn.setBezelStyle_(NSBezelStyleRounded)
+                cp_btn.setFont_(NSFont.systemFontOfSize_(11))
+                cp_btn.setTag_(v_tag)
+                t7_view.addSubview_(cp_btn)
+
+            # Hinweistext
+            t7_y -= 34
+            l_vnote = NSTextField.labelWithString_(t("lbl_vocaster_note"))
+            l_vnote.setFrame_(NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 18))
+            l_vnote.setFont_(NSFont.systemFontOfSize_(11))
+            l_vnote.setTextColor_(NSColor.secondaryLabelColor())
+            t7_view.addSubview_(l_vnote)
+
+            # Copy-Buttons des Vocaster-Tabs mit bestehendem Target verdrahten
+            for sv in t7_view.subviews():
+                if isinstance(sv, NSButton) and sv.title() == t("btn_copy"):
+                    sv.setTarget_(self._wt_target)
+                    sv.setAction_(objc.selector(self._wt_target.onCopy_, signature=b'v@:@'))
+                    self._webtrigger_buttons.append(sv)
+
         tab_view.addTabViewItem_(tab1)
         tab_view.addTabViewItem_(tab2)
         tab_view.addTabViewItem_(tab3)
         tab_view.addTabViewItem_(tab4)
         tab_view.addTabViewItem_(tab5)
         tab_view.addTabViewItem_(tab6)
+        if tab7 is not None:
+            tab_view.addTabViewItem_(tab7)
         content.addSubview_(tab_view)
 
         # Target
@@ -2734,6 +2953,11 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
             if "import_close_session" in self._controls:
                 imp_close = (self._controls["import_close_session"].state() == AppKit.NSOnState)
                 self._app.settings["import_close_session"] = imp_close
+
+            # 4b. Vocaster-Einstellungen speichern
+            if "vocaster_phantom_on_start" in self._controls:
+                self._app.settings["vocaster_phantom_on_start"] = (
+                    self._controls["vocaster_phantom_on_start"].state() == AppKit.NSOnState)
 
             # 4. Rename Sequence Einstellungen
             if "interplay_rename_enabled" in self._controls:
