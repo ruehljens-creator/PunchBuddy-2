@@ -34,13 +34,19 @@ VOCASTER_TWO  = 0x8217
 VENDOR_IFACE  = 3
 INTR_EP       = 0x83   # Interrupt IN endpoint auf Interface 3
 
-# Bekannte Vocaster-Modelle: PID → (Name, Eingangskanäle)
+# Bekannte Vocaster-Modelle: PID → (Name, Eingangskanäle, MUX-Slot-Anzahl)
 # Vocaster One hat nur den Host-Eingang, Vocaster Two zusätzlich Guest.
 # Beide nutzen laut Linux-Treiber dasselbe Config-Set (scarlett2_config_set_vocaster),
-# d.h. identische Register-Offsets – nur die Kanalzahl unterscheidet sich.
+# d.h. identische Register-Offsets – nur die Kanalzahl und MUX-Slot-Anzahl unterscheiden sich.
+#
+# MUX-Slot-Anzahl aus dem Linux-Kernel (sound/usb/mixer_scarlett2.c, vocaster_*_info.mux_assignment):
+#   Vocaster One: 1+5+2+5+6+4 = 23 Slots
+#   Vocaster Two: 2+8+2+6+10+6 = 34 Slots
+# WICHTIG: Wir fragen NIE mehr Slots an als das Gerät hat – sonst Buffer-Overflow
+# in libusb (manifestiert als Python-Segfault).
 VOCASTER_MODELS = {
-    VOCASTER_ONE: ("Vocaster One", 1),
-    VOCASTER_TWO: ("Vocaster Two", 2),
+    VOCASTER_ONE: ("Vocaster One", 1, 23),
+    VOCASTER_TWO: ("Vocaster Two", 2, 34),
 }
 
 # USB bmRequestType
@@ -58,6 +64,12 @@ _INIT_2   = 0x00000002
 _GET_DATA = 0x00800000
 _SET_DATA = 0x00800001
 _DATA_CMD = 0x00800002
+_GET_MUX  = 0x00003001  # Routing-Matrix lesen
+_SET_MUX  = 0x00003002  # Routing-Matrix schreiben
+
+# Vocaster hat 3 MUX-Tabellen (eine pro Sample-Rate-Klasse: 44.1/48, 88.2/96, 176.4/192).
+# Jeder Slot ist ein 32-bit Wert (lower 12 bits = destination ID, next 12 bits = source ID).
+_MUX_NUM_TABLES = 3
 
 # Vocaster param-buffer
 _PBUF_ADDR = 0x1bc
@@ -136,12 +148,12 @@ def detect_vocaster():
     ctx = ctypes.c_void_p()
     lib.libusb_init(ctypes.byref(ctx))
     try:
-        for pid, (name, channels) in VOCASTER_MODELS.items():
+        for pid, (name, channels, mux_slots) in VOCASTER_MODELS.items():
             h = lib.libusb_open_device_with_vid_pid(ctx, VOCASTER_VID, pid)
             if h:
                 lib.libusb_close(ctypes.c_void_p(h))
                 return {"pid": pid, "model": "two" if pid == VOCASTER_TWO else "one",
-                        "name": name, "channels": channels}
+                        "name": name, "channels": channels, "mux_slots": mux_slots}
         # Fallback: manche Systeme erlauben open nicht, aber Enumeration schon
         return None
     finally:
@@ -163,6 +175,7 @@ class VocasterUSB:
         self._pid    = None      # erkannte Product-ID
         self._model  = None      # "one" | "two"
         self._channels = 0       # 1 (One) | 2 (Two)
+        self._mux_slots = 0      # 23 (One) | 34 (Two)
         self._lib.libusb_init(ctypes.byref(self._ctx))
 
     @property
@@ -172,6 +185,10 @@ class VocasterUSB:
     @property
     def channels(self):
         return self._channels
+
+    @property
+    def mux_slots(self):
+        return self._mux_slots
 
     # ── Verbindung ────────────────────────────────────────────────────────────
 
@@ -186,38 +203,87 @@ class VocasterUSB:
         time.sleep(wait)
 
     def _find_device(self):
-        """Öffnet das erste angeschlossene Vocaster-Modell. Setzt self._pid/model/channels.
+        """Öffnet das erste angeschlossene Vocaster-Modell. Setzt self._pid/model/channels/mux_slots.
         Gibt das libusb-Handle (int) zurück oder None."""
-        for pid, (name, channels) in VOCASTER_MODELS.items():
+        for pid, (name, channels, mux_slots) in VOCASTER_MODELS.items():
             h = self._lib.libusb_open_device_with_vid_pid(self._ctx, VOCASTER_VID, pid)
             if h:
                 self._pid = pid
                 self._model = "two" if pid == VOCASTER_TWO else "one"
                 self._channels = channels
+                self._mux_slots = mux_slots
                 return h
         return None
+
+    def _stop_intr_poller(self):
+        """Beendet den Interrupt-Poller-Thread sauber (für Retry nach Fehler)."""
+        ev = getattr(self, "_intr_stop", None)
+        th = getattr(self, "_intr_thread", None)
+        if ev is not None:
+            ev.set()
+        if th is not None:
+            try:
+                th.join(timeout=1.0)
+            except Exception:
+                pass
+        self._intr_thread = None
+        self._intr_stop = None
 
     def connect(self, stop_hub: bool = True) -> bool:
         """
         Verbindet und initialisiert die USB-Session – modell-bewusst (One/Two).
 
-        PunchBuddy ist der einzige Controller, daher gibt es keinen Konflikt mit
-        einer zweiten App – nur die Vocaster Hub App muss weichen (hält sonst die
-        USB-Session). Ablauf: öffnen → Hub beenden → USB-Reset → neu öffnen → init.
+        WICHTIG für Audio-Routing: macOS/CoreAudio behandelt einen USB-Reset
+        wie ein kurzes Aus-/Einstecken des Geräts. Dabei verschwindet der
+        Vocaster aus der I/O-Liste von Pro Tools – die etablierten Audio-
+        Verbindungen sind weg. Wir versuchen deshalb ZUERST einen SANFTEN
+        Connect (ohne Reset). Nur wenn der scheitert (z.B. weil die Hub-App
+        die Session nicht sauber freigegeben hat), fällt der Code auf den
+        harten Reset-Pfad zurück.
+
+        Ablauf:
+          1. Gerät öffnen, Hub beenden, Interface claimen.
+          2. Sanft initialisieren – funktioniert wenn Hub vorher sauber lief.
+          3. Bei Fehler: USB-Reset + neu öffnen + initialisieren (Fallback).
         """
+        # WICHTIG: Hub ZUERST beenden, dann erst öffnen – sonst belegt Hub
+        # noch Interface 3 und unser Claim-Versuch scheitert mit -3.
+        if stop_hub:
+            self.stop_vocaster_hub()
+
         h = self._find_device()
         if not h:
             raise VocasterUSBError("Kein Vocaster (One/Two) gefunden.")
         self._handle = ctypes.c_void_p(h)
 
-        if stop_hub:
-            self.stop_vocaster_hub()
+        self._lib.libusb_set_auto_detach_kernel_driver(self._handle, 1)
 
-        # USB-Reset: sauberer Ausgangszustand (nötig nachdem Vocaster Hub die Session hielt)
+        # ── Versuch 1: SANFT (ohne USB-Reset) ────────────────────────────────
+        # Pro Tools/CoreAudio sieht das Gerät dabei DURCHGÄNGIG – die Audio-
+        # Verbindungen bleiben erhalten.
+        soft_ret = self._lib.libusb_claim_interface(self._handle, VENDOR_IFACE)
+        if soft_ret == 0:
+            try:
+                self._init_session()
+                logging.info(f"Vocaster verbunden (sanft, ohne Reset): {self.model}")
+                return True
+            except Exception as e:
+                logging.warning(f"Vocaster: sanfte Initialisierung fehlgeschlagen ({e}) – "
+                                f"fallback auf USB-Reset.")
+                self._stop_intr_poller()
+                self._lib.libusb_release_interface(self._handle, VENDOR_IFACE)
+        else:
+            logging.warning(f"Vocaster: Interface-Claim ohne Reset fehlgeschlagen ({soft_ret}) – "
+                            f"fallback auf USB-Reset.")
+
+        # ── Versuch 2: HART (mit USB-Reset) ──────────────────────────────────
+        # Nur dieser Pfad bricht das CoreAudio-Routing in Pro Tools. Wird nur
+        # erreicht wenn der sanfte Connect oben fehlgeschlagen ist.
         self._lib.libusb_reset_device.restype = ctypes.c_int
         ret_reset = self._lib.libusb_reset_device(self._handle)
-        logging.info(f"Vocaster USB Reset: {ret_reset}")
-        time.sleep(1.5)  # Device braucht Zeit zum Neustart nach Reset
+        logging.warning(f"Vocaster USB Reset (Pro Tools verliert kurz die Audio-Verbindung): "
+                        f"ret={ret_reset}")
+        time.sleep(1.5)
 
         # Neu öffnen (Handle nach Reset ungültig)
         self._lib.libusb_close(self._handle)
@@ -436,6 +502,80 @@ class VocasterUSB:
             return _AG_STATUS[idx] if idx < len(_AG_STATUS) else "Invalid"
         except Exception as e:
             return f"Error({e})"
+
+    # ── MUX-Routing (für Capture & Replay) ──────────────────────────────────
+
+    def get_mux_table(self, table_num: int, slots: int = None) -> bytes:
+        """
+        Liest eine MUX-Tabelle als Rohdaten (slots × 4 Bytes).
+        Wir interpretieren die Slots NICHT – nur opak speichern und zurückschreiben.
+
+        WICHTIG: slots default = self._mux_slots (modell-spezifisch). NIEMALS mehr
+        anfragen als das Gerät hat – sonst Buffer-Overflow in libusb (Segfault).
+        """
+        if slots is None:
+            slots = self._mux_slots
+        if slots <= 0 or slots > 77:
+            raise VocasterUSBError(f"get_mux_table: ungültige slots={slots}")
+        req = struct.pack("<HH", table_num, slots)
+        resp = self._transact(_GET_MUX, req, resp_data_len=slots * 4)
+        # Header ist 16 Bytes, danach kommt das Payload
+        payload = resp[16:16 + slots * 4]
+        if len(payload) != slots * 4:
+            raise VocasterUSBError(
+                f"GET_MUX(table={table_num}): erwartet {slots*4}B, bekam {len(payload)}B")
+        return payload
+
+    def set_mux_table(self, table_num: int, data: bytes):
+        """
+        Schreibt eine MUX-Tabelle (Rohdaten aus get_mux_table) zurück.
+        Format: <pad=0:le16><num:le16><data...>
+        """
+        if len(data) % 4 != 0:
+            raise VocasterUSBError(f"set_mux_table: Datenlänge {len(data)} nicht durch 4 teilbar")
+        if len(data) // 4 != self._mux_slots:
+            raise VocasterUSBError(
+                f"set_mux_table: erwartet {self._mux_slots} Slots, bekam {len(data)//4}")
+        req = struct.pack("<HH", 0, table_num) + data
+        self._transact(_SET_MUX, req, resp_data_len=0)
+
+    def capture_routing(self) -> dict:
+        """
+        Liest die komplette MUX-Routing-Konfiguration (alle 3 Tabellen).
+        Rückgabe: serialisierbares dict für JSON-Speicherung.
+        """
+        tables = []
+        for t in range(_MUX_NUM_TABLES):
+            tables.append(self.get_mux_table(t).hex())
+        return {
+            "version": 1,
+            "model": self._model,
+            "pid": self._pid,
+            "slots_per_table": self._mux_slots,
+            "tables": tables,
+        }
+
+    def apply_routing(self, captured: dict):
+        """
+        Schreibt eine zuvor mit capture_routing() gelesene Konfiguration zurück.
+        Wenn das gespeicherte Modell nicht zum aktuellen Gerät passt, wird ein
+        VocasterUSBError geworfen (Sicherheit – andere PID = andere MUX-Struktur).
+        """
+        if captured.get("version") != 1:
+            raise VocasterUSBError(f"Unbekannte Routing-Version: {captured.get('version')}")
+        if captured.get("pid") != self._pid:
+            raise VocasterUSBError(
+                f"Gespeichertes Routing für PID 0x{captured.get('pid'):04x}, "
+                f"aktuelles Gerät PID 0x{self._pid:04x}")
+        if captured.get("slots_per_table") != self._mux_slots:
+            raise VocasterUSBError(
+                f"Slot-Anzahl-Mismatch: gespeichert={captured.get('slots_per_table')}, "
+                f"aktuell={self._mux_slots}")
+        tables = captured.get("tables", [])
+        if len(tables) != _MUX_NUM_TABLES:
+            raise VocasterUSBError(f"Erwartet {_MUX_NUM_TABLES} Tabellen, gefunden {len(tables)}")
+        for t, hex_data in enumerate(tables):
+            self.set_mux_table(t, bytes.fromhex(hex_data))
 
     def wait_autogain(self, channel: int = 0, timeout: float = 30.0,
                       poll: float = 0.5, callback=None) -> str:

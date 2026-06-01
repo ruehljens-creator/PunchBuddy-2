@@ -19,6 +19,8 @@ einem rumps.Timer in PunchBuddy aufgerufen wird), weil AppKit-Fenster zwingend
 im Main-Thread bedient werden müssen. USB-Transaktionen sind schnell (<50 ms).
 """
 
+import os
+import json
 import time
 import threading
 import logging
@@ -26,6 +28,10 @@ import logging
 import AppKit
 
 from vocaster_control import VocasterUSB, VocasterUSBError, detect_vocaster
+
+# Persistierter Routing-Pfad
+_ROUTING_DIR  = os.path.expanduser("~/.punchbuddy")
+ROUTING_PATH  = os.path.join(_ROUTING_DIR, "vocaster_routing.json")
 
 # ── Konstanten ────────────────────────────────────────────────────────────────
 AUTOGAIN_TIMEOUT = 20.0   # Sekunden bis Timeout
@@ -214,6 +220,76 @@ class VocasterController:
             self._usb.disconnect()
         except Exception:
             pass
+
+    # ── Routing (Capture & Replay) ─────────────────────────────────────────────
+
+    def has_saved_routing(self) -> bool:
+        """Existiert eine gespeicherte Routing-Datei?"""
+        return os.path.isfile(ROUTING_PATH)
+
+    def saved_routing_info(self) -> dict | None:
+        """
+        Liest Metadaten der gespeicherten Routing-Datei (ohne Anwendung).
+        Rückgabe: {"saved_at": "...", "model": "...", "pid": ...} oder None.
+        """
+        if not self.has_saved_routing():
+            return None
+        try:
+            with open(ROUTING_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {
+                "saved_at": data.get("saved_at", "?"),
+                "model": data.get("model", "?"),
+                "pid": data.get("pid", 0),
+            }
+        except Exception as e:
+            logging.warning(f"Vocaster: Routing-Datei konnte nicht gelesen werden: {e}")
+            return None
+
+    def capture_routing_now(self) -> tuple[bool, str]:
+        """
+        Liest das aktuelle MUX-Routing vom Gerät und speichert es persistent.
+        Rückgabe: (ok, message). Läuft synchron – Aufrufer sollte in Thread auslagern.
+        """
+        if not self.ensure_connected():
+            return False, "Keine USB-Verbindung zum Vocaster."
+        try:
+            cap = self._usb.capture_routing()
+            cap["saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            os.makedirs(_ROUTING_DIR, exist_ok=True)
+            tmp_path = ROUTING_PATH + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(cap, f, indent=2)
+            os.replace(tmp_path, ROUTING_PATH)
+            logging.info(f"Vocaster: Routing gespeichert ({cap['model']}, "
+                         f"{cap['slots_per_table']} Slots × 3 Tabellen) → {ROUTING_PATH}")
+            return True, f"Routing gespeichert ({cap['saved_at']})"
+        except Exception as e:
+            logging.error(f"Vocaster: Routing-Capture fehlgeschlagen: {e}")
+            return False, f"Capture fehlgeschlagen: {e}"
+
+    def apply_saved_routing(self) -> tuple[bool, str]:
+        """
+        Wendet das gespeicherte MUX-Routing auf das Gerät an.
+        Rückgabe: (ok, message). Läuft synchron – Aufrufer sollte in Thread auslagern.
+        """
+        if not self.has_saved_routing():
+            return False, "Kein gespeichertes Routing vorhanden."
+        if not self.ensure_connected():
+            return False, "Keine USB-Verbindung zum Vocaster."
+        try:
+            with open(ROUTING_PATH, "r", encoding="utf-8") as f:
+                cap = json.load(f)
+            self._usb.apply_routing(cap)
+            logging.info(f"Vocaster: gespeichertes Routing angewendet "
+                         f"(captured: {cap.get('saved_at', '?')})")
+            return True, f"Routing angewendet (von {cap.get('saved_at', '?')})"
+        except VocasterUSBError as e:
+            logging.error(f"Vocaster: apply_routing fehlgeschlagen: {e}")
+            return False, str(e)
+        except Exception as e:
+            logging.error(f"Vocaster: apply_routing fehlgeschlagen: {e}")
+            return False, f"Anwenden fehlgeschlagen: {e}"
 
     # ── 48V Phantom ────────────────────────────────────────────────────────────
 

@@ -60,6 +60,11 @@ DEFAULT_SETTINGS = {
     # 48V Phantomspeisung beim Start von PunchBuddy automatisch einschalten
     # (nur wirksam wenn ein Vocaster One/Two angeschlossen ist).
     "vocaster_phantom_on_start": False,
+    # Gespeichertes Audio-Routing (MUX) beim Start automatisch ans Gerät
+    # zurückschreiben. Macht die Vocaster Hub App auch nach Power-Cycles
+    # überflüssig. Routing wird per Vocaster-Tab → "Aktuelles Routing
+    # speichern" aufgezeichnet.
+    "vocaster_apply_routing_on_start": False,
 }
 
 

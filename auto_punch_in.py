@@ -681,6 +681,18 @@ class PunchBuddyApp(rumps.App):
             logging.info("Vocaster: 48V beim Start aktiviert – schalte ein.")
             self.vocaster.set_phantom(True, announce=True)
 
+        # Gespeichertes Routing beim Start anwenden (falls aktiviert)
+        if (self.settings.get("vocaster_apply_routing_on_start", False)
+                and self.vocaster.has_saved_routing()):
+            logging.info("Vocaster: gespeichertes Routing wird angewendet.")
+            def _do_apply():
+                ok, msg = self.vocaster.apply_saved_routing()
+                if ok:
+                    rumps.notification("PunchBuddy – Vocaster", "Routing angewendet", msg)
+                else:
+                    rumps.notification("PunchBuddy – Vocaster", "Routing-Fehler", msg)
+            threading.Thread(target=_do_apply, daemon=True).start()
+
     def _build_vocaster_menu(self, channels):
         """Fügt ein Vocaster-Untermenü (manuelle Steuerung) vor 'Hilfe & Info' ein."""
         voc_menu = rumps.MenuItem("Vocaster")
@@ -694,6 +706,9 @@ class PunchBuddyApp(rumps.App):
                                     callback=self._on_vocaster_phantom_on))
         voc_menu.add(rumps.MenuItem(t("vocaster_menu_phantom_off"),
                                     callback=self._on_vocaster_phantom_off))
+        voc_menu.add(rumps.separator)
+        voc_menu.add(rumps.MenuItem(t("vocaster_menu_save_routing"),
+                                    callback=self._on_vocaster_save_routing))
         self._vocaster_menu = voc_menu
         try:
             self.menu.insert_before(t("help_info"), voc_menu)
@@ -716,6 +731,20 @@ class PunchBuddyApp(rumps.App):
     def _on_vocaster_phantom_off(self, _):
         if self.vocaster:
             self.vocaster.set_phantom(False)
+
+    def _on_vocaster_save_routing(self, _):
+        """Liest das aktuelle MUX-Routing vom Gerät und speichert es."""
+        if not self.vocaster:
+            return
+        def work():
+            ok, msg = self.vocaster.capture_routing_now()
+            title = "PunchBuddy – Vocaster"
+            if ok:
+                rumps.notification(title, t("msg_routing_captured"), msg)
+                # UI im Settings-Fenster ggf. neu rendern bei nächstem Öffnen
+            else:
+                rumps.notification(title, "Fehler", msg)
+        threading.Thread(target=work, daemon=True).start()
 
     @staticmethod
     def _vocaster_notify(title, subtitle, message):
@@ -2007,8 +2036,74 @@ class PunchBuddyApp(rumps.App):
                 cp_btn.setTag_(v_tag)
                 t7_view.addSubview_(cp_btn)
 
-            # Hinweistext
-            t7_y -= 34
+            # ── Routing-Sektion (Hub-Ersatz) ────────────────────────────────
+            t7_y -= 24
+            sep_routing = AppKit.NSBox.alloc().initWithFrame_(
+                NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 1))
+            sep_routing.setBoxType_(AppKit.NSBoxSeparator)
+            t7_view.addSubview_(sep_routing)
+
+            t7_y -= 26
+            h_routing = NSTextField.labelWithString_(t("lbl_vocaster_routing_hdr"))
+            h_routing.setFrame_(NSMakeRect(PAD, t7_y, 400, 20))
+            h_routing.setFont_(NSFont.boldSystemFontOfSize_(13))
+            t7_view.addSubview_(h_routing)
+
+            # Checkbox „beim Start anwenden"
+            t7_y -= 28
+            cb_apply = NSButton.alloc().initWithFrame_(
+                NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 22))
+            cb_apply.setButtonType_(AppKit.NSButtonTypeSwitch)
+            cb_apply.setTitle_(t("lbl_vocaster_routing_apply_start"))
+            cb_apply.setState_(
+                AppKit.NSOnState if self.settings.get("vocaster_apply_routing_on_start", False)
+                else AppKit.NSOffState)
+            t7_view.addSubview_(cb_apply)
+            controls["vocaster_apply_routing_on_start"] = cb_apply
+
+            t7_y -= 18
+            l_apply_hint = NSTextField.labelWithString_(t("lbl_vocaster_routing_apply_hint"))
+            l_apply_hint.setFrame_(NSMakeRect(PAD + 22, t7_y, WIN_W - PAD * 2 - 60, 18))
+            l_apply_hint.setFont_(NSFont.systemFontOfSize_(11))
+            l_apply_hint.setTextColor_(NSColor.secondaryLabelColor())
+            t7_view.addSubview_(l_apply_hint)
+
+            # Capture-Button + Status
+            t7_y -= 32
+            btn_capture = NSButton.alloc().initWithFrame_(
+                NSMakeRect(PAD, t7_y, 200, 24))
+            btn_capture.setTitle_(t("btn_vocaster_capture"))
+            btn_capture.setBezelStyle_(NSBezelStyleRounded)
+            t7_view.addSubview_(btn_capture)
+            self._vocaster_capture_btn = btn_capture
+
+            # Status-Label rechts vom Button
+            info = self.vocaster.saved_routing_info() if self.vocaster else None
+            if info:
+                status_text = t("lbl_vocaster_routing_saved").format(
+                    when=info.get("saved_at", "?"),
+                    model=info.get("model", "?"))
+            else:
+                status_text = t("lbl_vocaster_no_routing")
+            l_capture_status = NSTextField.labelWithString_(status_text)
+            l_capture_status.setFrame_(NSMakeRect(PAD + 210, t7_y + 4, WIN_W - PAD - 250, 18))
+            l_capture_status.setFont_(NSFont.systemFontOfSize_(11))
+            l_capture_status.setTextColor_(NSColor.secondaryLabelColor())
+            t7_view.addSubview_(l_capture_status)
+            self._vocaster_capture_status = l_capture_status
+
+            # Workflow-Hinweis
+            t7_y -= 22
+            l_workflow = NSTextField.labelWithString_(t("lbl_vocaster_routing_workflow"))
+            l_workflow.setFrame_(NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 34))
+            l_workflow.setFont_(NSFont.systemFontOfSize_(11))
+            l_workflow.setTextColor_(NSColor.secondaryLabelColor())
+            if hasattr(l_workflow.cell(), "setWraps_"):
+                l_workflow.cell().setWraps_(True)
+            t7_view.addSubview_(l_workflow)
+
+            # Hinweistext (allgemein, unten)
+            t7_y -= 38
             l_vnote = NSTextField.labelWithString_(t("lbl_vocaster_note"))
             l_vnote.setFrame_(NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 18))
             l_vnote.setFont_(NSFont.systemFontOfSize_(11))
@@ -2021,6 +2116,13 @@ class PunchBuddyApp(rumps.App):
                     sv.setTarget_(self._wt_target)
                     sv.setAction_(objc.selector(self._wt_target.onCopy_, signature=b'v@:@'))
                     self._webtrigger_buttons.append(sv)
+
+            # Capture-Button-Action verdrahten (eigenes Target um Routing-Status zu refreshen)
+            self._vocaster_capture_target = _VocasterCaptureTarget.alloc().init()
+            self._vocaster_capture_target._app = self
+            btn_capture.setTarget_(self._vocaster_capture_target)
+            btn_capture.setAction_(objc.selector(
+                self._vocaster_capture_target.onCapture_, signature=b'v@:@'))
 
         tab_view.addTabViewItem_(tab1)
         tab_view.addTabViewItem_(tab2)
@@ -2672,6 +2774,39 @@ class _WebtriggerCopyTarget(AppKit.NSObject):
         if field is not None:
             field.setStringValue_("")
 
+class _VocasterCaptureTarget(AppKit.NSObject):
+    """ObjC Target für den 'Aktuelles Routing speichern'-Button im Vocaster-Tab."""
+
+    def onCapture_(self, sender):
+        app = getattr(self, "_app", None)
+        if app is None or app.vocaster is None:
+            return
+        # Capture in Hintergrund-Thread, UI-Status danach im Main-Thread aktualisieren
+        def work():
+            ok, msg = app.vocaster.capture_routing_now()
+            # Status-Label aktualisieren – via PerformSelectorOnMainThread sicher
+            def update_ui():
+                title = "PunchBuddy – Vocaster"
+                if ok:
+                    rumps.notification(title, t("msg_routing_captured"), msg)
+                    info = app.vocaster.saved_routing_info()
+                    lbl = getattr(app, "_vocaster_capture_status", None)
+                    if lbl is not None and info is not None:
+                        lbl.setStringValue_(t("lbl_vocaster_routing_saved").format(
+                            when=info.get("saved_at", "?"),
+                            model=info.get("model", "?")))
+                else:
+                    rumps.notification(title,
+                                       t("msg_routing_capture_failed").format(err=msg), "")
+            # rumps.notification ist Thread-safe; setStringValue_ auf NSTextField auch
+            # (Cocoa erlaubt setStringValue_ aus Threads). Aber sicherheitshalber:
+            try:
+                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(update_ui)
+            except Exception:
+                update_ui()
+        threading.Thread(target=work, daemon=True).start()
+
+
 class _UnifiedSettingsTarget(AppKit.NSObject):
     """ObjC-kompatibles Target fuer das kombinierte Einstellungsfenster."""
 
@@ -2958,6 +3093,9 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
             if "vocaster_phantom_on_start" in self._controls:
                 self._app.settings["vocaster_phantom_on_start"] = (
                     self._controls["vocaster_phantom_on_start"].state() == AppKit.NSOnState)
+            if "vocaster_apply_routing_on_start" in self._controls:
+                self._app.settings["vocaster_apply_routing_on_start"] = (
+                    self._controls["vocaster_apply_routing_on_start"].state() == AppKit.NSOnState)
 
             # 4. Rename Sequence Einstellungen
             if "interplay_rename_enabled" in self._controls:
