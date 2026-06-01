@@ -27,6 +27,9 @@ echo "libusb (x86_64): $LIBUSB"
 # ── Python (x86_64) ──────────────────────────────────────────────────────────
 if [ -d "$SCRIPT_DIR/../venv_x86_64" ]; then
   PYTHON_X86_64="$SCRIPT_DIR/../venv_x86_64/bin/python3"
+elif [ -x "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3" ]; then
+  # Framework-Python (x86_64 mit PyInstaller + rumps/ptsl/etc.)
+  PYTHON_X86_64="/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
 else
   PYTHON_X86_64="python3"
 fi
