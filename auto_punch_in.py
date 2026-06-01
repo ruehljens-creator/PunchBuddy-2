@@ -2037,9 +2037,23 @@ class PunchBuddyApp(rumps.App):
                 t7_view.addSubview_(cp_btn)
 
             # ── Routing-Sektion (Hub-Ersatz) ────────────────────────────────
+            # Hilfsfunktion: mehrzeiliges Label mit aktivierter Word-Wrap.
+            def _wrap_label(text):
+                lbl = NSTextField.labelWithString_(text)
+                lbl.setFont_(NSFont.systemFontOfSize_(11))
+                lbl.setTextColor_(NSColor.secondaryLabelColor())
+                cell = lbl.cell()
+                if hasattr(cell, "setWraps_"):
+                    cell.setWraps_(True)
+                if hasattr(cell, "setLineBreakMode_"):
+                    cell.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
+                return lbl
+
+            content_w = WIN_W - PAD * 2 - 40  # Verfügbare Breite
+
             t7_y -= 24
             sep_routing = AppKit.NSBox.alloc().initWithFrame_(
-                NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 1))
+                NSMakeRect(PAD, t7_y, content_w, 1))
             sep_routing.setBoxType_(AppKit.NSBoxSeparator)
             t7_view.addSubview_(sep_routing)
 
@@ -2052,7 +2066,7 @@ class PunchBuddyApp(rumps.App):
             # Checkbox „beim Start anwenden"
             t7_y -= 28
             cb_apply = NSButton.alloc().initWithFrame_(
-                NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 22))
+                NSMakeRect(PAD, t7_y, content_w, 22))
             cb_apply.setButtonType_(AppKit.NSButtonTypeSwitch)
             cb_apply.setTitle_(t("lbl_vocaster_routing_apply_start"))
             cb_apply.setState_(
@@ -2061,23 +2075,23 @@ class PunchBuddyApp(rumps.App):
             t7_view.addSubview_(cb_apply)
             controls["vocaster_apply_routing_on_start"] = cb_apply
 
-            t7_y -= 18
-            l_apply_hint = NSTextField.labelWithString_(t("lbl_vocaster_routing_apply_hint"))
-            l_apply_hint.setFrame_(NSMakeRect(PAD + 22, t7_y, WIN_W - PAD * 2 - 60, 18))
-            l_apply_hint.setFont_(NSFont.systemFontOfSize_(11))
-            l_apply_hint.setTextColor_(NSColor.secondaryLabelColor())
+            # Apply-Hint: zweizeilig → Höhe 30, mit Wrap
+            t7_y -= 32
+            l_apply_hint = _wrap_label(t("lbl_vocaster_routing_apply_hint"))
+            l_apply_hint.setFrame_(NSMakeRect(PAD + 22, t7_y, content_w - 22, 30))
             t7_view.addSubview_(l_apply_hint)
 
-            # Capture-Button + Status
+            # Capture-Button (eigene Zeile, sauberer Abstand zum Hint oben)
             t7_y -= 32
             btn_capture = NSButton.alloc().initWithFrame_(
-                NSMakeRect(PAD, t7_y, 200, 24))
+                NSMakeRect(PAD, t7_y, 220, 26))
             btn_capture.setTitle_(t("btn_vocaster_capture"))
             btn_capture.setBezelStyle_(NSBezelStyleRounded)
             t7_view.addSubview_(btn_capture)
             self._vocaster_capture_btn = btn_capture
 
-            # Status-Label rechts vom Button
+            # Status-Label rechts neben dem Button – ausreichend Breite damit
+            # "Letztes Capture: ..." vollständig sichtbar bleibt
             info = self.vocaster.saved_routing_info() if self.vocaster else None
             if info:
                 status_text = t("lbl_vocaster_routing_saved").format(
@@ -2086,28 +2100,23 @@ class PunchBuddyApp(rumps.App):
             else:
                 status_text = t("lbl_vocaster_no_routing")
             l_capture_status = NSTextField.labelWithString_(status_text)
-            l_capture_status.setFrame_(NSMakeRect(PAD + 210, t7_y + 4, WIN_W - PAD - 250, 18))
+            l_capture_status.setFrame_(
+                NSMakeRect(PAD + 232, t7_y + 4, content_w - 232, 18))
             l_capture_status.setFont_(NSFont.systemFontOfSize_(11))
             l_capture_status.setTextColor_(NSColor.secondaryLabelColor())
             t7_view.addSubview_(l_capture_status)
             self._vocaster_capture_status = l_capture_status
 
-            # Workflow-Hinweis
-            t7_y -= 22
-            l_workflow = NSTextField.labelWithString_(t("lbl_vocaster_routing_workflow"))
-            l_workflow.setFrame_(NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 34))
-            l_workflow.setFont_(NSFont.systemFontOfSize_(11))
-            l_workflow.setTextColor_(NSColor.secondaryLabelColor())
-            if hasattr(l_workflow.cell(), "setWraps_"):
-                l_workflow.cell().setWraps_(True)
+            # Workflow-Hinweis – ausreichend Abstand zum Button und ausreichende Höhe (3-zeilig)
+            t7_y -= 46
+            l_workflow = _wrap_label(t("lbl_vocaster_routing_workflow"))
+            l_workflow.setFrame_(NSMakeRect(PAD, t7_y, content_w, 44))
             t7_view.addSubview_(l_workflow)
 
             # Hinweistext (allgemein, unten)
-            t7_y -= 38
-            l_vnote = NSTextField.labelWithString_(t("lbl_vocaster_note"))
-            l_vnote.setFrame_(NSMakeRect(PAD, t7_y, WIN_W - PAD * 2 - 40, 18))
-            l_vnote.setFont_(NSFont.systemFontOfSize_(11))
-            l_vnote.setTextColor_(NSColor.secondaryLabelColor())
+            t7_y -= 32
+            l_vnote = _wrap_label(t("lbl_vocaster_note"))
+            l_vnote.setFrame_(NSMakeRect(PAD, t7_y, content_w, 30))
             t7_view.addSubview_(l_vnote)
 
             # Copy-Buttons des Vocaster-Tabs mit bestehendem Target verdrahten
