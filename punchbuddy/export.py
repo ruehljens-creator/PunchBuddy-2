@@ -1150,7 +1150,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             else:
                 prog["update"](0.97, t("prog_rename_seq"))
                 logging.info("  Interplay: Starte Sequence-Umbenennung...")
-                _run_applescript('tell application "interplayAccess" to activate')
+                _activate_app("interplayAccess")
                 time.sleep(0.3)
                 _rename_sequence_in_interplay(settings)
 
@@ -1202,14 +1202,9 @@ def _rename_sequence_in_interplay(settings):
     # ── Schritt 1: F2 → Rename-Feld öffnen, Namen per Clipboard lesen ──────
     _key(_VK_F2)
     time.sleep(0.7)
-    # Cmd+A + Cmd+C in einem einzigen osascript-Aufruf (halbe Subprocess-Overhead)
-    _run_applescript(
-        'tell application "System Events" to tell process "interplayAccess"\n'
-        '  keystroke "a" using command down\n'
-        '  delay 0.15\n'
-        '  keystroke "c" using command down\n'
-        'end tell'
-    )
+    _key(_VK_A, cmd=True)
+    time.sleep(0.2)
+    _key(_VK_C, cmd=True)
     time.sleep(0.3)
 
     try:
@@ -1245,10 +1240,8 @@ def _rename_sequence_in_interplay(settings):
     logging.info(f"  Rename: Neuer Name: '{new_name}'")
 
     # ── Schritt 3: Cmd+A (alten Text löschen), dann Namen Zeichen für Zeichen tippen ──
-    _run_applescript(
-        'tell application "System Events" to tell process "interplayAccess" to keystroke "a" using command down'
-    )
-    time.sleep(0.1)
+    _key(_VK_A, cmd=True)
+    time.sleep(0.15)
 
     for ch in new_name:
         ev_dn = _Q.CGEventCreateKeyboardEvent(src, 0, True)

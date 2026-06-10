@@ -87,26 +87,6 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
 
         time.sleep(0.5)  # Settling bevor Aufnahme startet
 
-        # CHANGE: Defensives Logging der Timeline-Selection vor F12.
-        # Falls das Problem nochmal auftritt, sehen wir genau was PT hatte.
-        try:
-            import ptsl.ops as ops
-            import ptsl.PTSL_pb2 as pt_pb
-            sel_op = ops.CId_GetTimelineSelection(location_type=pt_pb.TLType_TimeCode)
-            ok_sel, _ = _ptsl_call(
-                lambda: engine.client.run(sel_op) or True,
-                label="GetSelPreRecord", timeout=6.0
-            )
-            if ok_sel:
-                logging.info(
-                    f"[Selection vor F12] in='{sel_op.response.in_time}' "
-                    f"out='{sel_op.response.out_time}' "
-                    f"preroll_start='{sel_op.response.pre_roll_start_time}' "
-                    f"preroll_enabled={sel_op.response.pre_roll_enabled}"
-                )
-        except Exception as _e:
-            logging.debug(f"Selection-Log fehlgeschlagen (unkritisch): {_e}")
-
         # ── Schritt 4: Transport-Arm EIN + Aufnahme starten (PTSL) ─────────
         # toggle_record_enable (Rec-Arm) + toggle_play_state (Play) = Record+Play
         # Komplett via PTSL – kein F12 / CGEvent nötig, funktioniert unabhängig von Fokus.
@@ -146,7 +126,7 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
         consecutive_failures = 0
         _transport_confirmed_stopped = False
         if _transport_started:
-            for _ in range(7500):  # max 10 Minuten
+            for _ in range(2000):  # max 10 Minuten
                 ok_ts, ts_r = _ptsl_call(engine.transport_state, label="WaitStop", timeout=8.0)
                 # NEXIS kann transport_state verzögern – 8s Tolerance, Schwelle auf 10
                 if not ok_ts:
@@ -174,7 +154,7 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
                     # finalisiert, was zu Beachball/Crash führen kann.
                     time.sleep(3.0)
                 else:
-                    time.sleep(0.08)
+                    time.sleep(0.3)
             else:
                 logging.warning("Transport-Timeout (10 Min).")
 

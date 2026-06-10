@@ -754,9 +754,9 @@ class PunchBuddyApp(rumps.App):
             pass
 
     def _start_keepalive(self):
-        """Startet einen Hintergrund-Thread der alle 30s transport_state() abfragt.
+        """Startet einen Hintergrund-Thread der alle 120s transport_state() abfragt.
         Hält die PTSL-Verbindung warm und verhindert den NEXIS-Cold-Start-Delay."""
-        _KEEPALIVE_INTERVAL = 30.0
+        _KEEPALIVE_INTERVAL = 120.0
 
         def _loop():
             while True:
@@ -770,14 +770,14 @@ class PunchBuddyApp(rumps.App):
                 # Über _ptsl_call: serialisiert via _ptsl_lock (kein Race mit
                 # echten Befehlen) und mit gRPC-Deadline. Ein Fehler verwirft
                 # die Engine, der nächste Trigger verbindet frisch neu.
-                ok, _ = _ptsl_call(eng.transport_state, label="KeepAlive", timeout=10.0)
+                ok, _ = _ptsl_call(eng.transport_state, label="KeepAlive", timeout=3.0)
                 if ok:
                     logging.debug("KeepAlive: transport_state() OK")
                 else:
                     logging.debug("KeepAlive: transport_state() fehlgeschlagen")
 
         threading.Thread(target=_loop, daemon=True, name="PTSLKeepAlive").start()
-        logging.info("PTSL Keep-Alive gestartet (Intervall: 30s)")
+        logging.info("PTSL Keep-Alive gestartet (Intervall: 120s)")
 
     def _trigger(self):
         logging.info(">>> TRIGGER A <<<")
