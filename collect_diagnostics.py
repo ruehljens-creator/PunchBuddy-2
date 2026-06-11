@@ -34,6 +34,22 @@ def read_tail(path, lines=200):
     except Exception as e:
         return f"[Lesefehler: {e}]"
 
+def read_head(path, lines=120):
+    """Liest die ersten N Zeilen einer Datei (Crash-Reports: Exception-Info
+    und crashender Thread stehen am Anfang)."""
+    if not os.path.exists(path):
+        return f"[Datei nicht gefunden: {path}]"
+    try:
+        result = []
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= lines:
+                    break
+                result.append(line)
+        return "".join(result)
+    except Exception as e:
+        return f"[Lesefehler: {e}]"
+
 def read_grep(path, patterns, lines=300):
     """Liest alle Zeilen einer Datei die einem der Patterns entsprechen."""
     if not os.path.exists(path):
@@ -167,6 +183,41 @@ if found_crashes:
         lines.append(read_tail(cf, 50))
 else:
     lines.append("[Keine Pro Tools Crash-Reports gefunden]")
+
+# ── 7b. PunchBuddy Crash Reports ──────────────────────────────────────────
+lines.append(SEP + "7b. PUNCHBUDDY CRASH REPORTS (letzte 3)")
+pb_crash_patterns = [
+    "~/Library/Logs/DiagnosticReports/PunchBuddy*",
+    "~/Library/Logs/DiagnosticReports/Retired/PunchBuddy*",
+    "~/Library/Logs/DiagnosticReports/Python*",
+    "~/Library/Logs/DiagnosticReports/Retired/Python*",
+]
+pb_crashes = []
+for pat in pb_crash_patterns:
+    pb_crashes.extend(glob.glob(os.path.expanduser(pat)))
+pb_crashes = sorted(pb_crashes, key=os.path.getmtime, reverse=True)[:3]
+if pb_crashes:
+    for cf in pb_crashes:
+        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(cf))
+        lines.append(f"\n--- {cf} (geändert: {mtime:%Y-%m-%d %H:%M:%S}) ---")
+        lines.append(read_head(cf, 120))
+else:
+    lines.append("[Keine PunchBuddy Crash-Reports gefunden]")
+
+lines.append("\n--- PunchBuddy faulthandler-Log (native Abstürze) ---")
+fault_log_candidates = [
+    "~/.punchbuddy/PunchBuddy_crash.log",
+    "~/Library/Logs/PunchBuddy/PunchBuddy_crash.log",
+    "/tmp/PunchBuddy/PunchBuddy_crash.log",
+]
+for cand in fault_log_candidates:
+    cand = os.path.expanduser(cand)
+    if os.path.exists(cand):
+        lines.append(f"Datei: {cand}")
+        lines.append(read_tail(cand, 100))
+        break
+else:
+    lines.append("[Kein faulthandler-Log gefunden]")
 
 # ── 8. Settings ───────────────────────────────────────────────────────────
 lines.append(SEP + "8. PUNCHBUDDY EINSTELLUNGEN")

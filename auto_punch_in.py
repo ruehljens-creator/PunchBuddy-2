@@ -173,7 +173,7 @@ from punchbuddy.transport import (
     _stop_lock, run_punch_in, run_play_custom, run_play, run_stop,
     run_goto_start, _set_busy, _send_shift_oe,
 )
-from punchbuddy.uikit import _dispatch_main, _show_progress_win
+from punchbuddy.uikit import _show_progress_win
 from punchbuddy.engine import current_engine, cached_track_count
 
 # Globale Referenzliste für ObjC-Objekte des Einstellungsfensters
@@ -811,25 +811,25 @@ class PunchBuddyApp(rumps.App):
 
     def _trigger_export_wav(self):
         logging.info(">>> WAV EXPORT TRIGGER <<<")
-        _dispatch_main(lambda: _set_busy(True))
+        _set_busy(True)
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
         threading.Thread(target=run_wav_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
 
     def _trigger_export_aaf(self):
         logging.info(">>> AAF EMBEDDED EXPORT TRIGGER <<<")
-        _dispatch_main(lambda: _set_busy(True))
+        _set_busy(True)
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
         threading.Thread(target=run_aaf_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
 
     def _trigger_export_aaf_reference(self):
         logging.info(">>> AAF REFERENCE EXPORT TRIGGER <<<")
-        _dispatch_main(lambda: _set_busy(True))
+        _set_busy(True)
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
         threading.Thread(target=run_aaf_reference_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
 
     def _trigger_export_interplay(self):
         logging.info(">>> INTERPLAY EXPORT TRIGGER <<<")
-        _dispatch_main(lambda: _set_busy(True))  # sofort sichtbar, noch vor Thread-Start
+        _set_busy(True)  # sofort sichtbar, noch vor Thread-Start (dispatcht intern auf Main-Thread)
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
         ws_steps = self.settings.get("interplay_workspace_steps", 17)
         threading.Thread(target=run_interplay_export, args=(export_tracks, self.settings, ws_steps), daemon=True).start()
@@ -1184,7 +1184,10 @@ class PunchBuddyApp(rumps.App):
 
     def _on_help_manual(self, _):
         import subprocess as _sp
-        _doc = self._doc_path("BEDIENUNGSANLEITUNG.md")
+        # Zuerst HTML-Anleitung probieren, danach MD-Fallback
+        _doc = self._doc_path("PunchBuddy_Anleitung.html")
+        if not _doc:
+            _doc = self._doc_path("BEDIENUNGSANLEITUNG.md")
         if _doc:
             try:
                 _sp.Popen(["open", _doc]); return

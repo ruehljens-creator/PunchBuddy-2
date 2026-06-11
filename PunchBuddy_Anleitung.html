@@ -330,7 +330,7 @@
       <h2>Sprache aufnehmen</h2>
       <p>Setze den Kopfhörer auf. Drücke auf dem Stream Deck die Taste <strong>Record Spr</strong> — du hörst einen kurzen Vorlauf, dann läuft die Aufnahme. Sprich deinen Text.</p>
       <div class="action">Stream Deck <span class="arr">→</span> <strong>Record Spr</strong></div>
-      <p>Zum Stoppen: <strong>Play/Stop</strong> drücken oder die Leertaste. Die Mischung (Rauschunterdrückung, Lautstärke) läuft automatisch im Hintergrund.</p>
+      <p>Zum Stoppen Play/Stop drücken.<br>Beim Aufnehmen wird automatisch im Hintergrund gemischt.</p>
     </div>
   </div>
 
@@ -418,14 +418,8 @@
           </svg>
           <span class="btn-label">Play/Stop</span>
         </button>
-        <button class="btn" id="btn-mix" onclick="sdClick('mix')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="6" y="2.5" width="12" height="19" rx="2"/>
-            <circle cx="12" cy="14.5" r="4"/>
-            <circle cx="12" cy="14.5" r="1.3" fill="currentColor" stroke="none"/>
-            <circle cx="12" cy="6" r="1.1" fill="currentColor" stroke="none"/>
-          </svg>
-          <span class="btn-label">Mix</span>
+        <button class="btn inactive">
+          <span class="btn-label"></span>
         </button>
         <button class="btn inactive">
           <span class="btn-label"></span>
@@ -574,12 +568,7 @@ const sdData = {
   playstop: {
     tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',
     title: 'Play / Stop',
-    text: 'Startet oder stoppt die Wiedergabe. Vor der Aufnahme kannst du damit in die importierten Töne (O-Töne, Musik, Atmo) hineinhören — du hörst die Zuspielspuren synchron zum Bild. Auch zum Stoppen einer laufenden Aufnahme verwendbar.'
-  },
-  mix: {
-    tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',
-    title: 'Mix',
-    text: 'Schaltet die Kopfhörerwiedergabe auf die Sendeton-Spur (ST) um, damit du die fertige Mischung abhören kannst — also deine Sprache zusammen mit der Bildspur, so wie es später ausgestrahlt wird.'
+    text: 'Startet die Wiedergabe und stoppt die Aufnahme und Wiedergabe. Wiedergegeben wird die ST Spur. Wenn noch nichts aufgenommen ist, dann ist auch nichts zu hören'
   },
   anfang: {
     tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',

@@ -1,6 +1,6 @@
 # PunchBuddy – Technische Dokumentation
 
-**Version:** aktuell (Build 2026-05-23)  
+**Version:** aktuell (Build 2026-06-10)  
 **Programmiert von:** Jens Rühl & Christian Becker
 
 ---
@@ -16,7 +16,8 @@
 7. [Import-Pipeline im Detail](#7-import-pipeline-im-detail)
 8. [Lautheitskorrektur (EBU R128)](#8-lautheitskorrektur-ebu-r128)
 9. [Watchdog](#9-watchdog)
-10. [Abhängigkeiten & Lizenzen](#10-abhängigkeiten--lizenzen)
+10. [Focusrite Vocaster-Integration](#10-focusrite-vocaster-integration)
+11. [Abhängigkeiten & Lizenzen](#11-abhängigkeiten--lizenzen)
 
 ---
 
@@ -57,14 +58,13 @@ def _dispatch_main(fn):
 
 ### Keyboard-Injektion
 
-PunchBuddy nutzt zwei Methoden zum Senden von Tastendrücken:
+PunchBuddy nutzt drei Methoden zum Senden von Tastendrücken:
 
 | Methode | Verwendung |
 |---|---|
 | `Quartz.CGEventPost` | Systemweite Tastendrücke (Shift+Ö für Spurausdehnung) |
-| `AppleScript System Events keystroke` | App-spezifische Tastendrücke an Interplay Access (F2, Cmd+A, Cmd+C etc.) |
-
-> **Wichtig:** `CGEventPostToPid` wird **nicht** verwendet, da es bei Java-Anwendungen (Interplay Access) das Clipboard nicht synchronisiert und Menüaktionen nicht auslöst.
+| `Quartz.CGEventPostToPid` | App-spezifische Tastendrücke (z.B. F2, Cmd+A, Cmd+C, Texteingabe Loop bei Sequenz-Umbenennung in Interplay Access) zur Umgehung von macOS Accessibility-Problemen |
+| `AppleScript System Events keystroke` | Java-Menüaktionen und Importschritte in Interplay Access zur Clipboard-Synchronisierung |
 
 ---
 
@@ -534,7 +534,23 @@ signal.signal(signal.SIGINT, _signal_handler)
 
 ---
 
-## 10. Abhängigkeiten & Lizenzen
+## 10. Focusrite Vocaster-Integration
+
+PunchBuddy integriert eine direkte USB-Steuerung für Focusrite Vocaster One & Two Audiointerfaces. Diese Integration läuft direkt über USB (kapselt `pyusb` und die USB-Kommunikation mit dem Gerät), ohne dass die offizielle Focusrite Vocaster Hub-App benötigt wird.
+
+### Features
+*   **Auto Gain Steuerung:** Auslösen des automatischen Einpegelns über HTTP-Webtrigger oder das Menü. Ein natives AppKit-Fortschrittsfenster wird auf dem Main Thread gerendert, um den Benutzer durch den 10-sekündigen Pegelvorgang zu leiten.
+*   **48V-Phantomspannung:** Schalten der Phantomspeisung beim Starten der Anwendung oder manuell über das Menü.
+*   **MUX-Routing:** Auslesen und Wiederherstellen von gespeicherten Routing-Tabellen des Focusrite-Mixers, um das korrekte Kanal-Routing beim App-Start automatisch zu gewährleisten.
+
+### Implementierungsdetails
+*   `vocaster_control.py` implementiert das Low-Level USB-Protokoll und die Erkennung.
+*   `vocaster_integration.py` kapselt die State-Machine (`drive()`), die über einen `rumps.Timer` alle 400 ms auf dem Main-Thread getaktet wird, sowie die Fenster-Verwaltung.
+*   Zur USB-Kommunikation wird die `libusb-1.0` benötigt, die im Intel-Build direkt in das App-Bundle eingebettet ist (`--add-binary`), um eine Homebrew-Installation auf dem Zielsystem überflüssig zu machen.
+
+---
+
+## 11. Abhängigkeiten & Lizenzen
 
 | Bibliothek | Lizenz | Verwendung |
 |---|---|---|
@@ -546,6 +562,9 @@ signal.signal(signal.SIGINT, _signal_handler)
 | soundfile | BSD 3-Clause | WAV-Lesen/Schreiben |
 | numpy | BSD 3-Clause | Numerische Verarbeitung |
 | scipy | BSD 3-Clause | Signal-Verarbeitung |
+| pyusb | stroke/MIT | USB-Kommando-Übertragung an Vocaster |
+| bottle | MIT | HTTP Webtrigger Web-Server |
+| pywebview | BSD 3-Clause | Web-UI Visualisierung |
 | PyInstaller | GPL + Bootloader-Exception | App-Bundle-Erstellung |
 
 Alle Lizenztexte sind im Menü unter **Hilfe & Info → Open Source Software & Lizenzen** abrufbar.

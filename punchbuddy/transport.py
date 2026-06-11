@@ -1,7 +1,7 @@
 """Transport-Orchestrierung: Punch-In/Out, Play, Play-Custom, Stop, GoTo.
 
-Importiert nach „unten" (state, config, keys, engine). Wird von der UI und
-dem Webtrigger aufgerufen.
+Importiert nach „unten" (state, config, keys, engine, uikit). Wird von der UI
+und dem Webtrigger aufgerufen.
 """
 import gc
 import time
@@ -10,6 +10,7 @@ import threading
 
 from punchbuddy import state
 from punchbuddy.config import load_settings, DEFAULT_SETTINGS
+from punchbuddy.uikit import _dispatch_main
 from punchbuddy.keys import (
     _send_key, _send_key_to_app, _pt_pid, _VK_OE, _VK_K,
 )
@@ -508,12 +509,21 @@ def run_goto_start():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _set_busy(busy: bool):
-    """Setzt den Menüleisten-Indikator auf rot (busy) oder normal (idle)."""
-    if state.app_ref is not None:
+    """Setzt den Menüleisten-Indikator auf rot (busy) oder normal (idle).
+
+    Der rumps-Title-Setter ruft NSStatusItem.setTitle_ (AppKit) auf – das
+    darf nur auf dem Main-Thread passieren. Aufrufer laufen aber meist in
+    Worker-Threads (Punch-In/Export/Import), daher wird hier immer auf den
+    Main-Thread dispatcht."""
+    if state.app_ref is None:
+        return
+
+    def _do():
         try:
             state.app_ref.title = state.ICON_BUSY if busy else state.ICON_IDLE
         except Exception:
             pass
+    _dispatch_main(_do)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Export-Workflow

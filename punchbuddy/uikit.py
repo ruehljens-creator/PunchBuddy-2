@@ -1,16 +1,26 @@
 """Geteilte AppKit-Helfer: Main-Thread-Dispatch und Fortschrittsfenster.
 
-Von export, loudness und ui genutzt. Importiert nur AppKit/Foundation (lazy),
-daher zyklenfrei.
+Von transport, export, loudness und ui genutzt. Importiert nur
+AppKit/Foundation/PyObjCTools (lazy), daher zyklenfrei.
 """
 import time
 import logging
 
 def _dispatch_main(fn):
-    """Schedult fn() auf dem Haupt-Run-Loop (fire-and-forget)."""
+    """Schedult fn() threadsicher auf dem Main-Thread (fire-and-forget).
+
+    AppHelper.callAfter (performSelectorOnMainThread:) statt
+    NSRunLoop.performBlock_: NSRunLoop ist nicht threadsicher und
+    performBlock_ weckt den Run-Loop nicht auf. Exceptions im Block werden
+    abgefangen, damit sie nicht in den ObjC-Runtime durchschlagen."""
+    def _safe():
+        try:
+            fn()
+        except Exception:
+            logging.exception("_dispatch_main: Fehler im Main-Thread-Block")
     try:
-        import Foundation as _F
-        _F.NSRunLoop.mainRunLoop().performBlock_(fn)
+        from PyObjCTools import AppHelper
+        AppHelper.callAfter(_safe)
     except Exception:
         pass
 

@@ -17,9 +17,8 @@ from punchbuddy import state
 from punchbuddy.i18n import t
 from punchbuddy.config import load_settings, DEFAULT_SETTINGS
 from punchbuddy.keys import (
-    _send_key, _send_key_to_app, _activate_app, _app_pid, _pt_pid,
-    _VK_K, _VK_F12, _VK_SPACE, _VK_R, _VK_A, _VK_F2, _VK_C, _VK_ESC,
-    _VK_P, _VK_V, _VK_OE, _VK_F13, _VK_RETURN, _VK_TAB, _VK_DOWN,
+    _send_key, _send_key_to_app, _activate_app, _pt_pid,
+    _VK_F2, _VK_ESC, _VK_V, _VK_F13, _VK_RETURN,
 )
 from punchbuddy.engine import (
     _get_engine, _ptsl_call, ensure_preroll_on, restore_preroll,
@@ -93,7 +92,11 @@ def _poll_pt_log_for_export(log_path, start_pos, timeout=90):
     Returns (success: True/False/None, message: str).
     """
     SUCCESS_MARKER = "The selected tracks were successfully placed into the Pro Tools sequence"
-    ERROR_MARKER   = "SLnk_MachineMgr::SendDialogOnScreen: 108846091"
+    # PT loggt das Export-Ergebnis als Dialog-Zeile:
+    #   "SLnk_MachineMgr::SendDialogOnScreen: <id>, error msg = <Text>"
+    # Die <id> ist eine instabile Instanz-Nummer (NICHT fest verdrahten!),
+    # daher matchen wir nur den stabilen Prefix und werten den Klartext aus.
+    DIALOG_MARKER  = "SendDialogOnScreen"
 
     if not log_path:
         return None, "PT Log nicht verfügbar"
@@ -101,13 +104,15 @@ def _poll_pt_log_for_export(log_path, start_pos, timeout=90):
     def _check(chunk):
         if SUCCESS_MARKER in chunk:
             return True, "Export erfolgreich (PT Log)"
-        if ERROR_MARKER in chunk:
-            idx = chunk.find(ERROR_MARKER)
-            end = chunk.find("\n", idx)
-            line = chunk[idx : end if end > idx else idx + 300]
-            if "successfully" in line.lower():
+        for line in chunk.splitlines():
+            if DIALOG_MARKER not in line or "error msg =" not in line:
+                continue
+            msg = line.split("error msg =", 1)[1].strip()
+            if not msg:
+                continue  # leeres Dialog-Clear (Schließen) – kein Ergebnis
+            if "successfully" in msg.lower():
                 return True, "Export erfolgreich (PT Log)"
-            return False, f"Export-Dialog: {line.strip()[:120]}"
+            return False, f"Export-Dialog: {msg[:120]}"
         return None, None
 
     deadline = time.time() + timeout
@@ -189,11 +194,12 @@ def _poll_pt_log_for_export(log_path, start_pos, timeout=90):
 def _wait_for_pt_modal_dismissed(log_path, log_pos, timeout=5.0):
     """
     Wartet via kqueue bis PT den Modal-Dialog vollständig verarbeitet hat.
-    PT schreibt 'SLnk_MachineMgr::SendDialogOnScreen: 108846044' ins Log
-    genau dann wenn der Modal-Dialog geschlossen und der Event-Loop wieder frei ist.
+    Sobald der Dialog geschlossen wird, schreibt PT eine weitere
+    'SLnk_MachineMgr::SendDialogOnScreen: <id>'-Zeile (Dialog-Statuswechsel).
+    Die <id> ist eine instabile Instanz-Nummer – daher nur der stabile Prefix.
     Zuverlässiger als CGWindowList (funktioniert auch bei Sheets/Panel-Dialogen).
     """
-    DISMISS_MARKER = "SLnk_MachineMgr::SendDialogOnScreen: 108846044"
+    DISMISS_MARKER = "SendDialogOnScreen"
     if not log_path or not os.path.exists(log_path):
         time.sleep(1.0)
         return
@@ -336,13 +342,37 @@ def _wait_for_pt_window(title_contains, timeout=30, gone=False):
     return False
 
 
-def _wait_for_consolidate_window_gone(timeout=60):
-    """
-    Wartet bis das Consolidate-Fenster ("Zusammenführen", "Consolidating" etc.) verschwindet.
-    """
-    time.sleep(0.5)  # Kurz warten, damit das Fenster Zeit hat sich zu öffnen
-    
-    script = '''
+def _tc_seconds(tc):
+    """Timecode 'hh:mm:ss:ff(.xx)' → Sekunden (Frames werden ignoriert)."""
+    try:
+        h, m, s = (int(x) for x in tc.split(".")[0].split(":")[:3])
+        return h * 3600 + m * 60 + s
+    except Exception:
+        return None
+
+
+def _consolidate_timeout(in_time, out_time, base=60.0, per_audio_second=0.5, cap=600.0):
+    """Wartezeit fürs Consolidate-Fenster anhand der Selektionslänge.
+    Lange Selektionen brauchen auf NEXIS deutlich mehr als die früher fest
+    codierten 60s (Log 2026-06-11: 5:38-min-Session × 7 Spuren ≈ 80s)."""
+    a, b = _tc_seconds(in_time), _tc_seconds(out_time)
+    if a is None or b is None or b <= a:
+        return base
+    return min(cap, base + (b - a) * per_audio_second)
+
+
+# Stichwörter, mit denen das Consolidate-Fortschrittsfenster BEGINNT.
+# Wichtig: Vergleich auf Wortanfang, NICHT "enthält" – sonst matcht ein
+# Sessionname wie "…Consolidated.01_forPT_1" im Edit-Fenstertitel fälschlich
+# und der Wait läuft in den vollen Timeout (Log 2026-06-11: 80s statt ~4s).
+_CONSOLIDATE_TITLE_PREFIXES = ("consolidat", "zusammenführ", "consolida", "consolidando")
+_WINDOW_NAME_SEP = "|||"
+
+
+def _pt_window_names():
+    """Liefert die Fenstertitel von Pro Tools als Liste (oder None bei Fehler)."""
+    script = f'''
+        set AppleScript's text item delimiters to "{_WINDOW_NAME_SEP}"
         tell application "System Events"
             tell process "Pro Tools"
                 set wNames to name of every window
@@ -350,89 +380,121 @@ def _wait_for_consolidate_window_gone(timeout=60):
         end tell
         return wNames as text
     '''
-    
-    keywords = ["consolidat", "zusammenführ", "consolida", "consolidando"]
-    
-    deadline = time.time() + timeout
+    rc, out, _ = _run_applescript(script)
+    if rc != 0:
+        return None
+    return out.split(_WINDOW_NAME_SEP)
+
+
+def _has_consolidate_window(names):
+    """True wenn ein Fenstertitel mit einem Consolidate-Stichwort BEGINNT."""
+    for n in names:
+        low = n.strip().lower()
+        if low.startswith(_CONSOLIDATE_TITLE_PREFIXES):
+            return True
+    return False
+
+
+def _wait_for_consolidate_window_gone(timeout=60):
+    """
+    Wartet bis das Consolidate-Fortschrittsfenster ("Consolidating",
+    "Zusammenführen" …) verschwindet. Persistente Fenster (Edit/Mix) werden
+    ignoriert, auch wenn der Sessionname ein Stichwort enthält.
+    """
+    time.sleep(0.5)  # Kurz warten, damit das Fenster Zeit hat sich zu öffnen
+
+    start = time.time()
+    deadline = start + timeout
+    last_log = -10.0
     while time.time() < deadline:
         try:
-            rc, out, _ = _run_applescript(script)
-            if rc == 0:
-                found = False
-                out_lower = out.lower()
-                for kw in keywords:
-                    if kw in out_lower:
-                        found = True
-                        break
-                if not found:
+            names = _pt_window_names()
+            if names is not None:
+                if not _has_consolidate_window(names):
                     logging.info("  Consolidate-Fenster nicht mehr aktiv.")
                     return True
-                logging.info("  Warte auf Abschluss des Consolidate-Vorgangs in Pro Tools...")
+                elapsed = time.time() - start
+                if elapsed - last_log >= 5.0:
+                    logging.info(f"  Warte auf Abschluss des Consolidate-Vorgangs in Pro Tools... ({int(elapsed)}s)")
+                    last_log = elapsed
         except Exception as e:
             logging.debug(f"Fehler bei _wait_for_consolidate_window_gone: {e}")
         time.sleep(0.5)
-    logging.warning("  Timeout beim Warten auf das Consolidate-Fenster.")
+    logging.warning(f"  Timeout ({int(timeout)}s) beim Warten auf das Consolidate-Fenster.")
     return False
 
 def _wait_for_consolidated_files(session_dir, track_names, timeout=10):
     """
-    Wartet bis für jeden Spurnamen eine .wav-Datei im "Audio Files"-Ordner existiert,
-    die eine Größe > 0 hat und deren Größe sich über einen Zeitraum von 0.2s nicht mehr ändert.
+    Wartet bis die vom Consolidate geschriebenen .wav-Dateien stabil sind
+    (Größe > 0, unverändert über 0.5s).
+
+    Zwei Fallstricke der alten Version sind hier behoben:
+    - Der Stabilitäts-Timer wurde bei jeder Prüfung zurückgesetzt, solange
+      noch keine 0.2s vergangen waren – bei 0.1s Poll-Intervall konnte er
+      dadurch NIE auslösen und der Timeout lief immer komplett durch.
+    - Spuren ohne Material erzeugen keine Datei; gewartet wird deshalb nur
+      auf Dateien, die tatsächlich existieren.
     """
     audio_dir = os.path.join(session_dir, "Audio Files")
     if not os.path.isdir(audio_dir):
         return False
-        
+
     logging.info("  Warte auf Stabilität der exportierten Audiodateien...")
-    deadline = time.time() + timeout
-    
-    # Letzte bekannte Modifikationszeiten und Dateigrößen
+    now = time.time()
+    deadline = now + timeout
+    grace_deadline = now + 1.5   # Zeit für verspätet erscheinende Dateien
+
+    # Letzte bekannte Dateigröße + Zeitpunkt der letzten Größen-Änderung
     last_states = {}
-    
-    while time.time() < deadline:
-        stable_count = 0
-        
-        for track_name in track_names:
-            latest_file = None
-            latest_mtime = -1.0
-            
-            try:
-                for f in os.listdir(audio_dir):
-                    base = os.path.splitext(f)[0]
-                    if (base == track_name or 
-                        base.startswith(track_name + "_") or 
-                        base.startswith(track_name + ".") or 
+
+    def _latest_wav(track_name):
+        latest_file, latest_mtime = None, -1.0
+        try:
+            for f in os.listdir(audio_dir):
+                base = os.path.splitext(f)[0]
+                if (base == track_name or
+                        base.startswith(track_name + "_") or
+                        base.startswith(track_name + ".") or
                         base.startswith(track_name + "-")) and f.lower().endswith(".wav"):
-                        full = os.path.join(audio_dir, f)
-                        mtime = os.path.getmtime(full)
-                        if mtime > latest_mtime:
-                            latest_mtime = mtime
-                            latest_file = full
-            except Exception:
+                    full = os.path.join(audio_dir, f)
+                    mtime = os.path.getmtime(full)
+                    if mtime > latest_mtime:
+                        latest_mtime, latest_file = mtime, full
+        except Exception:
+            return None
+        return latest_file
+
+    while time.time() < deadline:
+        found = 0
+        stable = 0
+        for track_name in track_names:
+            latest_file = _latest_wav(track_name)
+            if not latest_file:
                 continue
-                
-            if latest_file:
-                try:
-                    size = os.path.getsize(latest_file)
-                except Exception:
-                    size = 0
-                
-                prev_size, prev_time = last_states.get(track_name, (None, None))
-                now = time.time()
-                
-                if size > 0 and prev_size == size and (now - prev_time) >= 0.2:
-                    stable_count += 1
-                else:
-                    last_states[track_name] = (size, now)
+            found += 1
+            try:
+                size = os.path.getsize(latest_file)
+            except Exception:
+                size = 0
+            prev_size, prev_time = last_states.get(track_name, (None, None))
+            now = time.time()
+            if size != prev_size:
+                last_states[track_name] = (size, now)
+            elif size > 0 and (now - prev_time) >= 0.5:
+                stable += 1
+
+        # Erfolg: Grace-Periode vorbei, mind. eine Datei da, alle gefundenen stabil
+        if time.time() >= grace_deadline and found > 0 and stable == found:
+            missing = len(track_names) - found
+            if missing:
+                logging.info(f"  Exportierte Audiodateien stabil ({found} Datei(en); "
+                             f"{missing} Spur(en) ohne Datei im Bereich).")
             else:
-                pass
-                
-        if stable_count == len(track_names):
-            logging.info("  Alle exportierten Audiodateien sind stabil und vollständig.")
+                logging.info("  Alle exportierten Audiodateien sind stabil und vollständig.")
             return True
-            
+
         time.sleep(0.1)
-        
+
     logging.warning("  Erreichte Timeout beim Warten auf stabile Audiodateien – fahre fort.")
     return False
 
@@ -508,8 +570,7 @@ def run_interplay_import():
 
         # ── Schritt 1: Interplay Access – Sequenzname kopieren ────────
         # Nutzt CGEvent statt AppleScript System Events (keine Accessibility-Probleme)
-        _VK_RETURN = 36   # Return (lokal, da nur hier gebraucht)
-        _VK_1      = 18   # '1'
+        _VK_1 = 18   # '1' (lokal, da nur hier gebraucht)
 
         prog["update"](0.15, t("prog_copy_seq_name"))
         logging.info("  Import Schritt 1: Interplay Access – Sequenzname kopieren...")
@@ -851,8 +912,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
     5. "Processing Audio..." abwarten
     6. Bestaetigungsmeldung → Enter
     """
-    _VK_UP = 126  # Arrow Up
-    _VK_RETURN = 36
+    _VK_UP = 126  # Arrow Up (lokal, da nur hier gebraucht)
 
     prog = None
     _set_busy(True)
@@ -925,7 +985,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
                 prog["update"](0.25, t("prog_consolidate"))
                 logging.info("  Interplay: Consolidate...")
                 engine.consolidate_clip()
-                _wait_for_consolidate_window_gone(timeout=60)
+                _wait_for_consolidate_window_gone(timeout=_consolidate_timeout(in_time, video_end))
                 _wait_for_consolidated_files(session_dir, export_tracks, timeout=10)
                 logging.info("  Interplay: Consolidate OK")
 
@@ -1150,8 +1210,6 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             else:
                 prog["update"](0.97, t("prog_rename_seq"))
                 logging.info("  Interplay: Starte Sequence-Umbenennung...")
-                _activate_app("interplayAccess")
-                time.sleep(0.3)
                 _rename_sequence_in_interplay(settings)
 
         prog["update"](1.0, t("prog_export_done"))
@@ -1168,12 +1226,26 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
         _set_busy(False)
 
 
+def _ia_send(action, pause=0.3):
+    """Sendet eine Tastatur-Aktion an Interplay Access (System Events) und
+    wartet kurz, bis die Java-UI sie verarbeitet hat."""
+    _run_applescript(
+        'tell application "System Events" to tell process "interplayAccess" '
+        f'to {action}'
+    )
+    time.sleep(pause)
+
+
 def _rename_sequence_in_interplay(settings):
     """Benennt die Sequenz in Interplay Access um.
-    Vollständig CGEvent-basiert (kein AppleScript, kein System Events).
-    Blockiert nicht auf PT's Accessibility-Layer – kann sofort nach Export starten.
-    Typing via CGEventKeyboardSetUnicodeString umgeht Cmd+V-Versagen bei Java-Apps."""
-    import Quartz as _Q
+
+    Das Rename-Feld wird nur EINMAL geöffnet:
+      1. F2 → Feld öffnen, Cmd+A/Cmd+C → aktuellen Namen lesen
+      2. Neuen Namen im Speicher nach den Einstellungen berechnen
+      3. Auswahl direkt mit dem neuen Namen überschreiben, Enter
+
+    AppleScript (System Events) analog zum Import-Workflow zur Vermeidung
+    von Clipboard-Synchronisationsproblemen."""
     trim_start = max(0, int(settings.get("interplay_rename_trim_start", 0)))
     trim_end   = max(0, int(settings.get("interplay_rename_trim_end", 0)))
     prefix     = settings.get("interplay_rename_prefix", "")
@@ -1183,29 +1255,25 @@ def _rename_sequence_in_interplay(settings):
         logging.info("  Rename: Keine Änderungen konfiguriert – überspringe.")
         return
 
-    pid = _app_pid("interplayAccess")
-    if not pid:
-        logging.warning("  Rename: Interplay Access nicht gefunden.")
-        return
+    def _cancel():
+        """Schließt das offene Rename-Feld ohne Änderung."""
+        _ia_send(f'key code {_VK_ESC}')
 
-    src = _Q.CGEventSourceCreate(_Q.kCGEventSourceStateHIDSystemState)
-
-    def _key(vk, cmd=False):
-        ev_dn = _Q.CGEventCreateKeyboardEvent(src, vk, True)
-        ev_up = _Q.CGEventCreateKeyboardEvent(src, vk, False)
-        if cmd:
-            _Q.CGEventSetFlags(ev_dn, _Q.kCGEventFlagMaskCommand)
-            _Q.CGEventSetFlags(ev_up, _Q.kCGEventFlagMaskCommand)
-        _Q.CGEventPostToPid(pid, ev_dn)
-        _Q.CGEventPostToPid(pid, ev_up)
+    # Interplay Access aktivieren
+    _activate_app("interplayAccess")
+    try:
+        _run_applescript(
+            'tell application "System Events" to '
+            'set frontmost of (first process whose name contains "Interplay") to true'
+        )
+    except Exception:
+        pass
+    time.sleep(0.8)
 
     # ── Schritt 1: F2 → Rename-Feld öffnen, Namen per Clipboard lesen ──────
-    _key(_VK_F2)
-    time.sleep(0.7)
-    _key(_VK_A, cmd=True)
-    time.sleep(0.2)
-    _key(_VK_C, cmd=True)
-    time.sleep(0.3)
+    _ia_send(f'key code {_VK_F2}', pause=0.6)
+    _ia_send('keystroke "a" using command down')
+    _ia_send('keystroke "c" using command down', pause=0.5)
 
     try:
         current_name = subprocess.run(
@@ -1213,12 +1281,12 @@ def _rename_sequence_in_interplay(settings):
         ).stdout.strip()
     except Exception as e:
         logging.warning(f"  Rename: pbpaste fehlgeschlagen: {e}")
-        _key(_VK_ESC)
+        _cancel()
         return
 
     if not current_name:
         logging.warning("  Rename: Clipboard leer – Rename-Feld nicht erreichbar.")
-        _key(_VK_ESC)
+        _cancel()
         return
 
     logging.info(f"  Rename: Aktueller Name: '{current_name}'")
@@ -1229,31 +1297,23 @@ def _rename_sequence_in_interplay(settings):
 
     if not new_name:
         logging.warning("  Rename: Berechneter Name ist leer – überspringe.")
-        _key(_VK_ESC)
+        _cancel()
         return
 
     if new_name == current_name:
         logging.info("  Rename: Name unverändert – überspringe.")
-        _key(_VK_ESC)
+        _cancel()
         return
 
     logging.info(f"  Rename: Neuer Name: '{new_name}'")
 
-    # ── Schritt 3: Cmd+A (alten Text löschen), dann Namen Zeichen für Zeichen tippen ──
-    _key(_VK_A, cmd=True)
-    time.sleep(0.15)
-
-    for ch in new_name:
-        ev_dn = _Q.CGEventCreateKeyboardEvent(src, 0, True)
-        ev_up = _Q.CGEventCreateKeyboardEvent(src, 0, False)
-        _Q.CGEventKeyboardSetUnicodeString(ev_dn, 1, ch)
-        _Q.CGEventKeyboardSetUnicodeString(ev_up, 1, ch)
-        _Q.CGEventPostToPid(pid, ev_dn)
-        _Q.CGEventPostToPid(pid, ev_up)
-        time.sleep(0.008)   # 8 ms zwischen Tastenanschlägen
-
-    time.sleep(0.05)
-    _key(_VK_RETURN)
+    # ── Schritt 3: Feld ist noch offen – Auswahl ersetzen und bestätigen ───
+    # Cmd+A stellt sicher, dass der alte Name komplett selektiert ist;
+    # keystroke ersetzt dann die Auswahl.
+    _ia_send('keystroke "a" using command down')
+    escaped_name = new_name.replace('\\', '\\\\').replace('"', '\\"')
+    _ia_send(f'keystroke "{escaped_name}"', pause=0.5)
+    _ia_send(f'key code {_VK_RETURN}')
     logging.info("  Rename: Umbenennung abgeschlossen.")
 
 
@@ -1349,7 +1409,7 @@ def run_export(export_tracks, video_track=None, settings=None):
             if os.path.basename(session_dir) == "Session File Backups":
                 session_dir = os.path.dirname(session_dir)
 
-            _wait_for_consolidate_window_gone(timeout=60)
+            _wait_for_consolidate_window_gone(timeout=_consolidate_timeout(in_time, video_end))
             _wait_for_consolidated_files(session_dir, export_tracks, timeout=10)
             logging.info("  Consolidate OK")
 
@@ -1694,7 +1754,7 @@ def run_wav_export_standalone(export_tracks, settings):
             engine.consolidate_clip()
             if os.path.basename(session_dir) == "Session File Backups":
                 session_dir = os.path.dirname(session_dir)
-            _wait_for_consolidate_window_gone(timeout=60)
+            _wait_for_consolidate_window_gone(timeout=_consolidate_timeout(in_time, video_end))
             _wait_for_consolidated_files(session_dir, export_tracks, timeout=10)
             logging.info("  Consolidate OK")
 
@@ -2083,7 +2143,7 @@ def run_aaf_export_standalone(export_tracks, settings):
             engine.consolidate_clip()
             if os.path.basename(session_dir) == "Session File Backups":
                 session_dir = os.path.dirname(session_dir)
-            _wait_for_consolidate_window_gone(timeout=60)
+            _wait_for_consolidate_window_gone(timeout=_consolidate_timeout(in_time, video_end))
             _wait_for_consolidated_files(session_dir, export_tracks, timeout=10)
             logging.info("  Consolidate OK")
 

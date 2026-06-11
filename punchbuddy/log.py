@@ -4,7 +4,10 @@ Blatt-Modul (nur stdlib). Pfad-Konstanten werden beim Import berechnet, das
 Logging wird beim Import konfiguriert – wie zuvor im Monolithen.
 """
 import os
+import sys
 import logging
+import threading
+import faulthandler
 
 def _setup_log_dir():
     """Erstellt das Log-Verzeichnis, robust gegen TCC und alte Dateien."""
@@ -94,4 +97,41 @@ _root_logger.setLevel(logging.INFO)
 _root_logger.handlers.clear()
 _root_logger.addHandler(_file_handler)
 _root_logger.addHandler(_console_handler)
+
+# ── Crash-Diagnose ──────────────────────────────────────────────────────────
+# Native Abstürze (Segfault/ObjC-Abort) und unbehandelte Exceptions landen
+# sonst nirgends: stderr geht im App-Bundle verloren, und der Prozess stirbt
+# ohne Log-Eintrag (siehe Crash vom 2026-06-11 nach Interplay-Import).
+
+# faulthandler schreibt bei SIGSEGV/SIGABRT/etc. die Python-Stacktraces aller
+# Threads in diese Datei. Das Datei-Handle muss prozessweit offen bleiben.
+CRASH_LOG_PATH = os.path.join(_LOG_DIR, "PunchBuddy_crash.log")
+try:
+    _crash_log_file = open(CRASH_LOG_PATH, "a", encoding="utf-8")
+    faulthandler.enable(file=_crash_log_file)
+except Exception:
+    _crash_log_file = None
+
+
+def _log_thread_exception(args):
+    if args.exc_type is SystemExit:
+        return
+    _name = args.thread.name if args.thread is not None else "?"
+    logging.error(f"Unbehandelte Exception in Thread '{_name}'",
+                  exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
+threading.excepthook = _log_thread_exception
+
+_orig_sys_excepthook = sys.excepthook
+
+
+def _log_sys_exception(exc_type, exc_value, exc_tb):
+    if exc_type not in (SystemExit, KeyboardInterrupt):
+        logging.error("Unbehandelte Exception (Main-Thread)",
+                      exc_info=(exc_type, exc_value, exc_tb))
+    _orig_sys_excepthook(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _log_sys_exception
 
