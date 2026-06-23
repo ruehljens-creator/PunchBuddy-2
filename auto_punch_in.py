@@ -1169,13 +1169,23 @@ class PunchBuddyApp(rumps.App):
     
     @objc.python_method
     def _doc_path(self, filename):
-        """Sucht eine Dokumentationsdatei neben der App oder neben dem Skript."""
+        """Sucht eine Dokumentationsdatei – zuerst IN der App gebündelt
+        (PyInstaller _MEIPASS), dann neben der App, dann neben dem Skript.
+
+        Die gebündelte Variante ist entscheidend: nur sie funktioniert auch,
+        wenn der User PunchBuddy.app aus dem DMG nach /Programme zieht und die
+        Doku-Dateien dabei zurücklässt (früher war der Link dann tot)."""
         import sys as _sys
         candidates = []
+        # 1. In der App gebündelt (--add-data) – immer vorhanden
+        meipass = getattr(_sys, '_MEIPASS', None)
+        if meipass:
+            candidates.append(os.path.join(meipass, filename))
         if getattr(_sys, 'frozen', False):
-            # Neben PunchBuddy.app (im DMG-Ordner)
+            # 2. Neben PunchBuddy.app (im DMG-Ordner)
             app_dir = os.path.dirname(os.path.dirname(os.path.dirname(_sys.executable)))
             candidates.append(os.path.join(os.path.dirname(app_dir), filename))
+        # 3. Neben dem Skript (Entwicklung)
         candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), filename))
         for p in candidates:
             if os.path.exists(p):
@@ -1198,7 +1208,10 @@ class PunchBuddyApp(rumps.App):
 
     def _on_help_docs(self, _):
         import subprocess as _sp
-        _doc = self._doc_path("TECHNISCHE_DOKUMENTATION.md")
+        # Zuerst die moderne HTML-Doku, danach MD-Fallback
+        _doc = self._doc_path("PunchBuddy_Technische_Doku.html")
+        if not _doc:
+            _doc = self._doc_path("TECHNISCHE_DOKUMENTATION.md")
         if _doc:
             try:
                 _sp.Popen(["open", _doc]); return

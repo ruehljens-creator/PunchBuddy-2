@@ -54,6 +54,8 @@ echo "=== PyInstaller Build (ARM64): PunchBuddy ==="
   --target-arch=arm64 \
   --icon="$SCRIPT_DIR/PunchBuddy.icns" \
   --add-data="$SCRIPT_DIR/PunchBuddy.png:." \
+  --add-data="$SCRIPT_DIR/PunchBuddy_Anleitung.html:." \
+  --add-data="$SCRIPT_DIR/PunchBuddy_Technische_Doku.html:." \
   --hidden-import=Foundation \
   --hidden-import=AppKit \
   --hidden-import=objc \
@@ -113,6 +115,8 @@ arch -x86_64 "$PYTHON_X86_64" -m PyInstaller \
   --target-arch=x86_64 \
   --icon="$SCRIPT_DIR/PunchBuddy.icns" \
   --add-data="$SCRIPT_DIR/PunchBuddy.png:." \
+  --add-data="$SCRIPT_DIR/PunchBuddy_Anleitung.html:." \
+  --add-data="$SCRIPT_DIR/PunchBuddy_Technische_Doku.html:." \
   --hidden-import=Foundation \
   --hidden-import=AppKit \
   --hidden-import=objc \
@@ -199,6 +203,7 @@ chmod +x "$DMG_STAGE/PunchBuddy_Setup.command"
 [ -f "$SCRIPT_DIR/BEDIENUNGSANLEITUNG.md" ]      && cp "$SCRIPT_DIR/BEDIENUNGSANLEITUNG.md"      "$DMG_STAGE/"
 [ -f "$SCRIPT_DIR/TECHNISCHE_DOKUMENTATION.md" ] && cp "$SCRIPT_DIR/TECHNISCHE_DOKUMENTATION.md" "$DMG_STAGE/"
 [ -f "$SCRIPT_DIR/PunchBuddy_Anleitung.html" ]   && cp "$SCRIPT_DIR/PunchBuddy_Anleitung.html"   "$DMG_STAGE/"
+[ -f "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" ] && cp "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" "$DMG_STAGE/"
 
 # ── 6. DMG erstellen ──────────────────────────────────────────────────────
 echo "=== DMG erstellen ==="
