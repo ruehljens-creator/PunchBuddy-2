@@ -68,6 +68,59 @@ def _detect_video_track(engine, settings=None):
         logging.warning(f"Video-Spur Erkennung fehlgeschlagen: {e} – Fallback: '{fallback}'")
         return fallback
 
+
+# Transport-Zustände, in denen Pro Tools aktiv läuft und ein Stop nötig ist,
+# bevor exportiert werden darf. "TS_TransportIsStopping" ist NICHT dabei: PT
+# stoppt dort bereits selbst – ein toggle_play_state würde es wieder starten.
+_STOP_NEEDED_STATES = (
+    "TS_TransportRecording", "TS_TransportPlaying",
+    "TS_TransportIsCued", "TS_TransportIsCuedForPreview",
+)
+
+
+def _ensure_transport_stopped(engine, settle=2.0):
+    """Stellt vor jedem Export sicher, dass Pro Tools nicht mehr aufnimmt/abspielt.
+
+    Löst der User den Export aus, während noch eine Aufnahme läuft (ohne vorher
+    zu stoppen), würde PT mitten im NEXIS-Schreibvorgang zum Consolidate
+    gezwungen – das kann die Session beschädigen. Deshalb: läuft der Transport
+    noch, Stop senden, auf bestätigten Stopp warten und PT `settle` Sekunden Zeit
+    geben, die Dateien zu finalisieren. Steht der Transport bereits (User hat
+    selbst gestoppt), kehrt die Funktion sofort zurück.
+
+    Gibt True zurück, wenn der Transport (jetzt) steht, sonst False.
+    """
+    ok, ts = _ptsl_call(engine.transport_state, label="ExportTransportCheck", timeout=6.0)
+    if not ok:
+        logging.warning("  Export: Transport-State nicht lesbar – fahre vorsichtshalber fort.")
+        return False
+
+    s = str(ts)
+    if s == "TS_TransportStopped":
+        logging.info("  Export: Transport steht bereits – kein Stop nötig.")
+        return True
+
+    if s in _STOP_NEEDED_STATES:
+        logging.info(f"  Export: Transport läuft ({s}) – sende Stop vor Export.")
+        _ptsl_call(engine.toggle_play_state, label="ExportStop", timeout=6.0)
+    else:  # TS_TransportIsStopping o.ä. – PT stoppt schon selbst
+        logging.info(f"  Export: Transport stoppt bereits ({s}) – warte auf Abschluss.")
+
+    # Auf bestätigten Stopp warten (max ~10s), dann Settle für den NEXIS-Write.
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        time.sleep(0.5)
+        ok2, ts2 = _ptsl_call(engine.transport_state, label="ExportStopWait", timeout=4.0)
+        if ok2 and str(ts2) == "TS_TransportStopped":
+            logging.info(f"  Export: Transport gestoppt – warte {settle:.0f}s auf Datei-Finalisierung.")
+            time.sleep(settle)
+            return True
+
+    logging.warning("  Export: Stop nicht bestätigt – warte Settle und fahre trotzdem fort.")
+    time.sleep(settle)
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Hauptautomatisierung
 # ─────────────────────────────────────────────────────────────────────────────
@@ -933,6 +986,10 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
             session_dir = os.path.dirname(session_dir)
             logging.debug(f"  session_dir korrigiert (Session File Backups entfernt): {session_dir}")
 
+        # ── Transport stoppen falls noch Aufnahme/Wiedergabe läuft ──
+        prog["update"](0.05, t("prog_prep_tracks"))
+        _ensure_transport_stopped(engine)
+
         # ── Versteckte Spuren einblenden ─────────────────────────────
         prog["update"](0.06, t("prog_prep_tracks"))
         logging.info(f"  Interplay: Spuren einblenden: {export_tracks}...")
@@ -1357,6 +1414,9 @@ def run_export(export_tracks, video_track=None, settings=None):
             logging.error("PTSL Engine nicht verfügbar – Abbruch.")
             return
 
+        # ── Transport stoppen falls noch Aufnahme/Wiedergabe läuft ──
+        _ensure_transport_stopped(engine)
+
         # ── 1. Versteckte Spuren einblenden ──────────────────────────
         logging.info(f"Schritt 1: Spuren einblenden: {export_tracks}...")
         try:
@@ -1698,6 +1758,9 @@ def run_wav_export_standalone(export_tracks, settings):
             return
         session_path = engine.session_path()
         session_dir = os.path.dirname(session_path)
+
+        # Transport stoppen falls noch Aufnahme/Wiedergabe läuft
+        _ensure_transport_stopped(engine)
 
         # Spuren einblenden
         prog["update"](0.06, t("prog_prep_tracks"))
@@ -2087,6 +2150,9 @@ def run_aaf_export_standalone(export_tracks, settings):
         session_path = engine.session_path()
         session_dir = os.path.dirname(session_path)
         session_name = os.path.splitext(os.path.basename(session_path))[0]
+
+        # Transport stoppen falls noch Aufnahme/Wiedergabe läuft
+        _ensure_transport_stopped(engine)
 
         # Spuren einblenden
         prog["update"](0.06, t("prog_prep_tracks"))
@@ -2515,6 +2581,9 @@ def run_aaf_reference_export_standalone(export_tracks, settings):
         session_path = engine.session_path()
         session_dir = os.path.dirname(session_path)
         session_name = os.path.splitext(os.path.basename(session_path))[0]
+
+        # Transport stoppen falls noch Aufnahme/Wiedergabe läuft
+        _ensure_transport_stopped(engine)
 
         # Spuren einblenden + selektieren
         prog["update"](0.10, t("prog_prep_tracks"))
