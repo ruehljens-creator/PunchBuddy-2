@@ -628,27 +628,27 @@
       <div class="flow-step">
         <div class="flow-num">2</div>
         <div class="flow-content">
-          <strong>Materialbereich ermitteln (PTSL)</strong>
-          <span>Pro Quell-Spur <code>select_all_clips_on_track</code> + <code>get_timeline_selection</code>; frühester Start und spätestes Ende ergeben den Bereich. Vor jeder Spur wird die Selektion auf Null-Länge zurückgesetzt, damit leere Spuren (stale-Selektion) korrekt übersprungen werden.</span>
+          <strong>Paarweise pro Spur verschieben (src[i] → tgt[i])</strong>
+          <span>Die Zuordnung erfolgt explizit per Index, nicht über PTs top→bottom-Mapping. Jede Spur wird einzeln verschoben; vor jeder Quell-Spur wird die Selektion auf Null-Länge gesetzt, damit leere Spuren (stale-Selektion) korrekt übersprungen werden.</span>
         </div>
       </div>
       <div class="flow-step">
         <div class="flow-num">3</div>
         <div class="flow-content">
-          <strong>Quell-Spuren + Bereich ausschneiden (PTSL)</strong>
-          <span><code>select_tracks_by_name(src)</code> + <code>set_timeline_selection(start, end)</code> spannt die Edit-Selection über alle Quell-Spuren, dann <code>cut()</code>. Settling-Delays zwischen den Schritten, da PT jede Selektionsänderung verarbeiten muss.</span>
+          <strong>Clip-basiert ausschneiden (PTSL)</strong>
+          <span><code>select_all_clips_on_track(src[i])</code> erzeugt eine <em>clip-genaue</em> Edit-Selection, dann <code>cut()</code>. Der ursprüngliche Clip-Start wird gemerkt. Settling-Delays zwischen den Schritten, da PT jede Selektionsänderung verarbeiten muss.</span>
         </div>
       </div>
       <div class="flow-step">
         <div class="flow-num">4</div>
         <div class="flow-content">
-          <strong>Auf Ziel-Spuren einfügen (PTSL)</strong>
-          <span><code>select_tracks_by_name(tgt)</code> + Cursor auf den Materialanfang (<code>set_timeline_selection(start, start)</code>), dann <code>paste()</code>. PT mappt die Zwischenablage top→bottom auf die Ziel-Spuren – Quelle/Ziel müssen in gleicher vertikaler Reihenfolge stehen.</span>
+          <strong>Auf Zielspur an gleicher Position einfügen (PTSL)</strong>
+          <span><code>select_tracks_by_name([tgt[i]])</code> + Cursor auf den gemerkten Clip-Start (<code>set_timeline_selection(start, start)</code>), dann <code>paste()</code>. Jede Spur landet an ihrer eigenen Originalposition – unabhängig vom Start-Timecode.</span>
         </div>
       </div>
     </div>
     <div class="box warn">
-      <strong>Wichtige Erkenntnis:</strong> PTSL <code>cut</code>/<code>paste</code> operieren auf der Edit-Selection, nicht auf der Track-/Timeline-Selection. Ohne die beiden Link-Optionen schneidet <code>cut</code> nur eine einzelne Spur aus und <code>paste</code> landet an unerwarteter Stelle. Erst der Selektions-Kontext (wie beim Consolidate-Export) macht den Multi-Track-Move zuverlässig. Live gegen Pro Tools verifiziert: A1/A2 → A3/A4 an exakter Position, Round-Trip stellt den Originalzustand wieder her.
+      <strong>Zwei Erkenntnisse aus dem Live-Test:</strong> (1) PTSL <code>cut</code>/<code>paste</code> operieren auf der Edit-Selection – ohne die Link-Optionen schneidet <code>cut</code> nur eine Spur aus und <code>paste</code> landet falsch. (2) Eine <em>zeitbereich-basierte</em> Multi-Track-Selektion schneidet bei Material, das nicht frame-genau beginnt (Subframes, z.&nbsp;B. <code>10:00:00:11.64</code>), unzuverlässig aus. Deshalb clip-basiert und pro Spur einzeln. Verifiziert gegen Pro Tools: sowohl frame-genaues (A1/A2 → A3/A4) als auch subframe-versetztes Material (A5/A6 → A7/A8) wird an exakter Position verschoben, Round-Trip stellt den Originalzustand wieder her.
     </div>
 
     <!-- ── Export ── -->
