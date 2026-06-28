@@ -171,7 +171,7 @@ from punchbuddy.loudness import normalize_track, _run_loudness_with_progress
 # Transport + geteilte AppKit-Helfer (von der UI/Webtrigger genutzt)
 from punchbuddy.transport import (
     _stop_lock, run_punch_in, run_play_custom, run_play, run_stop,
-    run_goto_start, _set_busy, _send_shift_oe,
+    run_goto_start, run_move_audio, _set_busy, _send_shift_oe,
 )
 from punchbuddy.uikit import _show_progress_win
 from punchbuddy.engine import current_engine, cached_track_count
@@ -313,6 +313,9 @@ class PunchBuddyApp(rumps.App):
         # ── Play Custom ──────────────────────────────────────────────────
         self.play_custom_item = rumps.MenuItem(t("play_custom"), callback=self._on_start_play_custom)
 
+        # ── Audio verschieben (Spur-Move) ────────────────────────────────
+        self.move_audio_item = rumps.MenuItem(t("move_audio"), callback=self._on_move_audio)
+
         # ── Export ────────────────────────────────────────────────────────
         self.wav_export_item   = rumps.MenuItem(t("export_wav"),  callback=self._on_start_export_wav)
         self.aaf_export_item   = rumps.MenuItem(t("export_aaf_embedded"),  callback=self._on_start_export_aaf)
@@ -333,6 +336,7 @@ class PunchBuddyApp(rumps.App):
             self.start_b_item,
             self.play_item,
             self.play_custom_item,
+            self.move_audio_item,
             rumps.separator,
         ]
 
@@ -549,6 +553,8 @@ class PunchBuddyApp(rumps.App):
                     self._fire(app_ref._trigger_play_custom)
                 elif path == "/start":
                     self._fire(app_ref._trigger_start)
+                elif path == "/move_audio":
+                    self._fire(app_ref._trigger_move_audio)
                 elif path.startswith("/vocaster/"):
                     self._handle_vocaster(app_ref, path)
                 elif path.startswith("/preset/"):
@@ -625,6 +631,7 @@ class PunchBuddyApp(rumps.App):
             logging.info(f"  /play       → Play/Stop (Toggle)")
             logging.info(f"  /play_custom → Play Custom (Mute KH2/Unmute ST Abh)")
             logging.info(f"  /start       → Cursor auf Start-Timecode")
+            logging.info(f"  /move_audio  → Audio von Quell- auf Ziel-Spuren verschieben")
             logging.info(f"  /preset/{{1-8}} → Preset 1-8 laden")
         except Exception as e:
             self._http_port = 8899  # Fallback für URL-Anzeige
@@ -796,6 +803,14 @@ class PunchBuddyApp(rumps.App):
     def _trigger_start(self):
         threading.Thread(target=run_goto_start, daemon=True).start()
 
+    def _trigger_move_audio(self):
+        logging.info(">>> TRIGGER MOVE AUDIO <<<")
+        src = self.settings.get("move_audio_source_tracks",
+                                DEFAULT_SETTINGS["move_audio_source_tracks"])
+        tgt = self.settings.get("move_audio_target_tracks",
+                                DEFAULT_SETTINGS["move_audio_target_tracks"])
+        threading.Thread(target=run_move_audio, args=(src, tgt), daemon=True).start()
+
     def _trigger_b(self):
         logging.info(">>> TRIGGER B <<<")
         tracks = self.settings.get("tracks_b", DEFAULT_SETTINGS["tracks_b"])
@@ -873,6 +888,10 @@ class PunchBuddyApp(rumps.App):
     def _on_start_play_custom(self, _):
         logging.info(t("log_menu_play_custom"))
         self._trigger_play_custom()
+
+    def _on_move_audio(self, _):
+        logging.info(">>> MENU 'Audio verschieben' <<<")
+        self._trigger_move_audio()
 
     def _on_start_import(self, _):
         logging.info(">>> MENU 'Interplay Import starten' <<<")
@@ -1969,6 +1988,46 @@ class PunchBuddyApp(rumps.App):
             cb_stop.setState_(AppKit.NSOnState if cur_mute_end else AppKit.NSOffState)
             t6_view.addSubview_(cb_stop)
             controls[mute_end_key] = cb_stop
+
+        # ── Audio verschieben (Spur-Move) ───────────────────────────────────
+        t6_y -= 42
+        sep_mv = AppKit.NSBox.alloc().initWithFrame_(
+            NSMakeRect(PAD, t6_y + 16, WIN_W - PAD * 2 - 40, 1))
+        sep_mv.setBoxType_(AppKit.NSBoxSeparator)
+        t6_view.addSubview_(sep_mv)
+
+        lbl_mv_hdr = NSTextField.labelWithString_(t("lbl_move_audio"))
+        lbl_mv_hdr.setFrame_(NSMakeRect(PAD, t6_y - 8, 400, 20))
+        lbl_mv_hdr.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t6_view.addSubview_(lbl_mv_hdr)
+
+        t6_y -= 30
+        lbl_mv_desc = NSTextField.labelWithString_(t("lbl_move_hint"))
+        lbl_mv_desc.setFrame_(NSMakeRect(PAD, t6_y, WIN_W - PAD * 2 - 40, 18))
+        lbl_mv_desc.setFont_(NSFont.systemFontOfSize_(11))
+        lbl_mv_desc.setTextColor_(NSColor.secondaryLabelColor())
+        t6_view.addSubview_(lbl_mv_desc)
+
+        mv_src = self.settings.get("move_audio_source_tracks", []) or []
+        mv_tgt = self.settings.get("move_audio_target_tracks", []) or []
+
+        t6_y -= 32
+        lbl_mv_src = NSTextField.labelWithString_(t("lbl_move_source"))
+        lbl_mv_src.setFrame_(NSMakeRect(PAD, t6_y + 2, 240, 18))
+        t6_view.addSubview_(lbl_mv_src)
+        tf_mv_src = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 250, t6_y, 200, 22))
+        tf_mv_src.setStringValue_(", ".join(mv_src))
+        t6_view.addSubview_(tf_mv_src)
+        controls["move_audio_source_tracks"] = tf_mv_src
+
+        t6_y -= 28
+        lbl_mv_tgt = NSTextField.labelWithString_(t("lbl_move_target"))
+        lbl_mv_tgt.setFrame_(NSMakeRect(PAD, t6_y + 2, 240, 18))
+        t6_view.addSubview_(lbl_mv_tgt)
+        tf_mv_tgt = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 250, t6_y, 200, 22))
+        tf_mv_tgt.setStringValue_(", ".join(mv_tgt))
+        t6_view.addSubview_(tf_mv_tgt)
+        controls["move_audio_target_tracks"] = tf_mv_tgt
 
         # ── TAB 7: VOCASTER (nur wenn Gerät erkannt) ────────────────────────
         tab7 = None
@@ -3108,6 +3167,17 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                     self._app.settings[mute_s_key] = (self._controls[mute_s_key].state() == AppKit.NSOnState)
                 if mute_end_key in self._controls:
                     self._app.settings[mute_end_key] = (self._controls[mute_end_key].state() == AppKit.NSOnState)
+
+            # 3b. Audio verschieben (Spur-Move) speichern
+            def _parse_track_list(raw):
+                # Komma-getrennt; Leerzeichen in Spurnamen bleiben erhalten
+                return [s.strip() for s in (raw or "").split(",") if s.strip()]
+            if "move_audio_source_tracks" in self._controls:
+                self._app.settings["move_audio_source_tracks"] = _parse_track_list(
+                    self._controls["move_audio_source_tracks"].stringValue())
+            if "move_audio_target_tracks" in self._controls:
+                self._app.settings["move_audio_target_tracks"] = _parse_track_list(
+                    self._controls["move_audio_target_tracks"].stringValue())
 
             # 4. Import-Einstellungen speichern
             if "import_close_session" in self._controls:

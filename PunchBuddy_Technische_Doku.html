@@ -315,6 +315,7 @@
     <li><a href="#flow-punchin">Punch-In (Record)</a></li>
     <li><a href="#flow-play">Play &amp; Play Custom</a></li>
     <li><a href="#flow-stop">Stop</a></li>
+    <li><a href="#flow-move">Audio verschieben</a></li>
     <li><a href="#flow-export">Export-Workflow</a></li>
     <li><a href="#flow-interplay-export">Interplay Export</a></li>
     <li><a href="#flow-interplay-import">Interplay Import</a></li>
@@ -344,7 +345,7 @@
     <h2>PunchBuddy</h2>
     <p>Automatisierungs-App für Pro Tools Punch-In, Transport, Export und Avid Interplay.<br>
        Menüleisten-App (macOS) mit Stream-Deck-Integration, Vocaster-Steuerung und Loudness-Normalisierung nach EBU R128.</p>
-    <p style="margin-top:16px; font-size:11px; color:#4a5568;">v 1.1 &nbsp;·&nbsp; Erstellt von Jens Rühl &nbsp;·&nbsp; 06.2026</p>
+    <p style="margin-top:16px; font-size:11px; color:#4a5568;">v 1.2 &nbsp;·&nbsp; Erstellt von Jens Rühl &nbsp;·&nbsp; 06.2026</p>
   </div>
 
 
@@ -432,6 +433,13 @@
       <tr><td><strong>Mute beim Stop (Ch2)</strong></td><td><code>play_custom_ch2_mute_stop</code></td><td>Ob Kanal 2 nach dem Stop gemutet wird (Standard: <code>true</code>).</td></tr>
     </table>
 
+    <p style="margin-top:18px;">Im selben Tab (<em>Monitoring</em>) liegt auch die Konfiguration für <strong>Audio verschieben (Spur-Move)</strong>:</p>
+    <table>
+      <tr><th>Feld</th><th>Settings-Key</th><th>Beschreibung</th></tr>
+      <tr><td><strong>Quell-Spuren</strong></td><td><code>move_audio_source_tracks</code></td><td>Spuren, deren gesamtes Material verschoben wird (komma-getrennt, i.&nbsp;d.&nbsp;R. 2 Spuren).</td></tr>
+      <tr><td><strong>Ziel-Spuren</strong></td><td><code>move_audio_target_tracks</code></td><td>Zielspuren, auf die das Material an gleicher Zeitposition gelegt wird (komma-getrennt). Müssen in gleicher vertikaler Reihenfolge wie die Quell-Spuren stehen.</td></tr>
+    </table>
+
     <!-- ── Vocaster ── -->
     <h3 id="settings-vocaster">Tab: Vocaster</h3>
     <p>Nur sichtbar wenn ein Focusrite Vocaster One oder Two per USB angeschlossen ist. Die Einstellungen werden dauerhaft gespeichert und gelten auch wenn das Gerät kurzzeitig getrennt war.</p>
@@ -459,6 +467,7 @@
       <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/play</span><span class="ep-desc">Play/Stop-Toggle mit Input-Monitor</span></div>
       <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/play_custom</span><span class="ep-desc">Play/Stop-Toggle mit konfigurierten Mute-States</span></div>
       <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/start</span><span class="ep-desc">PT-Cursor auf Start-Timecode setzen</span></div>
+      <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/move_audio</span><span class="ep-desc">Audio von Quell- auf Ziel-Spuren verschieben (Spur-Move)</span></div>
       <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/export_wav</span><span class="ep-desc">WAV-Export standalone starten</span></div>
       <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/export_aaf</span><span class="ep-desc">AAF Embedded Export</span></div>
       <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/export_aaf_reference</span><span class="ep-desc">AAF Reference Export</span></div>
@@ -604,6 +613,43 @@
     <!-- ── Stop ── -->
     <h3 id="flow-stop">Stop <span class="badge badge-play">Transport</span></h3>
     <p>Der Stop-Befehl ist explizit von <code>state.running</code> entkoppelt – er funktioniert auch während einer laufenden Aufnahme. Er verwendet einen eigenen <code>_stop_lock</code> (verhindert Doppel-Stop, blockiert aber keinen parallelen Punch-In). <code>toggle_play_state()</code> entspricht der Leertaste in PT.</p>
+
+    <!-- ── Audio verschieben ── -->
+    <h3 id="flow-move">Audio verschieben (Spur-Move) <span class="badge badge-play">Edit</span></h3>
+    <p>Verschiebt das gesamte Material der Quell-Spuren auf die Ziel-Spuren – an identischer Zeitposition – komplett über PTSL <code>cut</code>/<code>paste</code>. Ausgelöst über Menü „Audio verschieben" oder Webtrigger <code>/move_audio</code> (<code>run_move_audio()</code> in <a href="punchbuddy/transport.py">transport.py</a>).</p>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-num">1</div>
+        <div class="flow-content">
+          <strong>Edit-Selection-Kontext aktivieren</strong>
+          <span>Über <code>_protools_selection_context</code>: Selector-Tool wählen und <em>„Link Timeline and Edit Selection"</em> + <em>„Link Track and Edit Selection"</em> einschalten. Nur damit steuern <code>select_tracks_by_name</code> / <code>set_timeline_selection</code> die Edit-Selection, auf der <code>cut</code>/<code>paste</code> arbeiten. Originaleinstellungen werden danach wiederhergestellt.</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">2</div>
+        <div class="flow-content">
+          <strong>Materialbereich ermitteln (PTSL)</strong>
+          <span>Pro Quell-Spur <code>select_all_clips_on_track</code> + <code>get_timeline_selection</code>; frühester Start und spätestes Ende ergeben den Bereich. Vor jeder Spur wird die Selektion auf Null-Länge zurückgesetzt, damit leere Spuren (stale-Selektion) korrekt übersprungen werden.</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">3</div>
+        <div class="flow-content">
+          <strong>Quell-Spuren + Bereich ausschneiden (PTSL)</strong>
+          <span><code>select_tracks_by_name(src)</code> + <code>set_timeline_selection(start, end)</code> spannt die Edit-Selection über alle Quell-Spuren, dann <code>cut()</code>. Settling-Delays zwischen den Schritten, da PT jede Selektionsänderung verarbeiten muss.</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">4</div>
+        <div class="flow-content">
+          <strong>Auf Ziel-Spuren einfügen (PTSL)</strong>
+          <span><code>select_tracks_by_name(tgt)</code> + Cursor auf den Materialanfang (<code>set_timeline_selection(start, start)</code>), dann <code>paste()</code>. PT mappt die Zwischenablage top→bottom auf die Ziel-Spuren – Quelle/Ziel müssen in gleicher vertikaler Reihenfolge stehen.</span>
+        </div>
+      </div>
+    </div>
+    <div class="box warn">
+      <strong>Wichtige Erkenntnis:</strong> PTSL <code>cut</code>/<code>paste</code> operieren auf der Edit-Selection, nicht auf der Track-/Timeline-Selection. Ohne die beiden Link-Optionen schneidet <code>cut</code> nur eine einzelne Spur aus und <code>paste</code> landet an unerwarteter Stelle. Erst der Selektions-Kontext (wie beim Consolidate-Export) macht den Multi-Track-Move zuverlässig. Live gegen Pro Tools verifiziert: A1/A2 → A3/A4 an exakter Position, Round-Trip stellt den Originalzustand wieder her.
+    </div>
 
     <!-- ── Export ── -->
     <h3 id="flow-export">Vollständiger Export-Workflow <span class="badge badge-exp">Export</span></h3>

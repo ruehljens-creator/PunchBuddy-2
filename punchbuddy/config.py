@@ -56,6 +56,11 @@ DEFAULT_SETTINGS = {
     "play_custom_ch2_track": "ST Abh",
     "play_custom_ch2_mute_start": False,
     "play_custom_ch2_mute_stop": True,
+    # ── Audio verschieben (Spur-Move) ─────────────────────────────────────
+    # Verschiebt das gesamte Material der Quell-Spuren auf die Ziel-Spuren
+    # (gleiche Zeitposition) via PTSL cut/paste. Je 2 Spuren erwartet.
+    "move_audio_source_tracks": [],
+    "move_audio_target_tracks": [],
     # ── Vocaster ──────────────────────────────────────────────────────────
     # 48V Phantomspeisung beim Start von PunchBuddy automatisch einschalten
     # (nur wirksam wenn ein Vocaster One/Two angeschlossen ist).

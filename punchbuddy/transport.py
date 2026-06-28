@@ -505,6 +505,147 @@ def run_goto_start():
         logging.warning(f"GotoStart: set_timeline_selection fehlgeschlagen.")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Audio verschieben (Spur-Move via PTSL cut/paste)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _tc_sort_key(tc):
+    """Timecode-String ('HH:MM:SS:FF(.ss)') → vergleichbarer Zahlen-Tupel.
+    Robust gegen unterschiedliche Trenner/Subframes; rein für min/max-Ordnung."""
+    import re
+    nums = re.findall(r"\d+", tc or "")
+    return tuple(int(n) for n in nums) if nums else (0,)
+
+
+def run_move_audio(source_tracks, target_tracks):
+    """Verschiebt das gesamte Audio-Material der Quell-Spuren auf die Ziel-Spuren
+    – an gleicher Zeitposition – via PTSL cut/paste.
+
+    Ablauf:
+      1. Materialausdehnung (frühester Start, spätestes Ende) der Quell-Spuren
+         über select_all_clips_on_track + get_timeline_selection ermitteln.
+      2. Quell-Spuren + Zeitbereich selektieren → cut().
+      3. Ziel-Spuren selektieren, Cursor auf den Materialanfang → paste().
+
+    Zuordnung: Pro Tools mappt die Zwischenablage-Spuren top→bottom auf die
+    selektierten Ziel-Spuren. Quell- und Ziel-Spuren sollten daher in gleicher
+    vertikaler Reihenfolge stehen (z. B. A1/A2 → A3/A4). Selector-Tool und die
+    Edit-Selection-Links werden über _protools_selection_context gesetzt und
+    danach wieder hergestellt."""
+    src = [s for s in (source_tracks or []) if s]
+    tgt = [t_ for t_ in (target_tracks or []) if t_]
+    if not src or not tgt:
+        logging.warning("Move-Audio: Quell-/Ziel-Spuren nicht konfiguriert.")
+        _show_error("Audio verschieben",
+                    "Quell- und Ziel-Spuren sind nicht konfiguriert "
+                    "(Einstellungen → Spuren → Audio verschieben).")
+        return
+
+    with state.running_lock:
+        if state.running:
+            logging.warning("Move-Audio: Script läuft bereits – ignoriert.")
+            return
+        state.running = True
+    _set_busy(True)
+
+    try:
+        engine = _get_engine()
+        if engine is None:
+            logging.error("Move-Audio: PTSL Engine nicht verfügbar – Abbruch.")
+            return
+
+        logging.info(f"=== MOVE AUDIO: {src} -> {tgt} ===")
+
+        # cut/paste operieren auf der EDIT-Selection. Damit
+        # select_tracks_by_name + set_timeline_selection diese über mehrere
+        # Spuren hinweg steuern, müssen in Pro Tools "Link Timeline and Edit
+        # Selection" + "Link Track and Edit Selection" aktiv und das
+        # Selector-Tool gewählt sein. Genau das macht der Export-Context-
+        # Manager (und stellt die Originaleinstellungen danach wieder her).
+        # Lazy-Import, da export.py seinerseits aus transport.py importiert.
+        from punchbuddy.export import _protools_selection_context
+
+        with _protools_selection_context(engine):
+            time.sleep(0.3)
+
+            # ── 1. Materialausdehnung der Quell-Spuren ermitteln ────────────
+            # Bei LEEREN Spuren ändert select_all_clips_on_track die Selektion
+            # nicht – get_timeline_selection liefert dann den stale Wert der
+            # Vorgänger-Spur. Vor jeder Spur auf Null-Länge zurücksetzen: bleibt
+            # die Selektion danach null (in == out), ist die Spur leer und wird
+            # übersprungen statt einen falschen Bereich beizutragen.
+            ok_cur, cur = _ptsl_call(engine.get_timeline_selection,
+                                     label="MoveCurSel", timeout=5.0)
+            reset_tc = cur[0] if (ok_cur and cur and cur[0]) else None
+
+            starts, ends = [], []
+            for trk in src:
+                if reset_tc:
+                    _ptsl_call(lambda r=reset_tc: engine.set_timeline_selection(in_time=r, out_time=r),
+                               label="MoveResetSel", timeout=5.0)
+                    time.sleep(0.2)
+                ok, _ = _ptsl_call(lambda tr=trk: engine.select_all_clips_on_track(tr),
+                                   label=f"MoveSelClips:{trk}", timeout=8.0)
+                time.sleep(0.2)
+                if not ok:
+                    logging.warning(f"Move-Audio: '{trk}' – Spur nicht gefunden.")
+                    continue
+                ok2, sel = _ptsl_call(engine.get_timeline_selection,
+                                      label=f"MoveGetSel:{trk}", timeout=5.0)
+                if ok2 and sel and sel[0] and sel[1] and sel[0] != sel[1]:
+                    starts.append(sel[0])
+                    ends.append(sel[1])
+                else:
+                    logging.info(f"Move-Audio: '{trk}' ist leer – übersprungen.")
+
+            if not starts:
+                logging.warning("Move-Audio: kein Material auf den Quell-Spuren gefunden.")
+                _show_error("Audio verschieben", "Auf den Quell-Spuren liegt kein Material.")
+                return
+
+            min_start = min(starts, key=_tc_sort_key)
+            max_end   = max(ends,   key=_tc_sort_key)
+            logging.info(f"Move-Audio: Materialbereich {min_start} -> {max_end}")
+
+            # ── 2. Quell-Spuren + Zeitbereich selektieren, ausschneiden ─────
+            _ptsl_call(lambda: engine.select_tracks_by_name(src),
+                       label="MoveSelSrc", timeout=5.0)
+            time.sleep(0.3)
+            _ptsl_call(lambda: engine.set_timeline_selection(in_time=min_start, out_time=max_end),
+                       label="MoveSelRange", timeout=5.0)
+            time.sleep(0.3)
+            ok_cut, _ = _ptsl_call(engine.cut, label="MoveCut", timeout=15.0)
+            if not ok_cut:
+                logging.error("Move-Audio: Cut fehlgeschlagen – Abbruch.")
+                _show_error("Audio verschieben", "Ausschneiden fehlgeschlagen.")
+                return
+            time.sleep(0.5)
+
+            # ── 3. Ziel-Spuren selektieren, Cursor auf Start, einfügen ──────
+            _ptsl_call(lambda: engine.select_tracks_by_name(tgt),
+                       label="MoveSelTgt", timeout=5.0)
+            time.sleep(0.3)
+            _ptsl_call(lambda: engine.set_timeline_selection(in_time=min_start, out_time=min_start),
+                       label="MoveCursor", timeout=5.0)
+            time.sleep(0.3)
+            ok_paste, _ = _ptsl_call(engine.paste, label="MovePaste", timeout=15.0)
+            if not ok_paste:
+                logging.error("Move-Audio: Paste fehlgeschlagen.")
+                _show_error("Audio verschieben",
+                            "Einfügen fehlgeschlagen. Das Material liegt noch in der "
+                            "Zwischenablage und kann in Pro Tools mit Cmd+V eingefügt werden.")
+                return
+            time.sleep(0.5)
+
+            logging.info(f"=== MOVE AUDIO abgeschlossen: {src} -> {tgt} @ {min_start} ===")
+
+    except Exception as e:
+        logging.error(f"Move-Audio Fehler: {e}", exc_info=True)
+    finally:
+        with state.running_lock:
+            state.running = False
+        _set_busy(False)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Menüleisten-Status (Idle / Busy)
 # ─────────────────────────────────────────────────────────────────────────────
 
