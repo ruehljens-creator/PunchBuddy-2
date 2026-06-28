@@ -341,6 +341,7 @@
       <p>Wenn die Aufnahme sitzt, drücke <strong>Export</strong>. PunchBuddy schneidet, normalisiert und liefert alles automatisch in Interplay NEXIS ab.</p>
       <div class="action">Stream Deck <span class="arr">→</span> <strong>Export</strong></div>
       <p>Während des Exports bitte nicht in andere Programme wechseln. Der Fortschrittsbalken zeigt den Status.</p>
+      <p>Stelle sicher, dass die fertige Sequence im richtigen Ordner des Zentralen Transfers liegt. Die fertige Sequence beginnt am Anfang mit „sf" für Sendefassung. Informiere die Kollegin, bzw. den Kollegen via Kommando oder Telefon (4590) für einen sofortigen Transfer auf den Playout Server.</p>
     </div>
   </div>
 
@@ -435,8 +436,14 @@
           </svg>
           <span class="btn-label">Anfang</span>
         </button>
-        <button class="btn inactive">
-          <span class="btn-label"></span>
+        <button class="btn" id="btn-move" onclick="sdClick('move')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 4.5v15"/>
+            <path d="M3.5 8L7 4.5 10.5 8"/>
+            <path d="M17 19.5v-15"/>
+            <path d="M13.5 16L17 19.5 20.5 16"/>
+          </svg>
+          <span class="btn-label">Verschieben</span>
         </button>
         <button class="btn" id="btn-rerecord" onclick="sdClick('rerecord')">
           <svg viewBox="0 0 24 24">
@@ -574,6 +581,11 @@ const sdData = {
     tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',
     title: 'Anfang',
     text: 'Springt mit dem Cursor in Pro Tools an den Anfang der Session zurück (Standard: 10:00:00:00). Nützlich, wenn du dir deinen Beitrag nochmal in Ruhe anhören möchtest.'
+  },
+  move: {
+    tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',
+    title: 'Audio verschieben',
+    text: 'Ermöglicht es Atmo von den Spuren A1 und A2 auf die Spuren A3 und A4 zu verschieben.<br>Auf Spur A1, A2 dürfen nur O-Töne liegen.'
   },
   rerecord: {
     tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',

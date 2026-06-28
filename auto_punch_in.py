@@ -893,6 +893,82 @@ class PunchBuddyApp(rumps.App):
         logging.info(">>> MENU 'Audio verschieben' <<<")
         self._trigger_move_audio()
 
+    # ── Audio-verschieben Einstellungs-UI (dynamische Paar-Zeilen) ───────────
+    @objc.python_method
+    def _move_set(self, row, idx, val):
+        """Aktualisiert eine Dropdown-Auswahl in der Paar-Liste."""
+        if 0 <= row < len(self._move_pairs):
+            self._move_pairs[row][idx] = val
+
+    @objc.python_method
+    def _move_add(self):
+        """Fügt ein leeres Spurpaar hinzu und rendert neu."""
+        self._move_pairs.append(["", ""])
+        self._render_move_section()
+
+    @objc.python_method
+    def _move_remove(self, row):
+        """Entfernt ein Spurpaar (mind. eine leere Zeile bleibt) und rendert neu."""
+        if 0 <= row < len(self._move_pairs):
+            del self._move_pairs[row]
+        if not self._move_pairs:
+            self._move_pairs = [["", ""]]
+        self._render_move_section()
+
+    @objc.python_method
+    def _render_move_section(self):
+        """(Neu-)Zeichnet die dynamischen Quelle→Ziel-Dropdown-Zeilen im
+        Import-Tab. Quelle und Ziel sind paarweise – dadurch ist die Anzahl
+        immer gleich. '+' fügt ein Paar hinzu, '−' entfernt eines."""
+        view = self._move_t3_view
+        PAD = 20
+        # Alte dynamische Subviews entfernen
+        for v in getattr(self, "_move_section_views", []):
+            try:
+                v.removeFromSuperview()
+            except Exception:
+                pass
+        self._move_section_views = []
+
+        opts = self._move_track_options
+        y = self._move_rows_top_y
+
+        def _popup(x, cur, tag, action_sel):
+            o = list(opts)
+            if cur and cur not in o:
+                o.append(cur)
+            p = AppKit.NSPopUpButton.alloc().initWithFrame_(AppKit.NSMakeRect(x, y, 150, 24))
+            p.removeAllItems()
+            for it in o:
+                p.addItemWithTitle_(it)
+            if cur in o:
+                p.selectItemWithTitle_(cur)
+            p.setTag_(tag)
+            p.setTarget_(self._move_target)
+            p.setAction_(objc.selector(action_sel, signature=b'v@:@'))
+            view.addSubview_(p)
+            self._move_section_views.append(p)
+            return p
+
+        for i, (s_name, t_name) in enumerate(self._move_pairs):
+            _popup(PAD, s_name, i, self._move_target.onSrc_)
+            arrow = AppKit.NSTextField.labelWithString_("→")
+            arrow.setFrame_(AppKit.NSMakeRect(PAD + 160, y + 2, 20, 20))
+            view.addSubview_(arrow); self._move_section_views.append(arrow)
+            _popup(PAD + 200, t_name, i, self._move_target.onTgt_)
+            minus = AppKit.NSButton.alloc().initWithFrame_(AppKit.NSMakeRect(PAD + 360, y, 30, 24))
+            minus.setTitle_("−"); minus.setBezelStyle_(AppKit.NSBezelStyleRounded)
+            minus.setTag_(i); minus.setTarget_(self._move_target)
+            minus.setAction_(objc.selector(self._move_target.onRemove_, signature=b'v@:@'))
+            view.addSubview_(minus); self._move_section_views.append(minus)
+            y -= 30
+
+        plus = AppKit.NSButton.alloc().initWithFrame_(AppKit.NSMakeRect(PAD, y - 4, 170, 26))
+        plus.setTitle_(t("btn_move_add_pair")); plus.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        plus.setTarget_(self._move_target)
+        plus.setAction_(objc.selector(self._move_target.onAdd_, signature=b'v@:@'))
+        view.addSubview_(plus); self._move_section_views.append(plus)
+
     def _on_start_import(self, _):
         logging.info(">>> MENU 'Interplay Import starten' <<<")
         self._trigger_import()
@@ -1625,6 +1701,50 @@ class PunchBuddyApp(rumps.App):
         l_desc.setEditable_(False); l_desc.setSelectable_(False)
         t3_view.addSubview_(l_desc)
 
+        # ── Audio verschieben (Spur-Move) ─────────────────────────────────
+        t3_y -= 78
+        sep_mv = AppKit.NSBox.alloc().initWithFrame_(
+            NSMakeRect(PAD, t3_y + 20, WIN_W - PAD * 2 - 40, 1))
+        sep_mv.setBoxType_(AppKit.NSBoxSeparator)
+        t3_view.addSubview_(sep_mv)
+
+        h_mv = NSTextField.labelWithString_(t("lbl_move_audio"))
+        h_mv.setFrame_(NSMakeRect(PAD, t3_y, 400, 20))
+        h_mv.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t3_view.addSubview_(h_mv)
+
+        t3_y -= 20
+        d_mv = NSTextField.labelWithString_(t("lbl_move_hint"))
+        d_mv.setFrame_(NSMakeRect(PAD, t3_y, WIN_W - PAD * 2 - 40, 18))
+        d_mv.setFont_(NSFont.systemFontOfSize_(11))
+        d_mv.setTextColor_(NSColor.secondaryLabelColor())
+        t3_view.addSubview_(d_mv)
+
+        # Spalten-Überschriften
+        t3_y -= 26
+        cs = NSTextField.labelWithString_(t("lbl_move_source"))
+        cs.setFrame_(NSMakeRect(PAD, t3_y, 150, 18)); cs.setFont_(NSFont.boldSystemFontOfSize_(11))
+        t3_view.addSubview_(cs)
+        ct = NSTextField.labelWithString_(t("lbl_move_target"))
+        ct.setFrame_(NSMakeRect(PAD + 200, t3_y, 150, 18)); ct.setFont_(NSFont.boldSystemFontOfSize_(11))
+        t3_view.addSubview_(ct)
+
+        # Zustand initialisieren (Paare aus den gespeicherten Listen)
+        _ms = self.settings.get("move_audio_source_tracks", []) or []
+        _mt = self.settings.get("move_audio_target_tracks", []) or []
+        _n = max(len(_ms), len(_mt))
+        self._move_pairs = [[_ms[i] if i < len(_ms) else "",
+                             _mt[i] if i < len(_mt) else ""] for i in range(_n)]
+        if not self._move_pairs:
+            self._move_pairs = [["", ""]]
+        self._move_track_options = [""] + list(track_names or [])
+        self._move_t3_view = t3_view
+        self._move_rows_top_y = t3_y - 30
+        self._move_target = _MoveAudioTarget.alloc().init()
+        self._move_target._app = self
+        self._move_section_views = []
+        self._render_move_section()
+
         # ── TAB 4: WEBTRIGGER ─────────────────────────────────────────────
         tab4 = NSTabViewItem.alloc().initWithIdentifier_("Webtrigger")
         tab4.setLabel_(t("tab_webtrigger"))
@@ -1744,6 +1864,7 @@ class PunchBuddyApp(rumps.App):
             ("/play",              "Play Input/Stop (Toggle)"),
             ("/play_custom",       "Play Custom (KH2/ST Abh)"),
             ("/start",             "Cursor → Start-Timecode"),
+            ("/move_audio",        t("lbl_move_audio")),
             ("/export_wav",            "WAV Export"),
             ("/export_aaf_embedded",   "AAF Export (Embedded)"),
             ("/export_aaf_reference",  "AAF Export (Reference)"),
@@ -1988,46 +2109,6 @@ class PunchBuddyApp(rumps.App):
             cb_stop.setState_(AppKit.NSOnState if cur_mute_end else AppKit.NSOffState)
             t6_view.addSubview_(cb_stop)
             controls[mute_end_key] = cb_stop
-
-        # ── Audio verschieben (Spur-Move) ───────────────────────────────────
-        t6_y -= 42
-        sep_mv = AppKit.NSBox.alloc().initWithFrame_(
-            NSMakeRect(PAD, t6_y + 16, WIN_W - PAD * 2 - 40, 1))
-        sep_mv.setBoxType_(AppKit.NSBoxSeparator)
-        t6_view.addSubview_(sep_mv)
-
-        lbl_mv_hdr = NSTextField.labelWithString_(t("lbl_move_audio"))
-        lbl_mv_hdr.setFrame_(NSMakeRect(PAD, t6_y - 8, 400, 20))
-        lbl_mv_hdr.setFont_(NSFont.boldSystemFontOfSize_(13))
-        t6_view.addSubview_(lbl_mv_hdr)
-
-        t6_y -= 30
-        lbl_mv_desc = NSTextField.labelWithString_(t("lbl_move_hint"))
-        lbl_mv_desc.setFrame_(NSMakeRect(PAD, t6_y, WIN_W - PAD * 2 - 40, 18))
-        lbl_mv_desc.setFont_(NSFont.systemFontOfSize_(11))
-        lbl_mv_desc.setTextColor_(NSColor.secondaryLabelColor())
-        t6_view.addSubview_(lbl_mv_desc)
-
-        mv_src = self.settings.get("move_audio_source_tracks", []) or []
-        mv_tgt = self.settings.get("move_audio_target_tracks", []) or []
-
-        t6_y -= 32
-        lbl_mv_src = NSTextField.labelWithString_(t("lbl_move_source"))
-        lbl_mv_src.setFrame_(NSMakeRect(PAD, t6_y + 2, 240, 18))
-        t6_view.addSubview_(lbl_mv_src)
-        tf_mv_src = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 250, t6_y, 200, 22))
-        tf_mv_src.setStringValue_(", ".join(mv_src))
-        t6_view.addSubview_(tf_mv_src)
-        controls["move_audio_source_tracks"] = tf_mv_src
-
-        t6_y -= 28
-        lbl_mv_tgt = NSTextField.labelWithString_(t("lbl_move_target"))
-        lbl_mv_tgt.setFrame_(NSMakeRect(PAD, t6_y + 2, 240, 18))
-        t6_view.addSubview_(lbl_mv_tgt)
-        tf_mv_tgt = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD + 250, t6_y, 200, 22))
-        tf_mv_tgt.setStringValue_(", ".join(mv_tgt))
-        t6_view.addSubview_(tf_mv_tgt)
-        controls["move_audio_target_tracks"] = tf_mv_tgt
 
         # ── TAB 7: VOCASTER (nur wenn Gerät erkannt) ────────────────────────
         tab7 = None
@@ -2804,6 +2885,35 @@ if APPKIT_OK:
         def onCancel_(self, sender):
             self._window.close()
 
+class _MoveAudioTarget(AppKit.NSObject):
+    """ObjC Target für die Dropdowns und +/−-Buttons der Audio-verschieben-
+    Konfiguration (Import-Tab). Delegiert an Methoden der App-Instanz (_app)."""
+
+    def onSrc_(self, sender):
+        try:
+            self._app._move_set(sender.tag(), 0, sender.titleOfSelectedItem() or "")
+        except Exception as e:
+            logging.error(f"MoveAudio onSrc: {e}")
+
+    def onTgt_(self, sender):
+        try:
+            self._app._move_set(sender.tag(), 1, sender.titleOfSelectedItem() or "")
+        except Exception as e:
+            logging.error(f"MoveAudio onTgt: {e}")
+
+    def onAdd_(self, sender):
+        try:
+            self._app._move_add()
+        except Exception as e:
+            logging.error(f"MoveAudio onAdd: {e}")
+
+    def onRemove_(self, sender):
+        try:
+            self._app._move_remove(sender.tag())
+        except Exception as e:
+            logging.error(f"MoveAudio onRemove: {e}")
+
+
 class _ExportPathBrowseTarget(AppKit.NSObject):
     """ObjC Target für die 'Durchsuchen…'-Buttons der Export-Pfade.
     Öffnet einen NSOpenPanel (nur Ordner) und schreibt den Pfad ins zugehörige Feld."""
@@ -3168,16 +3278,15 @@ class _UnifiedSettingsTarget(AppKit.NSObject):
                 if mute_end_key in self._controls:
                     self._app.settings[mute_end_key] = (self._controls[mute_end_key].state() == AppKit.NSOnState)
 
-            # 3b. Audio verschieben (Spur-Move) speichern
-            def _parse_track_list(raw):
-                # Komma-getrennt; Leerzeichen in Spurnamen bleiben erhalten
-                return [s.strip() for s in (raw or "").split(",") if s.strip()]
-            if "move_audio_source_tracks" in self._controls:
-                self._app.settings["move_audio_source_tracks"] = _parse_track_list(
-                    self._controls["move_audio_source_tracks"].stringValue())
-            if "move_audio_target_tracks" in self._controls:
-                self._app.settings["move_audio_target_tracks"] = _parse_track_list(
-                    self._controls["move_audio_target_tracks"].stringValue())
+            # 3b. Audio verschieben (Spur-Move) speichern – nur vollständige
+            # Paare (Quelle UND Ziel gesetzt). Dadurch ist die Anzahl der
+            # Quell- und Ziel-Spuren immer gleich.
+            move_pairs = getattr(self._app, "_move_pairs", None)
+            if move_pairs is not None:
+                self._app.settings["move_audio_source_tracks"] = [
+                    p[0] for p in move_pairs if p[0] and p[1]]
+                self._app.settings["move_audio_target_tracks"] = [
+                    p[1] for p in move_pairs if p[0] and p[1]]
 
             # 4. Import-Einstellungen speichern
             if "import_close_session" in self._controls:
