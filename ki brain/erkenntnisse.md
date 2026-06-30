@@ -72,9 +72,22 @@ es gäbe Satellite?" = **JA**):
 - Satellite-Fehler bestehen weiter: `IsAcquired - false` (21×), `waitingtrigger`
   (58×), **DAEError-Dialog** auf `192.168.1.110` (Z.572). Treten über die ganze
   Session verteilt auf (PT-Clock 2212…2901), nicht nur beim Start.
-→ **Voll-Aus nur durch:** „Video 1"-Spur aus der Session entfernen **und** Avid
-  Video Engine im Playback Engine deaktivieren. Wird Video gebraucht: Satellite-
-  Interface auf **reines 127.0.0.1** zwingen (nicht 192.168.1.110).
+→ **WICHTIGE PROJEKT-CONSTRAINT (2026-06-30):** **Video ist Pflicht** – „die
+  machen Fernsehen". Video Engine abschalten ist **KEINE** Option. Die Lösung
+  muss video-kompatibel sein: den **Satellite-Clock-Sync auf sauberes Loopback
+  `127.0.0.1`** (beide Seiten) bringen, statt auf eine geroutete/Switch-NIC.
+  Konkret am Studiorechner:
+  - Setup → Peripherals → **Satellites/Video** → Interface explizit auf die
+    lokale, **nicht-geroutete** Adresse (idealerweise Loopback) setzen, nicht auf
+    `10.249.x` und möglichst nicht auf `192.168.1.110`, falls dort ein echter
+    Switch/Router hängt.
+  - macOS Systemeinst. → Netzwerk → **Set Service Order**: Firmen-/NEXIS-NIC und
+    WLAN nach unten; ungenutzte NICs während Sessions deaktivieren.
+  - Firewall/Defender: Ports **28282/28284 lokal** erlauben.
+  - Verifikation nach Installation des neuen Builds: erweiterte Diagnose
+    (Sektionen 10–16: `lsof -iTCP:28282 -iTCP:28284`) zeigt exakt, worauf der
+    Satellite bindet → Ziel ist `127.0.0.1` ↔ `127.0.0.1`, dann lockt der Clock
+    sofort und `IsAcquired-false`/`waitingtrigger` verschwinden.
 
 **3. Die Trägheit/`closed channel` ist davon UNABHÄNGIG und im installierten
 (alten) Build weiterhin live reproduziert** – Diagnostic3s zeigt die komplette
