@@ -136,6 +136,24 @@ Fehlerkette:
 
 ---
 
+## 1b. Systemweite Trägheit (Stream-Deck-Seitenwechsel, Interplay-Fenster) — 2026-07-01
+Symptom: nicht nur Transportbefehle, sondern **systemweit** langsam — SD-Seiten-
+wechsel + Interplay-Access-Fenster „braucht ewig". Belegt aus 00:39-Diagnose
+(Sektion 16 Top-CPU + Sektion 10 Interfaces):
+- **Microsoft Defender (Hauptgrund für App/Fenster-Latenz):** `wdavdaemon_enterprise`
+  12.8 %, `epsext` (Endpoint-Security-Ext) 4.1 %, `wdavdaemon privileged` 3.1 %.
+  epsext hakt sich in **jeden Prozess-/Datei-/Fensteraufruf** ein → Interplay
+  (Java) + App-Starts lahm.
+- **Satellite-NIC-Dauerlast:** `en7 = 192.168.1.110` = PCI-Ethernet Slot 7 →
+  Treiber **`AppleEthernetE1000` 12.9 % CPU**, getrieben vom stockenden
+  Clock-Sync (28282) + Defender-netext. Zusätzlich en3–en6 im **PROMISC**-Modus.
+- **WindowServer 17.7 % CPU** → ruckelnde UI (SD-Seitenwechsel). Folge von oben.
+- Service-Order: Firmen-NIC `en0` (10.249.x) noch primär.
+**Hebel:** (1) Defender Passive-Mode/Exclusions (Pro Tools, AvidVideoEngine,
+MC_Client, EuControl, Stream Deck, PunchBuddy, Medien-/Session-Volumes);
+(2) Satellite auf 127.0.0.1 (nimmt E1000-Last raus); (3) Service-Order/PROMISC
+prüfen. NICHT PunchBuddy — dessen Log ist sauber.
+
 ## 2. PTSL-/gRPC-Architektur-Fakten
 
 - **Genau EINE Engine-Instanz** (Singleton `_engine_instance`, `engine.py`),
