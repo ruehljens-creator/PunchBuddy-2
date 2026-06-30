@@ -200,6 +200,20 @@ Endpunkte. „API" = *was* aufrufbar ist (Befehle) + *wie* der Aufruf reinkommt
 - **Wichtig:** Der Socket selbst lief (`Unix-Socket-Steuerung aktiv`), PunchBuddy
   empfing Befehle. Es scheitert NUR an der nicht ladbaren Node-Runtime.
 
+### Bestätigung der Rest-Trägheit (Studio-Diagnose 2026-07-01 00:39, neuer Build)
+- **PunchBuddy-Log jetzt sauber:** nur noch „entprellt"-Einträge, **keine**
+  `gRPC-Deadline` / `WaitStop` / `closed channel` mehr → die Robustheits-Fixes
+  greifen, PunchBuddy ist NICHT mehr die Quelle der Verzögerung.
+- **Rest-Ursache = PT-Satellite auf echter NIC:** lsof zeigt
+  `Pro Tools … TCP 192.168.1.110:28282 (LISTEN)` (Video-Engine selbst auf
+  `127.0.0.1:28284`). Clock-Sync stockt weiter: `IsAcquired-false` 12×,
+  `waitingtrigger` 40×. PT wartet bei Transportbefehlen auf den Clock-Lock über
+  diese NIC → „manchmal sehr spät".
+- **Defender verstärkt:** `com.microsoft.wdav.netext` läuft und sieht
+  192.168.1.110 (Loopback würde es nicht sehen) → Extra-Latenz auf dem Sync.
+- **Fix:** Satellite Link auf **127.0.0.1** zwingen (beide Ports), dann lockt der
+  Clock sofort und Defender kann ihn nicht mehr anfassen. Video bleibt an.
+
 **Lösung (ohne Internet/Node):** die **`.app`-Launcher** verwenden
 (Einstellungen → „Vocaster / Stream Deck" → „Tasten-Launcher erzeugen"), im
 Stream Deck mit der eingebauten Aktion **„System → Öffnen"**. Brauchen kein Node,
