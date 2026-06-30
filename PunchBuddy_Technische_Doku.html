@@ -306,8 +306,8 @@
     <li><a href="#settings-interplay">Interplay / MediaCentral</a></li>
     <li><a href="#settings-loudness">Lautheits­normalisierung</a></li>
     <li><a href="#settings-play">Play-Modus</a></li>
-    <li><a href="#settings-vocaster">Vocaster</a></li>
-    <li><a href="#settings-webtrigger">Webtrigger / HTTP</a></li>
+    <li><a href="#settings-vocaster">Vocaster / Stream Deck</a></li>
+    <li><a href="#settings-webtrigger">Webtrigger / API</a></li>
     <li><a href="#settings-presets">Presets</a></li>
 
     <li><div class="nav-section">Technische Abläufe</div></li>
@@ -331,7 +331,8 @@
     <li><a href="#dev-cgevent">CGEvent (Tastatur)</a></li>
     <li><a href="#dev-applescript">AppleScript UI-Automation</a></li>
     <li><a href="#dev-kqueue">kqueue (Datei­überwachung)</a></li>
-    <li><a href="#dev-http">HTTP-Server</a></li>
+    <li><a href="#dev-http">Steuer-API (HTTP + Socket)</a></li>
+    <li><a href="#dev-streamdeck">Stream-Deck-Anbindung</a></li>
     <li><a href="#dev-settings">Settings-System</a></li>
     <li><a href="#dev-crash">Crash-Diagnose</a></li>
     <li><a href="#dev-loc">Code-Umfang</a></li>
@@ -345,7 +346,7 @@
     <h2>PunchBuddy</h2>
     <p>Automatisierungs-App für Pro Tools Punch-In, Transport, Export und Avid Interplay.<br>
        Menüleisten-App (macOS) mit Stream-Deck-Integration, Vocaster-Steuerung und Loudness-Normalisierung nach EBU R128.</p>
-    <p style="margin-top:16px; font-size:11px; color:#4a5568;">v 1.2 &nbsp;·&nbsp; Erstellt von Jens Rühl &nbsp;·&nbsp; 06.2026</p>
+    <p style="margin-top:16px; font-size:11px; color:#4a5568;">v 1.3 &nbsp;·&nbsp; Erstellt von Jens Rühl &nbsp;·&nbsp; 06.2026</p>
   </div>
 
 
@@ -441,8 +442,8 @@
     </table>
 
     <!-- ── Vocaster ── -->
-    <h3 id="settings-vocaster">Tab: Vocaster</h3>
-    <p>Nur sichtbar wenn ein Focusrite Vocaster One oder Two per USB angeschlossen ist. Die Einstellungen werden dauerhaft gespeichert und gelten auch wenn das Gerät kurzzeitig getrennt war.</p>
+    <h3 id="settings-vocaster">Tab: Vocaster / Stream Deck</h3>
+    <p>Dieser Tab ist <strong>immer sichtbar</strong>. Die Vocaster-Optionen erscheinen nur, wenn ein Focusrite Vocaster One oder Two per USB angeschlossen ist; die Stream-Deck-Sektion ist davon unabhängig und immer da.</p>
     <table>
       <tr><th>Feld</th><th>Settings-Key</th><th>Beschreibung</th></tr>
       <tr><td><strong>48V beim Start</strong></td><td><code>vocaster_phantom_on_start</code></td><td>Schaltet die 48V-Phantomspeisung automatisch ein, sobald PunchBuddy startet und ein Vocaster erkannt wird.</td></tr>
@@ -450,14 +451,32 @@
       <tr><td><strong>Routing speichern (Menü)</strong></td><td><code>vocaster_routing.json</code></td><td>Liest das aktuelle Geräterouting per USB aus und speichert es in <code>~/.punchbuddy/vocaster_routing.json</code>. Wird beim nächsten Start oder auf Knopfdruck wiederhergestellt.</td></tr>
     </table>
 
+    <h4>Stream-Deck-Sektion</h4>
+    <p>PunchBuddy bringt das Stream-Deck-Plugin und die Tasten-Launcher <strong>direkt mit</strong> (in die App gebündelt). Drei Knöpfe:</p>
+    <table>
+      <tr><th>Knopf</th><th>Wirkung</th></tr>
+      <tr><td><strong>Plugin installieren</strong></td><td>Öffnet die mitgelieferte <code>com.punchbuddy.control.streamDeckPlugin</code> – Stream Deck zeigt seinen eigenen Installations-Dialog. Danach steht die Aktion <em>„PunchBuddy Befehl"</em> mit Befehls-Dropdown bereit.</td></tr>
+      <tr><td><strong>Plugin speichern (Downloads)</strong></td><td>Kopiert die Plugin-Datei nach <code>~/Downloads</code> und zeigt sie im Finder (zum Weitergeben/manuell installieren).</td></tr>
+      <tr><td><strong>Tasten-Launcher erzeugen</strong></td><td>Baut pro Befehl ein winziges <code>.app</code> nach <code>~/Applications/PunchBuddy&nbsp;Launchers</code>, das den Befehl per <code>nc&nbsp;-U</code> an den <strong>konfigurierten</strong> Unix-Socket schickt. Im Stream Deck über die eingebaute Aktion <em>„System → Öffnen"</em> nutzbar – ohne Plugin-Installation.</td></tr>
+    </table>
+    <div class="box tip">
+      <strong>Warum zwei Wege?</strong> Das <strong>Plugin</strong> (eine Aktion, Befehl per Dropdown) ist komfortabel, braucht aber Stream Deck&nbsp;≥&nbsp;6.5. Die <strong>Launcher</strong> laufen mit jeder Stream-Deck-Version ganz ohne Plugin-Installation. Beide treffen denselben lokalen Socket – komplett netzwerkfrei.
+    </div>
+
     <!-- ── Webtrigger ── -->
-    <h3 id="settings-webtrigger">Tab: Webtrigger / Stream Deck</h3>
-    <p>PunchBuddy öffnet beim Start einen eingebetteten HTTP-Server. Über einfache GET-Requests lassen sich alle Funktionen aus Stream Deck, Companion, oder beliebigen HTTP-Clients auslösen.</p>
+    <h3 id="settings-webtrigger">Tab: Webtrigger</h3>
+    <p>Alle auslösbaren Funktionen laufen über <strong>eine zentrale Befehls-API</strong> (<code>command_dispatch</code>). Diese wird von <strong>zwei Transporten</strong> bedient:</p>
+    <ul>
+      <li><strong>HTTP-Server</strong> (<code>ThreadingMixIn + TCPServer</code>, Standard-Port 8899) – für Stream Deck, Companion oder beliebige HTTP-Clients.</li>
+      <li><strong>Unix-Domain-Socket</strong> (<code>/tmp/punchbuddy.sock</code>) – <strong>komplett ohne Netzwerk</strong> (kein TCP/Loopback), daher von Netzwerk-Filtern wie Microsoft Defender prinzipiell nicht erfassbar. Geschützt über Datei-Rechte <code>0600</code> (nur der angemeldete Benutzer).</li>
+    </ul>
     <table>
       <tr><th>Feld</th><th>Settings-Key</th><th>Beschreibung</th></tr>
       <tr><td><strong>Port</strong></td><td><code>http_port</code></td><td>TCP-Port des HTTP-Servers (Standard: <code>8899</code>). Änderungen werden erst nach Neustart aktiv. Ist der Port belegt, wird automatisch ein freier Port gewählt.</td></tr>
       <tr><td><strong>Bind-Host</strong></td><td><code>http_bind_host</code></td><td><code>127.0.0.1</code> = nur lokal (sicher, kein Token nötig). Jede andere IP = im Netzwerk erreichbar → Token wird automatisch generiert.</td></tr>
-      <tr><td><strong>Token</strong></td><td><code>webtrigger_token</code></td><td>Optionaler Auth-Token. Bei Netzwerk-Bind wird er automatisch erzeugt. Muss als <code>?token=…</code> oder <code>X-Auth-Token</code>-Header mitgegeben werden.</td></tr>
+      <tr><td><strong>Token</strong></td><td><code>webtrigger_token</code></td><td>Optionaler Auth-Token (nur HTTP). Bei Netzwerk-Bind wird er automatisch erzeugt. Muss als <code>?token=…</code> oder <code>X-Auth-Token</code>-Header mitgegeben werden.</td></tr>
+      <tr><td><strong>Unix-Socket aktiv</strong></td><td><code>unix_socket_enabled</code></td><td>Schaltet den netzwerkfreien Socket ein/aus (Standard: an).</td></tr>
+      <tr><td><strong>Socket-Pfad</strong></td><td><code>unix_socket_path</code></td><td>Pfad des Unix-Sockets (Standard: <code>/tmp/punchbuddy.sock</code>). Protokoll: eine Zeile <code>&lt;befehl&gt; [arg]</code>, Antwort <code>OK …</code> / <code>ERR …</code>. Test: <code>printf 'play' | nc -U /tmp/punchbuddy.sock</code>.</td></tr>
     </table>
 
     <h4>Alle HTTP-Endpunkte</h4>
@@ -478,7 +497,10 @@
       <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/vocaster/autogain/guest</span><span class="ep-desc">Autogain für Guest-Eingang (nur Vocaster Two)</span></div>
       <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/vocaster/phantom/on</span><span class="ep-desc">48V einschalten</span></div>
       <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/vocaster/phantom/off</span><span class="ep-desc">48V ausschalten</span></div>
+      <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/command/{name}</span><span class="ep-desc">Generisch: jeden Befehl per Name (z. B. <code>/command/play</code>, <code>/command/preset/3</code>)</span></div>
+      <div class="endpoint"><span class="ep-method">GET</span><span class="ep-path">/commands</span><span class="ep-desc">Liste aller verfügbaren Befehlsnamen (Introspektion)</span></div>
     </div>
+    <p style="font-size:12px; color:#4a5568;">Dieselben Befehle gehen 1:1 über den Unix-Socket: <code>printf 'play' | nc -U /tmp/punchbuddy.sock</code>, <code>printf 'preset 3' | …</code>, <code>printf 'list' | …</code>.</p>
 
     <!-- ── Presets ── -->
     <h3 id="settings-presets">Tab: Presets</h3>
@@ -984,9 +1006,22 @@ ke = select.kevent(fd,
     <p>Vorteile gegenüber Polling: sofortige Reaktion bei Datei-Event (kein festes 0.3s-Intervall), keine CPU-Last zwischen Schreibvorgängen. Fallback auf 0.3s-Polling wenn <code>kqueue</code> aus irgendeinem Grund nicht verfügbar ist.</p>
 
     <!-- ── HTTP ── -->
-    <h3 id="dev-http">HTTP-Server / Webtrigger <span class="badge badge-dev">HTTP</span></h3>
-    <p>PunchBuddy startet beim Launch einen eingebetteten <code>ThreadingMixIn + TCPServer</code>. Pro Request wird sofort <code>200 OK</code> geantwortet, die eigentliche Funktion läuft in einem Daemon-Thread (<code>_fire(fn)</code>). So antwortet der Stream Deck binnen Millisekunden, auch wenn der Export Sekunden dauert.</p>
-    <p>Security: Bei Bind auf <code>0.0.0.0</code> (LAN) wird automatisch ein kryptografisch sicheres Token (<code>secrets.token_urlsafe(16)</code>) erzeugt und gespeichert. Requests ohne korrektes Token bekommen <code>401 Unauthorized</code>. Token-Vergleich via <code>hmac.compare_digest()</code> (timing-attack-sicher).</p>
+    <h3 id="dev-http">Steuer-API: Dispatcher + Transporte <span class="badge badge-dev">API</span></h3>
+    <p>Im Kern steht <strong>eine</strong> Befehlstabelle <code>command_dispatch(command, args) → (ok, msg)</code> (<code>_command_table()</code>). EIN Eintrag pro Funktion (<code>record_a/b</code>, <code>play</code>, <code>play_custom</code>, <code>goto_start</code>, <code>move_audio</code>, <code>import</code>, alle Exporte, <code>preset</code>, <code>vocaster_*</code>, <code>ping/status/list</code>). <strong>Alle</strong> Transporte rufen ausschließlich diesen Dispatcher – so teilen sich HTTP und Socket automatisch Debounce und Export-Serialisierung.</p>
+    <p><strong>Transport 1 – HTTP:</strong> eingebetteter <code>ThreadingMixIn + TCPServer</code>. Pro Trigger-Request sofort <code>200 OK</code>, die Funktion läuft gequeued weiter. Socket-Timeout (30 s) gegen langsame Clients. Bei Bind auf <code>0.0.0.0</code> (LAN) wird automatisch ein Token (<code>secrets.token_urlsafe(16)</code>) erzeugt; Requests ohne korrektes Token bekommen <code>401</code> (Vergleich timing-sicher).</p>
+    <p><strong>Transport 2 – Unix-Domain-Socket:</strong> <code>AF_UNIX/SOCK_STREAM</code> auf <code>/tmp/punchbuddy.sock</code>, Datei-Rechte <code>0600</code>. <strong>Kein IP-Stack</strong> → für Netzwerk-Filter (Defender) unsichtbar. Zeilenprotokoll, threaded Accept-Schleife, sauberes Schließen via <code>atexit</code> + Quit-/Signal-Handler + Stale-Socket-Cleanup.</p>
+    <pre><span class="kw">def</span> <span class="fn">command_dispatch</span>(self, command, args=<span class="kw">None</span>):
+    cmd = _COMMAND_ALIASES.get(command.lower(), command.lower())
+    handler = self._command_table().get(cmd)
+    <span class="kw">if</span> handler <span class="kw">is None</span>: <span class="kw">return</span> (<span class="kw">False</span>, <span class="st">f"unknown command: {command}"</span>)
+    <span class="kw">return</span> handler(args)        <span class="st"># → (ok, msg)</span></pre>
+
+    <h3 id="dev-streamdeck">Stream-Deck-Anbindung <span class="badge badge-dev">Stream Deck</span></h3>
+    <p>Zwei netzwerkfreie Wege, beide gegen den Unix-Socket:</p>
+    <ul>
+      <li><strong>Node-Plugin</strong> (<code>streamdeck/plugin/</code>): eine Aktion „PunchBuddy Befehl" mit Befehls-Dropdown. Verbindet sich beim Tastendruck per Node <code>net</code> mit dem Socket. Gebündelt via esbuild (inkl. <code>ws</code>), gepackt als <code>.streamDeckPlugin</code> und in PunchBuddy mitgeliefert (Einstellungen → „Plugin installieren").</li>
+      <li><strong>.app-Launcher</strong>: pro Befehl ein winziges <code>.app</code>, das per <code>nc -U</code> an den Socket schreibt – für die eingebaute Stream-Deck-Aktion „System → Öffnen", ganz ohne Plugin.</li>
+    </ul>
 
     <!-- ── Settings ── -->
     <h3 id="dev-settings">Settings-System <span class="badge badge-dev">Config</span></h3>
@@ -1025,9 +1060,10 @@ ke = select.kevent(fd,
 
     <table>
       <tr><th>Umfang</th><th style="text-align:right;">Zeilen</th></tr>
-      <tr><td><strong>Kern-App</strong> (<code>auto_punch_in.py</code> + <code>punchbuddy/</code>)</td><td style="text-align:right;"><strong>8.725</strong></td></tr>
-      <tr><td>+ Vocaster, Watchdog, Diagnose, Webtrigger</td><td style="text-align:right;">10.235</td></tr>
-      <tr><td>Build-/Hilfsskripte + Tests</td><td style="text-align:right;">218</td></tr>
+      <tr><td><strong>Kern-App</strong> (<code>auto_punch_in.py</code> + <code>punchbuddy/</code>)</td><td style="text-align:right;"><strong>9.686</strong></td></tr>
+      <tr><td>Gesamtes App-Python (inkl. Vocaster, Watchdog, Diagnose, API)</td><td style="text-align:right;">12.113</td></tr>
+      <tr><td>Stream-Deck-Anbindung (Node-Plugin + Launcher, Quelle)</td><td style="text-align:right;">465</td></tr>
+      <tr><td>Build-/Hilfsskripte + Tests</td><td style="text-align:right;">719</td></tr>
     </table>
 
     <h4>Aufschlüsselung der Kern-App</h4>
