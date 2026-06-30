@@ -182,3 +182,28 @@ Endpunkte. „API" = *was* aufrufbar ist (Befehle) + *wie* der Aufruf reinkommt
   Firmen-NIC, §1). HTTP-Loopback war nie der Flaschenhals.
 - Stream-Deck-Anbindung netzwerkfrei: `.app`-Launcher (`nc -U`) ODER natives
   Node-Plugin (`net` → Socket). Siehe `streamdeck/`.
+
+## 6. Stream-Deck-Node-Plugin läuft am Studiorechner NICHT (2026-07-01) — Ursache + Lösung
+**Symptom:** Plugin installiert (Einstellungen-Button → Stream Deck meldet
+`Installed plugin 'com.punchbuddy.control'`), Tasten belegbar, aber beim Drücken
+**gelbes Dreieck**.
+
+**Ursache (aus Studio-Diagnose 2026-07-01 00:39, belegt):**
+- Stream-Deck-Log wiederholt: `NodeManager — Failed to fetch Node.js manifest:
+  canceled` (00:21/00:22/00:23/00:24/00:25 …).
+- **Kein** `[com.punchbuddy.control] Plugin connected` (auf einem Rechner MIT
+  Internet/Node schon) und **kein** Node-Plugin-Prozess in der Prozessliste; auch
+  **keine** SD-NodeJS-Runtime vorhanden.
+→ Elgato-**Node-Plugins** laden ihre **Node.js-Runtime einmalig per Download**.
+  Das **abgeschottete Studionetz** (Defender/Firewall, kein Elgato-CDN) blockiert
+  das → Plugin startet nie → Taste ohne Handler → gelbes Dreieck.
+- **Wichtig:** Der Socket selbst lief (`Unix-Socket-Steuerung aktiv`), PunchBuddy
+  empfing Befehle. Es scheitert NUR an der nicht ladbaren Node-Runtime.
+
+**Lösung (ohne Internet/Node):** die **`.app`-Launcher** verwenden
+(Einstellungen → „Vocaster / Stream Deck" → „Tasten-Launcher erzeugen"), im
+Stream Deck mit der eingebauten Aktion **„System → Öffnen"**. Brauchen kein Node,
+keinen Download, nur das systemeigene `nc` → Socket. **Das ist der empfohlene Weg
+für gesperrte Studiorechner.** (Alternative mit Dropdown-UX, falls Netz-Loopback
+ok ist: ein klassisches HTML/JS-SD-Plugin gegen `http://127.0.0.1:8899` — braucht
+ebenfalls kein Node; Defender filtert Loopback nicht.)
