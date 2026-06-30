@@ -221,18 +221,43 @@ def _safe_close(eng):
         pass
 
 
-def _reset_engine():
+def _reset_engine(stale=None):
     """Verwirft die aktuelle Engine-Instanz → nächster _get_engine() verbindet
     neu. Wird bei Verbindungsfehlern (gRPC-Deadline/RpcError) aufgerufen.
     Das close() läuft im Hintergrund, damit ein toter Channel den Aufrufer
-    nicht blockiert."""
+    nicht blockiert.
+
+    Ist `stale` gesetzt, wird NUR verworfen, wenn es noch die aktuelle Instanz
+    ist. Das verhindert, dass ein Worker mit einer gecachten (alten) Engine-
+    Referenz eine bereits ersetzte FREMDE Instanz wegschliesst – die häufigste
+    Ursache für verwaiste/zombie (CLOSE_WAIT) Verbindungen unter schneller
+    Befehlsfolge."""
     global _engine_instance
     with _engine_lock:
+        if stale is not None and stale is not _engine_instance:
+            return  # eine andere Instanz ist schon aktiv – nicht anfassen
         dead = _engine_instance
         _engine_instance = None
     if dead is not None:
         threading.Thread(target=_safe_close, args=(dead,), daemon=True,
                          name="EngineClose").start()
+
+
+def _reset_if_rpc_error(e) -> bool:
+    """Verwirft die Engine, wenn `e` ein gRPC-Verbindungsfehler (toter Channel)
+    ist. Für ROHE engine.*-Aufrufe, die NICHT über _ptsl_call laufen und daher
+    sonst keinen Reset auslösen würden → verhindert tote/zombie-Verbindungen.
+    Gibt True zurück, wenn ein Reset ausgelöst wurde."""
+    try:
+        import grpc
+        if isinstance(e, grpc.RpcError):
+            logging.warning("Roher gRPC-Fehler ausserhalb _ptsl_call – "
+                            "Engine wird verworfen (Anti-Zombie).")
+            _reset_engine()
+            return True
+    except Exception:
+        pass
+    return False
 
 
 # Rückwärtskompatibler Alias: frühere Aufrufer riefen _invalidate_engine_health.
@@ -323,7 +348,10 @@ def _ptsl_call(fn, *args, label: str = "", timeout: float = 15.0):
         else:
             logging.error(f"[{label}] Fehler: {e}")
         if is_rpc:
-            _reset_engine()  # Verbindung tot/blockiert → nächster Call reconnectet
+            # Nur DIESE Instanz verwerfen (über fn.__self__, falls gebundene
+            # Methode), damit kein paralleler Worker eine bereits ersetzte
+            # Engine wegschliesst. Bei Lambdas (__self__ fehlt) → unbedingt.
+            _reset_engine(stale=getattr(fn, "__self__", None))
         return False, (None if is_timeout else e)
     finally:
         _grpc_deadline_tls.value = _GRPC_CALL_DEADLINE

@@ -24,6 +24,7 @@ from punchbuddy.engine import (
     _get_engine, _ptsl_call, ensure_preroll_on, restore_preroll,
     _close_engine, refresh_session_tracks, _invalidate_session_tracks,
     _get_cached_track_names, _show_error, _set_preroll_state, _get_preroll_status,
+    _reset_if_rpc_error,
 )
 from punchbuddy.transport import _set_busy, _send_shift_oe
 from punchbuddy.loudness import _run_loudness_with_progress, normalize_track
@@ -55,7 +56,12 @@ def _detect_video_track(engine, settings=None):
     Fallback auf settings['video_track'] wenn nichts gefunden."""
     fallback = (settings or {}).get("video_track", "Video 1")
     try:
-        tracks = engine.track_list()
+        # Über _ptsl_call: serialisiert + verwirft die Engine bei totem Channel
+        # (sonst bliebe eine Zombie-Verbindung bestehen).
+        ok, tracks = _ptsl_call(engine.track_list, label="DetectVideoTrack", timeout=10.0)
+        if not ok or tracks is None:
+            logging.warning(f"Video-Spur: track_list fehlgeschlagen – Fallback: '{fallback}'")
+            return fallback
         video_tracks = [t.name for t in tracks if t.type == 4]
         if video_tracks:
             name = video_tracks[0]
@@ -944,6 +950,7 @@ def run_interplay_import():
         logging.info("=== INTERPLAY IMPORT ENDE ===")
     except Exception as e:
         logging.error(f"Import Fehler: {e}", exc_info=True)
+        _reset_if_rpc_error(e)  # toten gRPC-Channel verwerfen → kein Zombie
         if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()
@@ -1276,6 +1283,7 @@ def run_interplay_export(export_tracks, settings, workspace_steps=17):
 
     except Exception as e:
         logging.error(f"Interplay Export Fehler: {e}", exc_info=True)
+        _reset_if_rpc_error(e)  # toten gRPC-Channel verwerfen → kein Zombie
         if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
         return False
     finally:
@@ -1534,6 +1542,7 @@ def run_export(export_tracks, video_track=None, settings=None):
 
     except Exception as e:
         logging.error(f"Export Fehler: {e}", exc_info=True)
+        _reset_if_rpc_error(e)  # toten gRPC-Channel verwerfen → kein Zombie
     finally:
         with _export_lock:
             state.export_running = False
@@ -1838,6 +1847,7 @@ def run_wav_export_standalone(export_tracks, settings):
         logging.info("=== WAV EXPORT (Standalone) ENDE ===")
     except Exception as e:
         logging.error(f"WAV Export Fehler: {e}", exc_info=True)
+        _reset_if_rpc_error(e)  # toten gRPC-Channel verwerfen → kein Zombie
         if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()
@@ -2235,6 +2245,7 @@ def run_aaf_export_standalone(export_tracks, settings):
         logging.info("=== AAF EXPORT (Standalone) ENDE ===")
     except Exception as e:
         logging.error(f"AAF Export Fehler: {e}", exc_info=True)
+        _reset_if_rpc_error(e)  # toten gRPC-Channel verwerfen → kein Zombie
         if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()
@@ -2631,6 +2642,7 @@ def run_aaf_reference_export_standalone(export_tracks, settings):
         logging.info("=== AAF REFERENCE EXPORT (Standalone) ENDE ===")
     except Exception as e:
         logging.error(f"AAF Reference Export Fehler: {e}", exc_info=True)
+        _reset_if_rpc_error(e)  # toten gRPC-Channel verwerfen → kein Zombie
         if prog: prog["update"](1.0, f"{t('alert_error')}: {e}")
     finally:
         if prog: prog["close"]()

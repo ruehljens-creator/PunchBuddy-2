@@ -229,6 +229,107 @@ lines.append(SEP + "9. DISK INFO")
 lines.append(run("df -h ~ 2>/dev/null"))
 lines.append(run("diskutil info / 2>/dev/null | grep -i 'solid state\\|medium type\\|volume name\\|file system'"))
 
+# ── 10. NETZWERK (Interfaces, Service-Order, Routing, DNS) ─────────────────
+# Wichtig: Pro Tools Video-Engine/Satellite-Link bindet ggf. an die falsche
+# (geroutete Firmen-/NEXIS-)NIC statt Loopback → Transport-Stalls.
+lines.append(SEP + "10. NETZWERK – Interfaces / Service-Order / Routing / DNS")
+lines.append("--- Aktive Interfaces (ifconfig, nur inet) ---")
+lines.append(run("ifconfig | grep -E '^[a-z]|inet ' | grep -v inet6"))
+lines.append("\n--- Netzwerk-Service-Reihenfolge (Set Service Order – oberste = primäre Route) ---")
+lines.append(run("networksetup -listnetworkserviceorder 2>/dev/null"))
+lines.append("\n--- Hardware-Ports ---")
+lines.append(run("networksetup -listallhardwareports 2>/dev/null"))
+lines.append("\n--- Default-Route / primäres Interface ---")
+lines.append(run("route -n get default 2>/dev/null | grep -E 'interface|gateway'"))
+lines.append("\n--- Routing-Tabelle (Auszug) ---")
+lines.append(run("netstat -rn 2>/dev/null | head -25"))
+lines.append("\n--- DNS-Konfiguration ---")
+lines.append(run("scutil --dns 2>/dev/null | grep -E 'nameserver|domain' | head -15"))
+
+# ── 11. PT SATELLITE / VIDEO-ENGINE NETZWERK-PORTS ─────────────────────────
+lines.append(SEP + "11. PT SATELLITE / VIDEO-ENGINE / PTSL NETZWERK-PORTS")
+lines.append("PTSL=31416, PunchBuddy-HTTP=8899, Satellite/Video-Engine=28282/28284")
+lines.append("--- lsof auf den relevanten Ports (IP vor Port: 127.0.0.1=lokal/gut, 10.x/LAN=geroutet) ---")
+lines.append(run("lsof -nP -iTCP:31416 -iTCP:8899 -iTCP:28282 -iTCP:28284 -iUDP:28282 -iUDP:28284 2>/dev/null"))
+lines.append("\n--- netstat (31416/8899/2828x), CLOSE_WAIT/ESTABLISHED prüfen ---")
+lines.append(run("netstat -an 2>/dev/null | grep -E '31416|8899|2828' "))
+lines.append("\n--- AvidVideoEngine-Prozess (servicehint vidsat = Video-Satellite) ---")
+lines.append(run("ps aux | grep -i 'AvidVideoEngine\\|vidsat' | grep -v grep"))
+lines.append("\n--- Satellite/Clock-Sync-Marker im PT-Log (sollten bei aktiver Video-Engine erscheinen) ---")
+if pt_log:
+    lines.append(read_grep(pt_log, ["SLnk_", "CSync", "vidsat", "UME_LockToNetworkClock",
+                                    "SyncRemoteClocks", "eSynchronizerState", "WaitingTrigger",
+                                    "LockToSatellite", "ControlLock", "network clock"], lines=120))
+else:
+    lines.append("[Kein PT-Log]")
+
+# ── 12. MICROSOFT DEFENDER (Status + Netzwerk-Extension) ───────────────────
+# 'Deaktiviert' im UI heißt NICHT, dass die Netzwerk-Extension entladen ist.
+lines.append(SEP + "12. MICROSOFT DEFENDER FOR ENDPOINT – Status & Netzwerk-Extension")
+lines.append("--- mdatp health (Kernfelder) ---")
+lines.append(run("mdatp health --field healthy 2>/dev/null; "
+                 "mdatp health --field real_time_protection_enabled 2>/dev/null; "
+                 "mdatp health --field network_protection_status 2>/dev/null; "
+                 "mdatp health --field behavior_monitoring 2>/dev/null; "
+                 "mdatp health --field tamper_protection 2>/dev/null; "
+                 "mdatp health --field managed_by 2>/dev/null"))
+lines.append("\n--- mdatp System-Extensions (network_extension_enabled/-installed) ---")
+lines.append(run("mdatp health --details system_extensions 2>/dev/null"))
+lines.append("\n--- wdav/mdatp/Defender-Prozesse (CPU!) ---")
+lines.append(run("ps aux | grep -iE 'wdav|mdatp|defender' | grep -v grep"))
+lines.append("\n--- Defender-Diagnose-/Log-Ablage vorhanden? ---")
+lines.append(run("ls -la '/Library/Application Support/Microsoft/Defender/wdavdiag/' 2>/dev/null | tail -5"))
+
+# ── 13. SYSTEM-EXTENSIONS / NETZWERK-FILTER (systemweit) ───────────────────
+lines.append(SEP + "13. SYSTEM-EXTENSIONS / NETZWERK-FILTER")
+lines.append("--- systemextensionsctl list (achten auf com.microsoft.wdav.netext / Cisco / sonstige Filter) ---")
+lines.append(run("systemextensionsctl list 2>/dev/null"))
+
+# ── 14. macOS FIREWALL ─────────────────────────────────────────────────────
+lines.append(SEP + "14. macOS FIREWALL")
+lines.append("--- Application Firewall: Global State (0=aus,1=an,2=block all) ---")
+lines.append(run("/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null; "
+                 "/usr/libexec/ApplicationFirewall/socketfilterfw --getblockall 2>/dev/null; "
+                 "/usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode 2>/dev/null"))
+lines.append("\n--- ALF-Prefs (globalstate) ---")
+lines.append(run("defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null"))
+lines.append("\n--- pf-Firewall Status (braucht ggf. sudo) ---")
+lines.append(run("pfctl -s info 2>&1 | head -8"))
+lines.append("\n--- Firewall-Regeln für AvidVideoEngine/Pro Tools? ---")
+lines.append(run("/usr/libexec/ApplicationFirewall/socketfilterfw --listapps 2>/dev/null | grep -iE 'Pro Tools|AvidVideoEngine|Video Engine|Python|PunchBuddy' -A1"))
+
+# ── 15. STREAM DECK (Elgato) – Prozess, Version, Logs ──────────────────────
+lines.append(SEP + "15. STREAM DECK (Elgato) – Prozess / Version / Logs")
+lines.append("--- Laufender Prozess ---")
+lines.append(run("ps aux | grep -i 'Stream Deck\\|StreamDeck\\|elgato' | grep -v grep"))
+lines.append("\n--- App-Version ---")
+lines.append(run("defaults read '/Applications/Elgato Stream Deck.app/Contents/Info.plist' CFBundleShortVersionString 2>/dev/null || echo '[App nicht gefunden]'"))
+lines.append("\n--- Stream-Deck-Logs (neueste Zeilen) ---")
+_sd_logdirs = [
+    "~/Library/Logs/ElgatoStreamDeck",
+    "~/Library/Application Support/com.elgato.StreamDeck/logs",
+    "~/Library/Application Support/Elgato/StreamDeck/logs",
+]
+_sd_found = False
+for _d in _sd_logdirs:
+    _newest = newest_file(_d + "/*.log")
+    if _newest:
+        lines.append(f"Datei: {_newest}")
+        lines.append(read_tail(_newest, 60))
+        _sd_found = True
+        break
+if not _sd_found:
+    lines.append("[Keine Stream-Deck-Logs gefunden – Pfade geprüft: " + ", ".join(_sd_logdirs) + "]")
+lines.append("\n--- Autostart/Login-Items (Stream Deck) ---")
+lines.append(run("osascript -e 'tell application \"System Events\" to get the name of every login item' 2>/dev/null"))
+
+# ── 16. VOLLSTÄNDIGE PROZESSLISTE (Top-CPU) + Auffälligkeiten ──────────────
+lines.append(SEP + "16. PROZESSE – Top-CPU + relevante Dritt-Software")
+lines.append("--- Top 20 nach CPU ---")
+lines.append(run("ps aux | sort -nrk 3 | head -20"))
+lines.append("\n--- Sicherheits-/Netzwerk-Dritt-Software (Defender/Cisco/Umbrella/VPN/Filter) ---")
+lines.append(run("ps aux | grep -iE 'wdav|mdatp|defender|cisco|umbrella|anyconnect|crowdstrike|sentinel|netskope|zscaler|little snitch|lulu' | grep -v grep | head -20"))
+
 # ── Speichern ─────────────────────────────────────────────────────────────
 output = "\n".join(lines)
 with open(OUT, "w", encoding="utf-8") as f:

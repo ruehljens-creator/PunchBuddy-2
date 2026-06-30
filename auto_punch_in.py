@@ -163,6 +163,7 @@ from punchbuddy.export import (
     run_interplay_import, run_interplay_export, run_export,
     run_wav_export_standalone, run_aaf_export_standalone,
     run_aaf_reference_export_standalone, _detect_video_track,
+    _export_lock,
 )
 
 # Lautheits-Normalisierung ausgelagert nach punchbuddy/loudness.py
@@ -300,6 +301,13 @@ class PunchBuddyApp(rumps.App):
                          quit_button=None)  # Custom Quit-Handler für Watchdog-Cleanup
         state.app_ref = self
         self.settings        = load_settings()
+
+        # ── Trigger-Debounce (gegen Doppel-/Mehrfach-Trigger, z.B. Stream Deck
+        #    der pro Tastendruck mehrere HTTP-Requests sendet, oder zu schnelles
+        #    Hämmern). Gilt für ALLE triggerbaren Aktionen, Menü UND Webtrigger.
+        #    Thread-sicher: Menü läuft im Main-Thread, HTTP in Worker-Threads.
+        self._last_trigger = {}
+        self._trigger_lock = threading.Lock()
 
         # ── Profil A (Standard) ──────────────────────────────────────────
         self.start_item      = rumps.MenuItem(t("record_a_start"),      callback=self._on_start)
@@ -510,7 +518,8 @@ class PunchBuddyApp(rumps.App):
                 self.send_header("Content-type", "text/plain")
                 self.end_headers()
                 self.wfile.write(b"OK")
-                action()
+                if app_ref._debounce_ok(f"voc:{path}", interval=0.6):
+                    action()
 
             def _authorized(self, query):
                 """Prüft das Webtrigger-Token, falls eines konfiguriert ist.
@@ -561,7 +570,12 @@ class PunchBuddyApp(rumps.App):
                     try:
                         preset_num = int(path.split("/preset/")[1])
                         idx = preset_num - 1
-                        if app_ref.load_preset_by_index(idx):
+                        if not app_ref._debounce_ok(f"preset:{preset_num}", interval=0.6):
+                            self.send_response(200)
+                            self.send_header("Content-type", "text/plain; charset=utf-8")
+                            self.end_headers()
+                            self.wfile.write(f"Preset {preset_num} entprellt".encode("utf-8"))
+                        elif app_ref.load_preset_by_index(idx):
                             self.send_response(200)
                             self.send_header("Content-type", "text/plain; charset=utf-8")
                             self.end_headers()
@@ -786,24 +800,50 @@ class PunchBuddyApp(rumps.App):
         threading.Thread(target=_loop, daemon=True, name="PTSLKeepAlive").start()
         logging.info("PTSL Keep-Alive gestartet (Intervall: 120s)")
 
+    @objc.python_method
+    def _debounce_ok(self, key, interval=0.4):
+        """True, wenn der Trigger ausgeführt werden darf; False, wenn er als
+        Doppel-/Mehrfach-Trigger innerhalb von `interval` Sekunden verworfen
+        wird. Fängt Stream-Deck-Doppel-Requests und zu schnelles Hämmern ab,
+        bevor überlappende Threads PT überfahren. Thread-sicher."""
+        now = time.monotonic()
+        with self._trigger_lock:
+            last = self._last_trigger.get(key, 0.0)
+            if now - last < interval:
+                logging.info(f"Trigger '{key}' entprellt – Doppel-Trigger "
+                             f"({now - last:.2f}s < {interval}s) ignoriert.")
+                return False
+            self._last_trigger[key] = now
+            return True
+
     def _trigger(self):
+        if not self._debounce_ok("record_a"):
+            return
         logging.info(">>> TRIGGER A <<<")
         tracks = self.settings.get("tracks", DEFAULT_SETTINGS["tracks"])
         monitor = self.settings.get("monitor_tracks", DEFAULT_SETTINGS["monitor_tracks"])
         threading.Thread(target=run_punch_in, args=(tracks, monitor), daemon=True).start()
 
     def _trigger_play(self):
+        if not self._debounce_ok("play"):
+            return
         logging.info(">>> TRIGGER PLAY <<<")
         threading.Thread(target=run_play, daemon=True).start()
 
     def _trigger_play_custom(self):
+        if not self._debounce_ok("play_custom"):
+            return
         logging.info(">>> TRIGGER PLAY CUSTOM <<<")
         threading.Thread(target=run_play_custom, daemon=True).start()
 
     def _trigger_start(self):
+        if not self._debounce_ok("goto_start"):
+            return
         threading.Thread(target=run_goto_start, daemon=True).start()
 
     def _trigger_move_audio(self):
+        if not self._debounce_ok("move_audio"):
+            return
         logging.info(">>> TRIGGER MOVE AUDIO <<<")
         src = self.settings.get("move_audio_source_tracks",
                                 DEFAULT_SETTINGS["move_audio_source_tracks"])
@@ -812,6 +852,8 @@ class PunchBuddyApp(rumps.App):
         threading.Thread(target=run_move_audio, args=(src, tgt), daemon=True).start()
 
     def _trigger_b(self):
+        if not self._debounce_ok("record_b"):
+            return
         logging.info(">>> TRIGGER B <<<")
         tracks = self.settings.get("tracks_b", DEFAULT_SETTINGS["tracks_b"])
         if not tracks:
@@ -821,33 +863,78 @@ class PunchBuddyApp(rumps.App):
         threading.Thread(target=run_punch_in, args=(tracks, monitor), daemon=True).start()
 
     def _trigger_import(self):
+        if not self._debounce_ok("import", interval=1.0):
+            return
         logging.info(">>> IMPORT TRIGGER <<<")
         threading.Thread(target=run_interplay_import, daemon=True).start()
 
+    @objc.python_method
+    def _begin_export_or_skip(self):
+        """Gemeinsamer Export-Slot: nur EIN Export gleichzeitig – über ALLE
+        Export-Arten (WAV/AAF/AAF-Ref/Interplay). Verhindert parallele
+        Consolidate-/Export-Läufe auf dem geteilten gRPC-Kanal (sonst:
+        'closed channel' / korrupte Selektion). True = darf starten."""
+        with _export_lock:
+            if state.export_running:
+                logging.info("Export läuft bereits – Trigger ignoriert.")
+                return False
+            state.export_running = True
+        return True
+
+    @objc.python_method
+    def _spawn_export(self, target, *args):
+        """Startet einen Export-Worker im Thread und gibt den Export-Slot am
+        Ende IMMER frei – auch bei Exception (sonst bliebe der Slot für immer
+        gesperrt und der rote Punkt rot)."""
+        def _work():
+            try:
+                target(*args)
+            finally:
+                with _export_lock:
+                    state.export_running = False
+                _set_busy(False)
+        threading.Thread(target=_work, daemon=True).start()
+
     def _trigger_export_wav(self):
+        if not self._debounce_ok("export_wav", interval=1.0):
+            return
+        if not self._begin_export_or_skip():
+            return
         logging.info(">>> WAV EXPORT TRIGGER <<<")
         _set_busy(True)
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
-        threading.Thread(target=run_wav_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
+        self._spawn_export(run_wav_export_standalone, export_tracks, self.settings)
 
     def _trigger_export_aaf(self):
+        if not self._debounce_ok("export_aaf", interval=1.0):
+            return
+        if not self._begin_export_or_skip():
+            return
         logging.info(">>> AAF EMBEDDED EXPORT TRIGGER <<<")
         _set_busy(True)
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
-        threading.Thread(target=run_aaf_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
+        self._spawn_export(run_aaf_export_standalone, export_tracks, self.settings)
 
     def _trigger_export_aaf_reference(self):
+        if not self._debounce_ok("export_aaf_reference", interval=1.0):
+            return
+        if not self._begin_export_or_skip():
+            return
         logging.info(">>> AAF REFERENCE EXPORT TRIGGER <<<")
         _set_busy(True)
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
-        threading.Thread(target=run_aaf_reference_export_standalone, args=(export_tracks, self.settings), daemon=True).start()
+        self._spawn_export(run_aaf_reference_export_standalone, export_tracks, self.settings)
 
     def _trigger_export_interplay(self):
+        if not self._debounce_ok("export_interplay", interval=1.0):
+            return
+        if not self._begin_export_or_skip():
+            return
         logging.info(">>> INTERPLAY EXPORT TRIGGER <<<")
         _set_busy(True)  # sofort sichtbar, noch vor Thread-Start (dispatcht intern auf Main-Thread)
         export_tracks = self.settings.get("export_tracks", DEFAULT_SETTINGS["export_tracks"])
         ws_steps = self.settings.get("interplay_workspace_steps", 17)
-        threading.Thread(target=run_interplay_export, args=(export_tracks, self.settings, ws_steps), daemon=True).start()
+        self._spawn_export(run_interplay_export, export_tracks, self.settings, ws_steps)
 
     def update_menu_titles(self):
         """Updates all menu titles dynamically to reflect the current language."""
@@ -3471,12 +3558,18 @@ if __name__ == "__main__":
     import signal
 
     def _signal_handler(signum, frame):
-        logging.info(f"Signal {signum} empfangen – Watchdog beenden...")
+        logging.info(f"Signal {signum} empfangen – Engine schliessen + Watchdog beenden...")
+        try:
+            _close_engine()  # gRPC/PTSL-Channel sauber schliessen (kein CLOSE_WAIT auf PT-Seite)
+        except Exception as _ce:
+            logging.warning(f"Signal-Handler: _close_engine fehlgeschlagen: {_ce}")
         _cleanup_watchdog()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
     atexit.register(_cleanup_watchdog)
+    # Engine bei JEDEM Beendigungspfad genau einmal schliessen (idempotent via _engine_lock/None-Check)
+    atexit.register(_close_engine)
 
     PunchBuddyApp().run()

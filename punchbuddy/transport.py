@@ -17,7 +17,7 @@ from punchbuddy.keys import (
 from punchbuddy.engine import (
     _get_engine, _ptsl_call, ensure_preroll_on, restore_preroll,
     refresh_session_tracks, _get_cached_track_names, _show_error,
-    _close_engine, _invalidate_session_tracks,
+    _close_engine, _invalidate_session_tracks, _reset_engine,
 )
 
 _stop_lock    = threading.Lock()  # verhindert gleichzeitige Stop-Aufrufe
@@ -134,8 +134,11 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
                     consecutive_failures += 1
                     if consecutive_failures >= 10:
                         logging.warning("Transport-Polling: 10x Timeout – breche ab (Anti-Stau).")
-                        _close_engine()
-                        time.sleep(2.0)
+                        # Nur DIESE (tote) Instanz verwerfen – kein Wegschliessen
+                        # einer evtl. schon ersetzten Engine, die ein paralleler
+                        # Worker noch benutzt (Race/Zombie-Schutz).
+                        _reset_engine(stale=engine)
+                        time.sleep(1.0)
                         engine = _get_engine()
                         break
                     time.sleep(0.5)
