@@ -154,6 +154,22 @@ MC_Client, EuControl, Stream Deck, PunchBuddy, Medien-/Session-Volumes);
 (2) Satellite auf 127.0.0.1 (nimmt E1000-Last raus); (3) Service-Order/PROMISC
 prüfen. NICHT PunchBuddy — dessen Log ist sauber.
 
+**WICHTIG (2026-07-01): „Echtzeitscan aus" hilft NICHT.** Belegt: trotz
+abgeschaltetem Real-Time-Scan laufen `wdavdaemon_enterprise edr` (12.8 %),
+`epsext` (EndpointSecurity-Ext, 8.1 %), `wdavdaemon privileged` (7.7 %), `netext`
+weiter (~30 % CPU zusammen). RTP = nur der **Datei-Virenscan**; die App-/Fenster-
+Latenz kommt von der **EndpointSecurity-Extension (epsext)**, die synchron jeden
+exec/Datei-Open autorisiert — die läuft unabhängig vom Scan. Auf verwalteten
+Firmenrechnern sind EDR/ES **per MDM/Tenant-Policy erzwungen + Tamper-protected** →
+nur IT/Security kann Passive-Mode/EDR-Exclusions setzen. Prüfen: `mdatp health
+--field real_time_protection_enabled|passive_mode_enabled|tamper_protection|managed_by`.
+Satellite-NIC-Isolierung nimmt nur die netext/E1000-Hälfte raus; die epsext-Latenz
+bleibt bis zur Policy-Änderung.
+
+`en7`/192.168.1.110 ist **ebenfalls geroutet** (2. Default-Route via 192.168.1.254)
+→ keine wirklich isolierte NIC vorhanden; Satellite läuft trotzdem über Router.
+Loopback (127.0.0.1) ist im PT-Satellite-Interface nicht wählbar (nur phys. NICs).
+
 ## 2. PTSL-/gRPC-Architektur-Fakten
 
 - **Genau EINE Engine-Instanz** (Singleton `_engine_instance`, `engine.py`),
