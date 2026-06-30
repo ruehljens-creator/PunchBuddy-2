@@ -1626,6 +1626,63 @@ class PunchBuddyApp(rumps.App):
                 return p
         return None
 
+    # ── Stream-Deck-Assets (mitgeliefert) ───────────────────────────────────
+    @objc.python_method
+    def _streamdeck_plugin_path(self):
+        """Findet die mitgelieferte .streamDeckPlugin-Datei (in der App gebündelt
+        via PyInstaller, sonst im Repo unter streamdeck/plugin/)."""
+        import sys as _sys
+        name = "com.punchbuddy.control.streamDeckPlugin"
+        candidates = []
+        meipass = getattr(_sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(os.path.join(meipass, "streamdeck", name))
+        candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "streamdeck", "plugin", name))
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return None
+
+    @objc.python_method
+    def _install_streamdeck_plugin(self):
+        p = self._streamdeck_plugin_path()
+        if not p:
+            rumps.alert("Stream Deck", "Plugin-Datei nicht gefunden (nicht mitgeliefert).")
+            return
+        try:
+            subprocess.Popen(["open", p])   # Stream Deck zeigt seinen Installations-Dialog
+            rumps.notification("PunchBuddy", "Stream Deck",
+                               "Plugin-Installation gestartet – im Stream Deck bestätigen.")
+        except Exception as e:
+            rumps.alert("Stream Deck", f"Konnte Plugin nicht öffnen:\n{e}")
+
+    @objc.python_method
+    def _reveal_streamdeck_plugin(self):
+        p = self._streamdeck_plugin_path()
+        if not p:
+            rumps.alert("Stream Deck", "Plugin-Datei nicht gefunden (nicht mitgeliefert).")
+            return
+        try:
+            dest = os.path.join(os.path.expanduser("~/Downloads"), os.path.basename(p))
+            shutil.copy2(p, dest)
+            subprocess.Popen(["open", "-R", dest])   # im Finder markieren
+            rumps.notification("PunchBuddy", "Stream Deck", f"Plugin gespeichert: {dest}")
+        except Exception as e:
+            rumps.alert("Stream Deck", f"Konnte Plugin nicht speichern:\n{e}")
+
+    @objc.python_method
+    def _generate_streamdeck_launchers(self):
+        sock = self.settings.get("unix_socket_path", DEFAULT_UNIX_SOCKET) or DEFAULT_UNIX_SOCKET
+        dest = os.path.expanduser("~/Applications/PunchBuddy Launchers")
+        try:
+            n = _build_streamdeck_launchers(dest, sock)
+            subprocess.Popen(["open", dest])
+            rumps.notification("PunchBuddy", "Stream Deck",
+                               f"{n} Tasten-Launcher erzeugt in {dest}")
+        except Exception as e:
+            rumps.alert("Stream Deck", f"Konnte Launcher nicht erzeugen:\n{e}")
+
     def _on_help_manual(self, _):
         import subprocess as _sp
         # Zuerst HTML-Anleitung probieren, danach MD-Fallback
@@ -2449,18 +2506,31 @@ class PunchBuddyApp(rumps.App):
             t6_view.addSubview_(cb_stop)
             controls[mute_end_key] = cb_stop
 
-        # ── TAB 7: VOCASTER (nur wenn Gerät erkannt) ────────────────────────
-        tab7 = None
+        # ── TAB 7: VOCASTER / STREAM DECK ───────────────────────────────────
+        # Immer vorhanden – die Stream-Deck-Sektion ist unabhängig vom Vocaster.
+        tab7 = NSTabViewItem.alloc().initWithIdentifier_("VocasterStreamdeck")
+        tab7.setLabel_("Vocaster / Stream Deck")
+        t7_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
+        tab7.setView_(t7_view)
+        t7_y = t7_view.frame().size.height - 35
+
+        content_w = WIN_W - PAD * 2 - 40  # Verfügbare Breite
+
+        # Hilfsfunktion: mehrzeiliges Label mit aktivierter Word-Wrap.
+        def _wrap_label(text):
+            lbl = NSTextField.labelWithString_(text)
+            lbl.setFont_(NSFont.systemFontOfSize_(11))
+            lbl.setTextColor_(NSColor.secondaryLabelColor())
+            cell = lbl.cell()
+            if hasattr(cell, "setWraps_"):
+                cell.setWraps_(True)
+            if hasattr(cell, "setLineBreakMode_"):
+                cell.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
+            return lbl
+
         if getattr(self, "vocaster", None) is not None and self._vocaster_info:
             voc_info = self._vocaster_info
             voc_channels = voc_info.get("channels", 1)
-
-            tab7 = NSTabViewItem.alloc().initWithIdentifier_("Vocaster")
-            tab7.setLabel_(t("tab_vocaster"))
-            t7_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
-            tab7.setView_(t7_view)
-
-            t7_y = t7_view.frame().size.height - 35
 
             # Erkanntes Gerät
             l_dev = NSTextField.labelWithString_(
@@ -2532,20 +2602,6 @@ class PunchBuddyApp(rumps.App):
                 t7_view.addSubview_(cp_btn)
 
             # ── Routing-Sektion (Hub-Ersatz) ────────────────────────────────
-            # Hilfsfunktion: mehrzeiliges Label mit aktivierter Word-Wrap.
-            def _wrap_label(text):
-                lbl = NSTextField.labelWithString_(text)
-                lbl.setFont_(NSFont.systemFontOfSize_(11))
-                lbl.setTextColor_(NSColor.secondaryLabelColor())
-                cell = lbl.cell()
-                if hasattr(cell, "setWraps_"):
-                    cell.setWraps_(True)
-                if hasattr(cell, "setLineBreakMode_"):
-                    cell.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)
-                return lbl
-
-            content_w = WIN_W - PAD * 2 - 40  # Verfügbare Breite
-
             t7_y -= 24
             sep_routing = AppKit.NSBox.alloc().initWithFrame_(
                 NSMakeRect(PAD, t7_y, content_w, 1))
@@ -2627,6 +2683,69 @@ class PunchBuddyApp(rumps.App):
             btn_capture.setTarget_(self._vocaster_capture_target)
             btn_capture.setAction_(objc.selector(
                 self._vocaster_capture_target.onCapture_, signature=b'v@:@'))
+        else:
+            l_novoc = _wrap_label("Kein Vocaster verbunden – die Vocaster-Optionen "
+                                  "erscheinen automatisch, sobald eines angeschlossen ist.")
+            l_novoc.setFrame_(NSMakeRect(PAD, t7_y - 10, content_w, 30))
+            t7_view.addSubview_(l_novoc)
+            t7_y -= 44
+
+        # ── Stream-Deck-Sektion (immer sichtbar) ────────────────────────────
+        t7_y -= 14
+        sep_sd = AppKit.NSBox.alloc().initWithFrame_(NSMakeRect(PAD, t7_y, content_w, 1))
+        sep_sd.setBoxType_(AppKit.NSBoxSeparator)
+        t7_view.addSubview_(sep_sd)
+
+        t7_y -= 26
+        h_sd = NSTextField.labelWithString_("Stream Deck")
+        h_sd.setFrame_(NSMakeRect(PAD, t7_y, 400, 20))
+        h_sd.setFont_(NSFont.boldSystemFontOfSize_(13))
+        t7_view.addSubview_(h_sd)
+
+        t7_y -= 36
+        l_sd_note = _wrap_label("PunchBuddy bringt ein Stream-Deck-Plugin und Tasten-"
+                                "Launcher mit. Die Steuerung läuft über einen lokalen "
+                                "Socket – ganz ohne Netzwerk (kein Defender im Weg).")
+        l_sd_note.setFrame_(NSMakeRect(PAD, t7_y, content_w, 32))
+        t7_view.addSubview_(l_sd_note)
+
+        t7_y -= 38
+        btn_sd_install = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t7_y, 200, 28))
+        btn_sd_install.setTitle_("Plugin installieren")
+        btn_sd_install.setBezelStyle_(NSBezelStyleRounded)
+        t7_view.addSubview_(btn_sd_install)
+
+        btn_sd_reveal = NSButton.alloc().initWithFrame_(NSMakeRect(PAD + 210, t7_y, 230, 28))
+        btn_sd_reveal.setTitle_("Plugin speichern (Downloads)")
+        btn_sd_reveal.setBezelStyle_(NSBezelStyleRounded)
+        t7_view.addSubview_(btn_sd_reveal)
+
+        t7_y -= 36
+        btn_sd_launchers = NSButton.alloc().initWithFrame_(NSMakeRect(PAD, t7_y, 260, 28))
+        btn_sd_launchers.setTitle_("Tasten-Launcher erzeugen")
+        btn_sd_launchers.setBezelStyle_(NSBezelStyleRounded)
+        t7_view.addSubview_(btn_sd_launchers)
+
+        t7_y -= 34
+        sock_disp = self.settings.get("unix_socket_path", DEFAULT_UNIX_SOCKET) or DEFAULT_UNIX_SOCKET
+        l_sd_sock = _wrap_label(f"Socket: {sock_disp}   ·   Installieren öffnet die "
+                                "mitgelieferte .streamDeckPlugin (im Stream Deck bestätigen). "
+                                "Launcher = .apps für die Aktion ‚System → Öffnen‘.")
+        l_sd_sock.setFrame_(NSMakeRect(PAD, t7_y, content_w, 32))
+        t7_view.addSubview_(l_sd_sock)
+
+        # Stream-Deck-Buttons verdrahten
+        self._streamdeck_target = _StreamDeckTarget.alloc().init()
+        self._streamdeck_target._app = self
+        btn_sd_install.setTarget_(self._streamdeck_target)
+        btn_sd_install.setAction_(objc.selector(
+            self._streamdeck_target.onInstall_, signature=b'v@:@'))
+        btn_sd_reveal.setTarget_(self._streamdeck_target)
+        btn_sd_reveal.setAction_(objc.selector(
+            self._streamdeck_target.onReveal_, signature=b'v@:@'))
+        btn_sd_launchers.setTarget_(self._streamdeck_target)
+        btn_sd_launchers.setAction_(objc.selector(
+            self._streamdeck_target.onLaunchers_, signature=b'v@:@'))
 
         tab_view.addTabViewItem_(tab1)
         tab_view.addTabViewItem_(tab2)
@@ -2634,8 +2753,7 @@ class PunchBuddyApp(rumps.App):
         tab_view.addTabViewItem_(tab4)
         tab_view.addTabViewItem_(tab5)
         tab_view.addTabViewItem_(tab6)
-        if tab7 is not None:
-            tab_view.addTabViewItem_(tab7)
+        tab_view.addTabViewItem_(tab7)
         content.addSubview_(tab_view)
 
         # Target
@@ -3338,6 +3456,88 @@ class _VocasterCaptureTarget(AppKit.NSObject):
             except Exception:
                 update_ui()
         threading.Thread(target=work, daemon=True).start()
+
+
+# Befehlsliste für die Tasten-Launcher (Name, Anzeige, Socket-Payload).
+_STREAMDECK_LAUNCHER_CMDS = [
+    ("PunchBuddy-RecordA",        "Record A",                "record_a"),
+    ("PunchBuddy-RecordB",        "Record B",                "record_b"),
+    ("PunchBuddy-Play",           "Play / Stop",             "play"),
+    ("PunchBuddy-PlayCustom",     "Play Custom",             "play_custom"),
+    ("PunchBuddy-GotoStart",      "Cursor an Start",         "goto_start"),
+    ("PunchBuddy-MoveAudio",      "Audio verschieben",       "move_audio"),
+    ("PunchBuddy-Import",         "Import",                  "import"),
+    ("PunchBuddy-ExportWav",      "Export WAV",              "export_wav"),
+    ("PunchBuddy-ExportAaf",      "Export AAF",              "export_aaf"),
+    ("PunchBuddy-ExportAafRef",   "Export AAF Ref",          "export_aaf_reference"),
+    ("PunchBuddy-ExportInterplay","Export Interplay",        "export_interplay"),
+] + [(f"PunchBuddy-Preset{i}", f"Preset {i}", f"preset {i}") for i in range(1, 9)] + [
+    ("PunchBuddy-VocAutogainHost", "Vocaster Autogain Host",  "vocaster_autogain_host"),
+    ("PunchBuddy-VocAutogainGuest","Vocaster Autogain Guest", "vocaster_autogain_guest"),
+    ("PunchBuddy-VocPhantomOn",    "Vocaster Phantom AN",     "vocaster_phantom_on"),
+    ("PunchBuddy-VocPhantomOff",   "Vocaster Phantom AUS",    "vocaster_phantom_off"),
+]
+
+
+def _build_streamdeck_launchers(dest, sock):
+    """Erzeugt pro Befehl ein winziges .app, das via `nc -U` den (konfigurierten)
+    Unix-Socket bedient – netzwerkfrei. Gibt die Anzahl erzeugter Apps zurück."""
+    import re
+    os.makedirs(dest, exist_ok=True)
+    for appname, label, payload in _STREAMDECK_LAUNCHER_CMDS:
+        app = os.path.join(dest, appname + ".app")
+        macos = os.path.join(app, "Contents", "MacOS")
+        if os.path.isdir(app):
+            shutil.rmtree(app, ignore_errors=True)
+        os.makedirs(macos, exist_ok=True)
+        slug = re.sub(r"[^a-z0-9-]", "", appname.lower())
+        plist = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            '<plist version="1.0"><dict>\n'
+            f'  <key>CFBundleName</key><string>{appname}</string>\n'
+            f'  <key>CFBundleDisplayName</key><string>{label}</string>\n'
+            f'  <key>CFBundleIdentifier</key><string>com.punchbuddy.launcher.{slug}</string>\n'
+            '  <key>CFBundleExecutable</key><string>launcher</string>\n'
+            '  <key>CFBundlePackageType</key><string>APPL</string>\n'
+            '  <key>CFBundleVersion</key><string>1.0</string>\n'
+            '  <key>LSBackgroundOnly</key><true/>\n'
+            '  <key>LSUIElement</key><true/>\n'
+            '</dict></plist>\n'
+        )
+        with open(os.path.join(app, "Contents", "Info.plist"), "w") as f:
+            f.write(plist)
+        launcher = (
+            "#!/bin/sh\n"
+            f"printf '%s' '{payload}' | /usr/bin/nc -U '{sock}' >/dev/null 2>&1 || "
+            "/usr/bin/osascript -e 'display notification "
+            "\"PunchBuddy nicht erreichbar\" with title \"PunchBuddy\"' >/dev/null 2>&1\n"
+        )
+        lp = os.path.join(macos, "launcher")
+        with open(lp, "w") as f:
+            f.write(launcher)
+        os.chmod(lp, 0o755)
+    return len(_STREAMDECK_LAUNCHER_CMDS)
+
+
+class _StreamDeckTarget(AppKit.NSObject):
+    """ObjC-Target für die Stream-Deck-Buttons im Einstellungs-Tab."""
+
+    def onInstall_(self, sender):
+        app = getattr(self, "_app", None)
+        if app is not None:
+            app._install_streamdeck_plugin()
+
+    def onReveal_(self, sender):
+        app = getattr(self, "_app", None)
+        if app is not None:
+            app._reveal_streamdeck_plugin()
+
+    def onLaunchers_(self, sender):
+        app = getattr(self, "_app", None)
+        if app is not None:
+            app._generate_streamdeck_launchers()
 
 
 class _UnifiedSettingsTarget(AppKit.NSObject):

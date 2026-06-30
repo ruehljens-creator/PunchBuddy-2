@@ -54,6 +54,7 @@ arch -x86_64 "$PYTHON_X86_64" -m PyInstaller \
   --add-data="$SCRIPT_DIR/PunchBuddy.png:." \
   --add-data="$SCRIPT_DIR/PunchBuddy_Anleitung.html:." \
   --add-data="$SCRIPT_DIR/PunchBuddy_Technische_Doku.html:." \
+  --add-data="$SCRIPT_DIR/streamdeck/plugin/com.punchbuddy.control.streamDeckPlugin:streamdeck" \
   --add-binary="$LIBUSB:." \
   --hidden-import=Foundation \
   --hidden-import=AppKit \
