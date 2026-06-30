@@ -54,12 +54,19 @@ Stream-Deck-Last am Studiorechner getestet werden. Erwartung: keine
 CLOSE_WAIT-Anhäufung. Mit der erweiterten Diagnose (Sektionen 10–16)
 gegenprüfen.
 
-## 6. Stream-Deck-Plugin im echten Stream Deck testen
-Das Node-Plugin (`streamdeck/plugin/`) wurde nur gegen den echten Socket
-end-to-end verifiziert, **nicht** im echten Stream Deck geladen. Am Zielrechner
-prüfen: Plugin installiert sich, Aktion erscheint, Manifest/Icons/Node-Runtime
-(Stream Deck ≥ 6.5) ok, Tastendruck zeigt ✓. Fallback ohne jegliche Installation:
-`.app`-Launcher via `make_launchers.command` + SD-Aktion „System → Öffnen".
+## 6. Stream-Deck-Plugin im echten Stream Deck testen — ✅ ERLEDIGT (2026-06-30)
+Live verifiziert am Studiorechner mit **Stream Deck 7.5.0** und angeschlossener
+15-Tasten-Hardware:
+- Plugin lädt & verbindet sich (SD-Log: `[com.punchbuddy.control] Plugin connected`),
+  läuft mit SD-eigenem **Node 20.20.0**.
+- Physischer Tastendruck → Plugin → Unix-Socket: empfangen als
+  `Socket-Befehl: 'play_custom' → (True, 'play_custom queued')` (23:21:08),
+  komplett netzwerkfrei. Taste zeigt ✓.
+- Fallback `.app`-Launcher (23 Stück) ebenfalls erzeugt/installiert
+  (`~/Applications/PunchBuddy Launchers/`).
+Hinweis: Getestet gegen einen temporären Socket-Stub (keine PT-Interaktion). Für
+den Produktiv-Einsatz die neue App (DMG mit Socket-Code) installieren – dann
+bedient derselbe Tastendruck das echte PunchBuddy.
 
 ## 7. Unix-Socket-Pfad-Länge (macOS-Limit)
 `AF_UNIX` erlaubt unter macOS max. 104 Zeichen. Default `/tmp/punchbuddy.sock`
