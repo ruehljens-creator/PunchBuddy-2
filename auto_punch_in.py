@@ -58,6 +58,7 @@ except Exception:
 import rumps
 import http.server
 import socketserver
+import socket
 
 # ─────────────────────────────────────────────────────────────────────────────
 # pyobjc (für AppleScript Pre-Roll-Erkennung)
@@ -293,6 +294,28 @@ def _get_network_interfaces():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Zentrale Befehls-API
+# ─────────────────────────────────────────────────────────────────────────────
+# Standard-Pfad des netzwerkfreien Unix-Domain-Sockets.
+DEFAULT_UNIX_SOCKET = "/tmp/punchbuddy.sock"
+
+# Alias-Namen → kanonischer Befehl. Erlaubt kurze/alternative Schreibweisen
+# und Rückwärtskompatibilität zu den bisherigen HTTP-Pfaden.
+_COMMAND_ALIASES = {
+    "trigger":  "record_a",
+    "trigger2": "record_b",
+    "a":        "record_a",
+    "b":        "record_b",
+    "rec_a":    "record_a",
+    "rec_b":    "record_b",
+    "start":    "goto_start",
+    "goto":     "goto_start",
+    "move":     "move_audio",
+    "export_aaf_embedded": "export_aaf",
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Menüleisten-App
 # ─────────────────────────────────────────────────────────────────────────────
 class PunchBuddyApp(rumps.App):
@@ -392,7 +415,11 @@ class PunchBuddyApp(rumps.App):
         self.menu.add(self.quit_item)
 
 
+        # Befehlstabelle einmalig im Main-Thread vorbauen, BEVOR Transporte
+        # lauschen – so kann kein Server-Thread sie nebenläufig doppelt bauen.
+        self._command_table()
         self._start_http()
+        self._start_unix_socket()
         self._start_keepalive()
         self._start_vocaster()
 
@@ -487,39 +514,49 @@ class PunchBuddyApp(rumps.App):
             allow_reuse_address = True
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def _fire(self, fn):
-                """Antwortet sofort mit 200 OK und führt fn in eigenem Thread aus."""
-                self.send_response(200)
-                self.send_header("Content-type", "text/plain")
+            # Socket-Timeout gegen langsame/hängende Clients (Slowloris): die
+            # Verbindung wird nach 30 s abgebrochen, statt einen Thread ewig zu
+            # blockieren (StreamRequestHandler wertet diese Klassenvariable aus).
+            timeout = 30
+
+            # HTTP-Pfad → Befehlsname der zentralen API. Alle hier gelisteten
+            # Endpunkte verhalten sich byte-genau wie bisher (200 OK + "OK",
+            # Aktion wird gequeued), laufen aber jetzt über command_dispatch().
+            _PATH_CMD = {
+                "/trigger": "record_a", "/trigger2": "record_b",
+                "/import": "import",
+                "/export_wav": "export_wav",
+                "/export_aaf": "export_aaf", "/export_aaf_embedded": "export_aaf",
+                "/export_aaf_reference": "export_aaf_reference",
+                "/export_interplay": "export_interplay",
+                "/play": "play", "/play_custom": "play_custom",
+                "/start": "goto_start", "/move_audio": "move_audio",
+            }
+            _VOC_CMD = {
+                "/vocaster/autogain/host":  "vocaster_autogain_host",
+                "/vocaster/autogain/guest": "vocaster_autogain_guest",
+                "/vocaster/phantom/on":     "vocaster_phantom_on",
+                "/vocaster/phantom/off":    "vocaster_phantom_off",
+            }
+
+            def _reply(self, code, text):
+                self.send_response(code)
+                self.send_header("Content-type", "text/plain; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(b"OK")
-                threading.Thread(target=fn, daemon=True).start()
+                try:
+                    self.wfile.write(text.encode("utf-8"))
+                except Exception:
+                    pass
 
             def _handle_vocaster(self, app_ref, path):
-                """Vocaster-Webtrigger: /vocaster/autogain/host|guest, /vocaster/phantom/on|off."""
-                voc = getattr(app_ref, "vocaster", None)
-                if voc is None:
-                    self.send_response(503)
-                    self.send_header("Content-type", "text/plain; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write("Kein Vocaster angeschlossen".encode("utf-8"))
-                    return
-                action = {
-                    "/vocaster/autogain/host":  lambda: voc.request_autogain(0, "Host"),
-                    "/vocaster/autogain/guest": lambda: voc.request_autogain(1, "Guest"),
-                    "/vocaster/phantom/on":     lambda: voc.set_phantom(True),
-                    "/vocaster/phantom/off":    lambda: voc.set_phantom(False),
-                }.get(path)
-                if action is None:
-                    self.send_response(404)
-                    self.end_headers()
-                    return
-                self.send_response(200)
-                self.send_header("Content-type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"OK")
-                if app_ref._debounce_ok(f"voc:{path}", interval=0.6):
-                    action()
+                """Vocaster-Webtrigger → zentrale Befehls-API."""
+                cmd = self._VOC_CMD.get(path)
+                if cmd is None:
+                    self._reply(404, "not found"); return
+                ok, msg = app_ref.command_dispatch(cmd)
+                if not ok and "no vocaster" in msg:
+                    self._reply(503, "Kein Vocaster angeschlossen"); return
+                self._reply(200 if ok else 500, "OK" if ok else msg)
 
             def _authorized(self, query):
                 """Prüft das Webtrigger-Token, falls eines konfiguriert ist.
@@ -536,63 +573,50 @@ class PunchBuddyApp(rumps.App):
                 query = parse_qs(parsed.query)
 
                 if not self._authorized(query):
-                    self.send_response(401)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"Unauthorized")
+                    self._reply(401, "Unauthorized")
                     return
 
-                if path == "/trigger":
-                    self._fire(app_ref._trigger)
-                elif path == "/trigger2":
-                    self._fire(app_ref._trigger_b)
-                elif path == "/import":
-                    self._fire(app_ref._trigger_import)
-                elif path == "/export_wav":
-                    self._fire(app_ref._trigger_export_wav)
-                elif path == "/export_aaf" or path == "/export_aaf_embedded":
-                    self._fire(app_ref._trigger_export_aaf)
-                elif path == "/export_aaf_reference":
-                    self._fire(app_ref._trigger_export_aaf_reference)
-                elif path == "/export_interplay":
-                    self._fire(app_ref._trigger_export_interplay)
-                elif path == "/play":
-                    self._fire(app_ref._trigger_play)
-                elif path == "/play_custom":
-                    self._fire(app_ref._trigger_play_custom)
-                elif path == "/start":
-                    self._fire(app_ref._trigger_start)
-                elif path == "/move_audio":
-                    self._fire(app_ref._trigger_move_audio)
+                if path in self._PATH_CMD:
+                    # Sofort 200 OK; Aktion läuft gequeued (nicht blockierend).
+                    cmd = self._PATH_CMD[path]
+                    self._reply(200, "OK")
+                    threading.Thread(target=lambda: app_ref.command_dispatch(cmd),
+                                     daemon=True).start()
+                elif path == "/commands":
+                    _, msg = app_ref.command_dispatch("list")
+                    self._reply(200, msg)
+                elif path == "/command" or path.startswith("/command/"):
+                    # /command/<name>[/<arg>]  ODER  /command?c=<name>&arg=<x>
+                    name, cargs = "", []
+                    if path.startswith("/command/"):
+                        parts = [p for p in path.split("/") if p][1:]  # nach 'command'
+                        if parts:
+                            name, cargs = parts[0], parts[1:]
+                    if not name:
+                        name = query.get("c", [""])[0] or query.get("cmd", [""])[0]
+                    if not cargs:
+                        cargs = query.get("arg", [])
+                    if not name:
+                        self._reply(400, "missing command name"); return
+                    ok, msg = app_ref.command_dispatch(name, cargs)
+                    self._reply(200 if ok else 400, msg)
                 elif path.startswith("/vocaster/"):
                     self._handle_vocaster(app_ref, path)
                 elif path.startswith("/preset/"):
                     try:
                         preset_num = int(path.split("/preset/")[1])
-                        idx = preset_num - 1
-                        if not app_ref._debounce_ok(f"preset:{preset_num}", interval=0.6):
-                            self.send_response(200)
-                            self.send_header("Content-type", "text/plain; charset=utf-8")
-                            self.end_headers()
-                            self.wfile.write(f"Preset {preset_num} entprellt".encode("utf-8"))
-                        elif app_ref.load_preset_by_index(idx):
-                            self.send_response(200)
-                            self.send_header("Content-type", "text/plain; charset=utf-8")
-                            self.end_headers()
-                            self.wfile.write(f"Preset {preset_num} geladen".encode("utf-8"))
-                        else:
-                            self.send_response(400)
-                            self.send_header("Content-type", "text/plain; charset=utf-8")
-                            self.end_headers()
-                            self.wfile.write(b"Ungueltiger Preset Index")
-                    except Exception as e:
-                        self.send_response(500)
-                        self.send_header("Content-type", "text/plain; charset=utf-8")
-                        self.end_headers()
-                        self.wfile.write(str(e).encode("utf-8"))
+                    except Exception:
+                        # Keine Roh-Exception/User-Eingabe zurückspiegeln.
+                        self._reply(400, "Ungueltiger Preset Index"); return
+                    ok, msg = app_ref.command_dispatch("preset", [preset_num])
+                    if ok and "loaded" in msg:
+                        self._reply(200, f"Preset {preset_num} geladen")
+                    elif ok and "debounced" in msg:
+                        self._reply(200, f"Preset {preset_num} entprellt")
+                    else:
+                        self._reply(400, "Ungueltiger Preset Index")
                 else:
-                    self.send_response(404)
-                    self.end_headers()
+                    self._reply(404, "not found")
 
             def log_message(self, fmt, *args):
                 pass  # kein HTTP-Logging in Konsole
@@ -661,6 +685,122 @@ class PunchBuddyApp(rumps.App):
                 pass
             self.httpd = None
         self._start_http()
+
+    # ── Unix-Domain-Socket-Steuerung (netzwerkfrei) ─────────────────────────
+    #    Bedient dieselbe zentrale Befehls-API wie der HTTP-Webtrigger, aber
+    #    komplett OHNE IP-Stack (kein TCP, kein Loopback) – damit für
+    #    Netzwerk-Filter (z. B. Microsoft Defender) prinzipiell unsichtbar.
+    #    Protokoll (zeilenbasiert, eine Verbindung = ein Befehl):
+    #        Client schreibt:  "<befehl> [arg ...]\n"   z. B. "play\n", "preset 3\n"
+    #        Server antwortet: "OK <msg>\n"  oder  "ERR <msg>\n"  und schliesst.
+    #    Test:  printf 'play' | nc -U /tmp/punchbuddy.sock
+    @objc.python_method
+    def _start_unix_socket(self):
+        if not self.settings.get("unix_socket_enabled", True):
+            logging.info("Unix-Socket-Steuerung deaktiviert (Einstellung unix_socket_enabled=false).")
+            return
+        sock_path = os.path.expanduser(
+            self.settings.get("unix_socket_path", DEFAULT_UNIX_SOCKET) or DEFAULT_UNIX_SOCKET)
+        app_ref = self
+        srv = None
+        try:
+            # Stale Socket-Datei eines vorigen Laufs entfernen.
+            if os.path.exists(sock_path):
+                os.unlink(sock_path)
+            parent = os.path.dirname(sock_path)
+            if parent and not os.path.isdir(parent):
+                os.makedirs(parent, exist_ok=True)
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(sock_path)
+            os.chmod(sock_path, 0o600)   # nur der angemeldete Benutzer darf verbinden
+            srv.listen(16)
+        except Exception as e:
+            logging.error(f"Unix-Socket konnte nicht gestartet werden ({sock_path}): {e}")
+            if srv is not None:                       # FD nicht lecken, wenn chmod/listen scheitert
+                try:
+                    srv.close()
+                except OSError:
+                    pass
+            return
+
+        self._unix_sock = srv
+        self._unix_sock_path = sock_path
+
+        def _handle_conn(conn):
+            try:
+                conn.settimeout(5.0)
+                data = b""
+                while b"\n" not in data and len(data) < 4096:
+                    chunk = conn.recv(1024)
+                    if not chunk:
+                        break
+                    data += chunk
+                if b"\n" not in data and len(data) >= 4096:
+                    # Überlange Zeile ohne Zeilenende → ablehnen, nicht still abschneiden.
+                    try:
+                        conn.sendall(b"ERR line too long\n")
+                    except OSError:
+                        pass
+                    return
+                line = data.split(b"\n", 1)[0].decode("utf-8", "replace").strip()
+                ok, msg = app_ref._dispatch_socket_line(line)
+                try:
+                    conn.sendall((("OK " if ok else "ERR ") + msg + "\n").encode("utf-8"))
+                except OSError:
+                    pass
+            except Exception as e:
+                logging.debug(f"Unix-Socket-Verbindungsfehler: {e}")
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+        def _serve():
+            while True:
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    break  # Socket wurde geschlossen (Quit) → Schleife beenden
+                threading.Thread(target=_handle_conn, args=(conn,),
+                                 daemon=True, name="UnixSockConn").start()
+
+        threading.Thread(target=_serve, daemon=True, name="UnixSocketServer").start()
+        atexit.register(self._close_unix_socket)
+        logging.info(f"Unix-Socket-Steuerung aktiv: {sock_path}")
+        logging.info(f"  Test:  printf 'play' | nc -U {sock_path}")
+        logging.info(f"  Befehle:  printf 'list' | nc -U {sock_path}")
+
+    @objc.python_method
+    def _close_unix_socket(self):
+        srv = getattr(self, "_unix_sock", None)
+        if srv is not None:
+            try:
+                srv.close()
+            except OSError:
+                pass
+            self._unix_sock = None
+        p = getattr(self, "_unix_sock_path", None)
+        if p:
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except OSError:
+                pass
+            self._unix_sock_path = None
+
+    @objc.python_method
+    def _dispatch_socket_line(self, line):
+        """Parst eine Socket-Zeile ('<befehl> [arg ...]') und ruft die zentrale
+        Befehls-API. Der lokale Socket ist über Datei-Rechte 0600 bereits auf
+        den angemeldeten Benutzer beschränkt – kein zusätzliches Token nötig.
+        Ein optionales 'token=…'-Argument wird toleriert (und ignoriert)."""
+        if not line:
+            return (False, "empty")
+        parts = line.split()
+        cmd = parts[0]
+        args = [a for a in parts[1:] if not a.startswith("token=")]
+        return self.command_dispatch(cmd, args)
 
     # ── Vocaster-Integration ────────────────────────────────────────────────
     def _start_vocaster(self):
@@ -815,6 +955,117 @@ class PunchBuddyApp(rumps.App):
                 return False
             self._last_trigger[key] = now
             return True
+
+    # ── Zentrale Befehls-API ───────────────────────────────────────────────
+    #    EIN Dispatcher für ALLE Transporte (HTTP-Webtrigger, Unix-Socket und
+    #    künftige). EIN Eintrag pro Funktion = die komplette API an einer
+    #    Stelle. Nicht blockierend: die _trigger_*-Methoden starten ihre Worker
+    #    selbst in Daemon-Threads; Preset/Vocaster sind kurze Operationen.
+    #    Der Debounce sitzt bewusst HIER (bzw. in den _trigger_*-Methoden), also
+    #    transport-unabhängig: derselbe Befehl von HTTP und Socket teilt sich
+    #    denselben Entprell-Schlüssel.
+
+    @objc.python_method
+    def _command_table(self):
+        """Baut (einmalig, gecacht) die Befehlstabelle: name → handler(args)→(ok,msg)."""
+        tbl = getattr(self, "_cmd_table_cache", None)
+        if tbl is not None:
+            return tbl
+
+        def _queue(fn, label):
+            def _h(args):
+                fn()
+                return (True, f"{label} queued")
+            return _h
+
+        tbl = {
+            "record_a":             _queue(self._trigger,                      "record_a"),
+            "record_b":             _queue(self._trigger_b,                    "record_b"),
+            "play":                 _queue(self._trigger_play,                 "play"),
+            "play_custom":          _queue(self._trigger_play_custom,          "play_custom"),
+            "goto_start":           _queue(self._trigger_start,                "goto_start"),
+            "move_audio":           _queue(self._trigger_move_audio,           "move_audio"),
+            "import":               _queue(self._trigger_import,               "import"),
+            "export_wav":           _queue(self._trigger_export_wav,           "export_wav"),
+            "export_aaf":           _queue(self._trigger_export_aaf,           "export_aaf"),
+            "export_aaf_reference": _queue(self._trigger_export_aaf_reference, "export_aaf_reference"),
+            "export_interplay":     _queue(self._trigger_export_interplay,     "export_interplay"),
+            "preset":               self._cmd_preset,
+            "vocaster_autogain_host":  lambda a: self._cmd_vocaster("autogain_host"),
+            "vocaster_autogain_guest": lambda a: self._cmd_vocaster("autogain_guest"),
+            "vocaster_phantom_on":     lambda a: self._cmd_vocaster("phantom_on"),
+            "vocaster_phantom_off":    lambda a: self._cmd_vocaster("phantom_off"),
+            "ping":   lambda a: (True, "pong"),
+            "status": self._cmd_status,
+            "list":   self._cmd_list,
+        }
+        self._cmd_table_cache = tbl
+        return tbl
+
+    @objc.python_method
+    def command_dispatch(self, command, args=None):
+        """Einziger Eintrittspunkt aller Transporte. Gibt (ok, message) zurück.
+        `command` ist ein Befehlsname (Aliase werden aufgelöst), `args` eine
+        optionale Liste von String-Argumenten (z. B. ["3"] für Preset 3)."""
+        args = list(args or [])
+        raw = (command or "").strip()
+        cmd = _COMMAND_ALIASES.get(raw.lower(), raw.lower())
+        handler = self._command_table().get(cmd)
+        if handler is None:
+            logging.info(f"Dispatch: unbekannter Befehl '{raw}'")
+            return (False, f"unknown command: {raw}")
+        try:
+            ok, msg = handler(args)
+            return (bool(ok), str(msg))
+        except Exception as e:
+            logging.exception(f"Dispatch '{cmd}' fehlgeschlagen")
+            return (False, f"error: {e}")
+
+    @objc.python_method
+    def _cmd_preset(self, args):
+        if not args:
+            return (False, "preset needs a number, e.g. 'preset 3'")
+        try:
+            n = int(str(args[0]).strip())
+        except (ValueError, TypeError):
+            return (False, f"invalid preset number: {args[0]}")
+        if not self._debounce_ok(f"preset:{n}", interval=0.6):
+            return (True, f"preset {n} debounced")
+        if self.load_preset_by_index(n - 1):
+            return (True, f"preset {n} loaded")
+        return (False, f"invalid preset index: {n}")
+
+    @objc.python_method
+    def _cmd_vocaster(self, action):
+        voc = getattr(self, "vocaster", None)
+        if voc is None:
+            return (False, "no vocaster connected")
+        if not self._debounce_ok(f"voc:{action}", interval=0.6):
+            return (True, f"vocaster {action} debounced")
+        try:
+            if action == "autogain_host":
+                voc.request_autogain(0, "Host")
+            elif action == "autogain_guest":
+                voc.request_autogain(1, "Guest")
+            elif action == "phantom_on":
+                voc.set_phantom(True)
+            elif action == "phantom_off":
+                voc.set_phantom(False)
+            else:
+                return (False, f"unknown vocaster action: {action}")
+        except Exception as e:
+            return (False, f"vocaster error: {e}")
+        return (True, f"vocaster {action} queued")
+
+    @objc.python_method
+    def _cmd_status(self, args):
+        port = getattr(self, "_http_port", self.settings.get("http_port", 8899))
+        return (True, f"ok export_running={state.export_running} "
+                      f"import_running={state.import_running} http_port={port}")
+
+    @objc.python_method
+    def _cmd_list(self, args):
+        return (True, ",".join(sorted(self._command_table().keys())))
 
     def _trigger(self):
         if not self._debounce_ok("record_a"):
@@ -1063,6 +1314,7 @@ class PunchBuddyApp(rumps.App):
     def _on_quit(self, _):
         logging.info(">>> MENU 'Beenden' <<<")
         _cleanup_watchdog()
+        self._close_unix_socket()   # Socket-Datei sofort entfernen, nicht erst via atexit
         _close_engine()
         logging.info("PunchBuddy beendet.")
         rumps.quit_application()
@@ -3559,6 +3811,11 @@ if __name__ == "__main__":
 
     def _signal_handler(signum, frame):
         logging.info(f"Signal {signum} empfangen – Engine schliessen + Watchdog beenden...")
+        try:
+            if state.app_ref is not None:
+                state.app_ref._close_unix_socket()  # Socket-Datei entfernen
+        except Exception as _se:
+            logging.warning(f"Signal-Handler: _close_unix_socket fehlgeschlagen: {_se}")
         try:
             _close_engine()  # gRPC/PTSL-Channel sauber schliessen (kein CLOSE_WAIT auf PT-Seite)
         except Exception as _ce:

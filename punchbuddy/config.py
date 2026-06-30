@@ -49,6 +49,13 @@ DEFAULT_SETTINGS = {
     "http_port": 8899,
     "http_bind_host": "127.0.0.1",
     "webtrigger_token": "",
+    # ── Unix-Domain-Socket-Steuerung (netzwerkfrei) ───────────────────────
+    # Lokaler IPC-Socket, der dieselbe Befehls-API wie der HTTP-Webtrigger
+    # bedient – komplett ohne IP-Stack (kein TCP/Loopback), daher von
+    # Netzwerk-Filtern (z. B. Microsoft Defender) prinzipiell nicht erfassbar.
+    # Datei-Rechte 0600 = nur der angemeldete Benutzer darf verbinden.
+    "unix_socket_enabled": True,
+    "unix_socket_path": "/tmp/punchbuddy.sock",
     "language": "de",
     "play_custom_ch1_track": "KH2",
     "play_custom_ch1_mute_start": True,

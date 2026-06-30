@@ -47,6 +47,51 @@ locked", Beachball.
 - Folge: überlappende, gegenläufige Transport-Befehle → PT-Degradation →
   `Cannot invoke RPC on closed channel` → Beachball, roter Punkt bleibt rot.
 
+### UPDATE 2026-06-30 (Vergleich dreier Diagnosen: 17:42 / 20:56 „mit videoengine" / 22:19 „Diagnostic3s")
+Belegter Fortschritt + verbleibendes Problem (Marker-Zählung über die drei Files):
+
+| Marker | 17:42 (alt) | 20:56 (VideoEngine) | 22:19 (neueste) |
+|---|---|---|---|
+| **Firmen-NIC `10.249.243.116`** | **116** | 5 | **0** ✅ |
+| SLnk_ / vidsat-Ports | 105 / 124 | 102 / 146 | 82 / 103 |
+| IsAcquired-false / waitingtrigger | 19 / 64 | 8 / 23 | 21 / 58 |
+| `closed channel` | 13 | 22 | 9 |
+| Doppel-Trigger (`Läuft bereits`) | 48 | 22 | 33 |
+
+**1. Firmen-NIC-Routing IST behoben** (Netzwerk-Einstellung am Rechner geändert):
+`10.249.243.116` taucht in 22:19 **gar nicht mehr** auf. Der Satellite-Clock-Sync
+bindet jetzt `from IP 192.168.1.110 → to IP 127.0.0.1 Port 28284` (Diagnostic3s
+Zeile 564/565) – also lokal/privat statt ins geroutete Firmennetz. Die
+**gefährliche** Hälfte (Traffic in Firmen-Firewalls/Cisco) ist weg.
+
+**2. Der Video-Engine-Satellite läuft aber WEITER** (Antwort auf „glaubt PT noch,
+es gäbe Satellite?" = **JA**):
+- Session enthält weiterhin eine **„Video 1"-Spur** (Diagnostic3s Z.80) → Video
+  Engine startet automatisch („Waiting for the Video Engine to launch…", Z.554).
+- `AvidVideoEngine … servicehint vidsat 28284 127.0.0.1` läuft als Prozess (Z.1362).
+- Satellite-Fehler bestehen weiter: `IsAcquired - false` (21×), `waitingtrigger`
+  (58×), **DAEError-Dialog** auf `192.168.1.110` (Z.572). Treten über die ganze
+  Session verteilt auf (PT-Clock 2212…2901), nicht nur beim Start.
+→ **Voll-Aus nur durch:** „Video 1"-Spur aus der Session entfernen **und** Avid
+  Video Engine im Playback Engine deaktivieren. Wird Video gebraucht: Satellite-
+  Interface auf **reines 127.0.0.1** zwingen (nicht 192.168.1.110).
+
+**3. Die Trägheit/`closed channel` ist davon UNABHÄNGIG und im installierten
+(alten) Build weiterhin live reproduziert** – Diagnostic3s zeigt die komplette
+Fehlerkette:
+- `20:54:50` **5× „TRIGGER PLAY CUSTOM" in derselben Sekunde** (Stream-Deck-Salve).
+- `20:55:58` **3× „TRIGGER A"** + „Läuft bereits – ignoriert".
+- direkt danach `20:56:14 [WaitStop] gRPC-Deadline (8.0s) überschritten` →
+  **9× `Cannot invoke RPC on closed channel`** (20:56:15–19) →
+  `PTSL Verbindung fehlgeschlagen: _InactiveRpcError`.
+- Ab `21:01` nur noch **Menü**-Befehle (`>>> MENU 'Play Input'`), Einzeltakt,
+  **keine** Salven, **keine** Fehler → bestätigt erneut Menü = sauber,
+  Stream-Deck-Burst = Bruch.
+→ Genau das adressieren die noch **nicht ausgerollten** Fixes (Commit `294f531`:
+  Debounce + Export-Serialisierung + Zombie-Reset) **und** der neue netzwerkfreie
+  Unix-Socket (kein HTTP-Doppel-Request-Verstärker). **DMG ausrollen behebt diese
+  Hälfte.**
+
 ### Was AUSGESCHLOSSEN wurde (mit Beleg)
 - **PunchBuddy/HTTP nicht die Ursache:** curl auf `127.0.0.1:8899` und
   `localhost:8899` < 2 ms; Befehle werden bei Ankunft sofort verarbeitet.
@@ -104,3 +149,23 @@ Die `ps`-Sektion war auf Pro-Tools-Prozesse gefiltert → Defender/Stream Deck/
 Netzwerk tauchten nicht auf. Mit der Erweiterung (Sektionen 10–16) werden jetzt
 Netzwerk/Service-Order, Satellite-Ports, Defender-Status, System-Extensions,
 Firewall, Stream-Deck-Logs und die volle Top-CPU-Prozessliste erfasst.
+
+## 5. Steuer-Architektur: ein Dispatcher, mehrere Transporte (2026-06-30)
+PunchBuddy hatte schon immer eine **API-Schicht** – die HTTP-Webtrigger-
+Endpunkte. „API" = *was* aufrufbar ist (Befehle) + *wie* der Aufruf reinkommt
+(Transport). Die Netzwerk-Frage betrifft nur den **Transport**, nicht die API.
+
+- **Eine zentrale Befehlstabelle** (`command_dispatch`/`_command_table` in
+  `auto_punch_in.py`) ist jetzt der einzige Eintrittspunkt; **alle** Transporte
+  rufen sie auf. EIN Eintrag pro Funktion.
+- **Transporte:** HTTP-Webtrigger (Loopback) **und** neu der **Unix-Domain-
+  Socket** (`/tmp/punchbuddy.sock`, 0600) – **ohne IP-Stack**, daher von
+  Netzwerk-Filtern (Defender) prinzipiell nicht erfassbar. Beide teilen sich
+  Debounce und Export-Serialisierung, weil sie durch denselben Dispatcher/
+  dieselben `_trigger_*` laufen.
+- **Wichtig (Einordnung):** Der netzwerkfreie Transport ist die saubere Antwort
+  auf „Defender nicht entfernbar / direkterer Weg vom Stream Deck", **nicht** auf
+  die Trägheit. Die Trägheit sitzt PT-seitig (Video-Engine-Satellite über die
+  Firmen-NIC, §1). HTTP-Loopback war nie der Flaschenhals.
+- Stream-Deck-Anbindung netzwerkfrei: `.app`-Launcher (`nc -U`) ODER natives
+  Node-Plugin (`net` → Socket). Siehe `streamdeck/`.

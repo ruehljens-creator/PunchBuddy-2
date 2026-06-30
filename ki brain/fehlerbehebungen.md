@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-06-30 — Zentrale Befehls-API + netzwerkfreie Steuerung (Unix-Socket) + Stream-Deck-Plugins
+
+Auslöser: Microsoft Defender lässt sich am Studiorechner nicht entfernen; der
+Wunsch war ein **direkterer, netzwerkfreier** Weg, PunchBuddy vom Stream Deck zu
+steuern. Wichtig (siehe [erkenntnisse.md](erkenntnisse.md) §1): Der HTTP-Loopback
+war **nie** die Ursache der Trägheit (Defender filtert Loopback nicht; curl < 2 ms).
+Diese Änderung ist **Architektur-Härtung**, kein Trägheits-Fix – sie nimmt
+HTTP/Netzwerk vollständig aus dem Trigger-Pfad.
+
+### Fix G — Zentrale Befehls-API (ein Dispatcher für ALLE Transporte)
+- `auto_punch_in.py`: neue Methode `command_dispatch(command, args)` → `(ok, msg)`,
+  gespeist aus `_command_table()` (EIN Eintrag pro Funktion: record_a/b, play,
+  play_custom, goto_start, move_audio, import, alle Exporte, preset, vocaster_*,
+  ping/status/list). Aliase via `_COMMAND_ALIASES`.
+- Debounce sitzt transport-unabhängig: Trigger-Debounce in den `_trigger_*`,
+  Preset/Vocaster-Debounce im Dispatcher (`_cmd_preset`/`_cmd_vocaster`).
+- **HTTP-Handler komplett auf den Dispatcher umgestellt** (Pfad→Befehl via
+  `_PATH_CMD`/`_VOC_CMD`, neuer `_reply`-Helfer). Alle bisherigen Endpunkte
+  byte-genau kompatibel; zusätzlich generisch `/command/<name>` und `/commands`.
+
+### Fix H — Netzwerkfreier Unix-Domain-Socket
+- `auto_punch_in.py`: `_start_unix_socket()` bindet `AF_UNIX`/`SOCK_STREAM` auf
+  `/tmp/punchbuddy.sock`, **Datei-Rechte 0600** (nur angemeldeter Benutzer),
+  threaded `accept()`-Schleife, je Verbindung kurzlebiger Daemon-Thread mit
+  `recv`-Timeout (5 s), Antwort `OK …`/`ERR …`, Verbindung immer im `finally`
+  geschlossen. Zeilenprotokoll: `_dispatch_socket_line()` parst `"<cmd> [arg]"`,
+  toleriert/ignoriert `token=…`. **Kein IP-Stack** → für Netzwerk-Filter
+  (Defender) prinzipiell unsichtbar.
+- Sauberes Schliessen: `_close_unix_socket()` (idempotent) schliesst den Socket
+  und entfernt die Datei; `atexit.register` + Stale-Socket-`unlink` beim Start.
+  `unix_socket_enabled` / `unix_socket_path` in `config.py`.
+
+### Fix I — Stream-Deck-Anbindung (zwei Wege, beide netzwerkfrei)
+- `streamdeck/make_launchers.command`: erzeugt pro Befehl ein winziges `.app`,
+  das via `nc -U` den Socket bedient (eingebaute SD-Aktion „System → Öffnen").
+  Plus `punchbuddy-send` CLI.
+- `streamdeck/plugin/`: natives Node-Stream-Deck-Plugin (eine Aktion, Befehl per
+  Dropdown), spricht den Socket über Node `net` an. Gebündelt via esbuild
+  (`ws` eingebündelt), gepackt als `.streamDeckPlugin`.
+
+Verifikation: 40/40 Tests grün (21 neue: Dispatcher-Aliase/Parsing/Preset/
+Vocaster, Socket-Roundtrip inkl. 0600-Rechte + sauberes Entfernen). Live getestet:
+`nc -U`-Roundtrip (~8 ms), Launcher-`.app` feuert, **gebündeltes Plugin
+end-to-end** gegen den echten Socket (Register → keyDown → Socket-Write → OK →
+showOk). Offen: Laden im echten Stream Deck am Zielrechner (Manifest/Icons/
+Node-Runtime) noch gegenzuprüfen.
+
+---
+
 ## 2026-06-30 — Robustheit gegen schnelle Befehle + Zombie-PTSL-Verbindungen
 
 Auslöser: Stream-Deck-Befehle (schnell/doppelt gefeuert) überfuhren Pro Tools →

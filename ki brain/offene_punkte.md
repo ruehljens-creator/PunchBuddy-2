@@ -53,3 +53,16 @@ Stream-Deck-Last am Studiorechner getestet werden. Erwartung: keine
 überlappenden Trigger mehr im Log, kein dauerhaft roter Punkt, keine
 CLOSE_WAIT-Anhäufung. Mit der erweiterten Diagnose (Sektionen 10–16)
 gegenprüfen.
+
+## 6. Stream-Deck-Plugin im echten Stream Deck testen
+Das Node-Plugin (`streamdeck/plugin/`) wurde nur gegen den echten Socket
+end-to-end verifiziert, **nicht** im echten Stream Deck geladen. Am Zielrechner
+prüfen: Plugin installiert sich, Aktion erscheint, Manifest/Icons/Node-Runtime
+(Stream Deck ≥ 6.5) ok, Tastendruck zeigt ✓. Fallback ohne jegliche Installation:
+`.app`-Launcher via `make_launchers.command` + SD-Aktion „System → Öffnen".
+
+## 7. Unix-Socket-Pfad-Länge (macOS-Limit)
+`AF_UNIX` erlaubt unter macOS max. 104 Zeichen. Default `/tmp/punchbuddy.sock`
+ist unkritisch; ein vom Nutzer gesetzter sehr langer `unix_socket_path` scheitert
+(wird sauber geloggt, kein Crash). Bei Bedarf in der Einstellungs-Validierung
+abfangen.
