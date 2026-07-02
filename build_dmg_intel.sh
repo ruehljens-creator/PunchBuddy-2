@@ -42,6 +42,13 @@ rm -rf /tmp/build_intel /tmp/dist_intel
 # 1. PunchBuddy (x86_64) – mit gebündelter libusb
 # ─────────────────────────────────────────────────────────────────────────────
 echo "=== PyInstaller (x86_64): PunchBuddy ==="
+# Alle Doku-HTMLs inkl. Sprachvarianten einsammeln (PunchBuddy_Anleitung*.html,
+# PunchBuddy_Technische_Doku*.html) – so werden neue Sprachen automatisch gebündelt.
+DOC_DATA=()
+for f in "$SCRIPT_DIR"/PunchBuddy_Anleitung*.html "$SCRIPT_DIR"/PunchBuddy_Technische_Doku*.html; do
+  [ -f "$f" ] && DOC_DATA+=( --add-data="$f:." )
+done
+echo "  Gebündelte Doku-Dateien: ${#DOC_DATA[@]}"
 arch -x86_64 "$PYTHON_X86_64" -m PyInstaller \
   --name="PunchBuddy" \
   --windowed \
@@ -52,8 +59,7 @@ arch -x86_64 "$PYTHON_X86_64" -m PyInstaller \
   --target-arch=x86_64 \
   --icon="$SCRIPT_DIR/PunchBuddy.icns" \
   --add-data="$SCRIPT_DIR/PunchBuddy.png:." \
-  --add-data="$SCRIPT_DIR/PunchBuddy_Anleitung.html:." \
-  --add-data="$SCRIPT_DIR/PunchBuddy_Technische_Doku.html:." \
+  "${DOC_DATA[@]}" \
   --add-data="$SCRIPT_DIR/streamdeck/plugin/com.punchbuddy.control.streamDeckPlugin:streamdeck" \
   --add-binary="$LIBUSB:." \
   --hidden-import=Foundation \
@@ -111,8 +117,8 @@ cp -r /tmp/dist_intel/PunchBuddy_Diagnose.app  "$DMG_STAGE/"
 cp -r /tmp/dist_intel/PunchBuddy_Watchdog.app  "$DMG_STAGE/"
 cp    "$SCRIPT_DIR/PunchBuddy_Setup.command"   "$DMG_STAGE/"
 chmod +x "$DMG_STAGE/PunchBuddy_Setup.command"
-[ -f "$SCRIPT_DIR/PunchBuddy_Anleitung.html" ]     && cp "$SCRIPT_DIR/PunchBuddy_Anleitung.html"     "$DMG_STAGE/"
-[ -f "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" ] && cp "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" "$DMG_STAGE/"
+cp "$SCRIPT_DIR"/PunchBuddy_Anleitung*.html       "$DMG_STAGE/" 2>/dev/null || true
+cp "$SCRIPT_DIR"/PunchBuddy_Technische_Doku*.html "$DMG_STAGE/" 2>/dev/null || true
 
 # ── 4. DMG erstellen ─────────────────────────────────────────────────────────
 echo "=== DMG erstellen ==="

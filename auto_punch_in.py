@@ -1626,6 +1626,19 @@ class PunchBuddyApp(rumps.App):
                 return p
         return None
 
+    @objc.python_method
+    def _localized_doc(self, base):
+        """Sucht die zur eingestellten Sprache passende Doku-Variante
+        (z. B. 'PunchBuddy_Anleitung_en.html'); fällt auf die deutsche
+        Basisdatei ('PunchBuddy_Anleitung.html') zurück, falls es keine
+        Übersetzung gibt."""
+        lang = (self.settings.get("language", "de") or "de")
+        if lang != "de":
+            p = self._doc_path(f"{base}_{lang}.html")
+            if p:
+                return p
+        return self._doc_path(f"{base}.html")
+
     # ── Stream-Deck-Assets (mitgeliefert) ───────────────────────────────────
     @objc.python_method
     def _streamdeck_plugin_path(self):
@@ -1685,7 +1698,7 @@ class PunchBuddyApp(rumps.App):
 
     def _on_help_manual(self, _):
         import subprocess as _sp
-        _doc = self._doc_path("PunchBuddy_Anleitung.html")
+        _doc = self._localized_doc("PunchBuddy_Anleitung")
         if _doc:
             try:
                 _sp.Popen(["open", _doc]); return
@@ -1696,7 +1709,7 @@ class PunchBuddyApp(rumps.App):
 
     def _on_help_docs(self, _):
         import subprocess as _sp
-        _doc = self._doc_path("PunchBuddy_Technische_Doku.html")
+        _doc = self._localized_doc("PunchBuddy_Technische_Doku")
         if _doc:
             try:
                 _sp.Popen(["open", _doc]); return
@@ -2433,20 +2446,19 @@ class PunchBuddyApp(rumps.App):
         # Tabs hinzufuegen
         # ── TAB 6: MONITORING ────────────────────────────────────────────
         tab6 = NSTabViewItem.alloc().initWithIdentifier_("Monitoring")
-        tab6.setLabel_("Monitoring")
+        tab6.setLabel_(t("tab_monitoring"))
         t6_view = NSView.alloc().initWithFrame_(tab_view.contentRect())
         tab6.setView_(t6_view)
 
         t6_y = t6_view.frame().size.height - 20
 
-        lbl_mon_hdr = NSTextField.labelWithString_("Play Custom – Mute-Zustände")
+        lbl_mon_hdr = NSTextField.labelWithString_(t("mon_hdr"))
         lbl_mon_hdr.setFrame_(NSMakeRect(PAD, t6_y, 400, 20))
         lbl_mon_hdr.setFont_(NSFont.boldSystemFontOfSize_(13))
         t6_view.addSubview_(lbl_mon_hdr)
 
         t6_y -= 20
-        lbl_mon_desc = NSTextField.labelWithString_(
-            "Definiert welche Spuren beim Play Custom gemutet oder entmutet werden.")
+        lbl_mon_desc = NSTextField.labelWithString_(t("mon_desc"))
         lbl_mon_desc.setFrame_(NSMakeRect(PAD, t6_y, WIN_W - PAD * 2 - 40, 18))
         lbl_mon_desc.setFont_(NSFont.systemFontOfSize_(11))
         lbl_mon_desc.setTextColor_(NSColor.secondaryLabelColor())
@@ -2455,7 +2467,7 @@ class PunchBuddyApp(rumps.App):
         t6_y -= 30
 
         # Spalten-Header
-        for txt, x, w in [("Spur", PAD, 180), ("Mute bei Play-Start", PAD + 190, 140), ("Mute bei Stop", PAD + 340, 120)]:
+        for txt, x, w in [(t("mon_col_track"), PAD, 180), (t("mon_col_mute_start"), PAD + 190, 140), (t("mon_col_mute_stop"), PAD + 340, 120)]:
             h = NSTextField.labelWithString_(txt)
             h.setFrame_(NSMakeRect(x, t6_y, w, 18))
             h.setFont_(NSFont.boldSystemFontOfSize_(11))
@@ -2465,7 +2477,7 @@ class PunchBuddyApp(rumps.App):
 
         for ch_idx in range(1, 3):
             t6_y -= 35
-            lbl_ch = NSTextField.labelWithString_(f"Kanal {ch_idx}:")
+            lbl_ch = NSTextField.labelWithString_(f"{t('mon_channel')} {ch_idx}:")
             lbl_ch.setFrame_(NSMakeRect(PAD, t6_y + 3, 55, 18))
             t6_view.addSubview_(lbl_ch)
 
