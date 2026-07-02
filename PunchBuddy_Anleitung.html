@@ -397,16 +397,23 @@
           </svg>
           <span class="btn-label">Export</span>
         </button>
-        <button class="btn inactive" id="btn-e1">
-          <span class="btn-label"></span>
+        <button class="btn" id="btn-copy" onclick="sdClick('copy')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="11" height="11" rx="2"/>
+            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+          </svg>
+          <span class="btn-label">Copy</span>
         </button>
       </div>
 
       <!-- Row 2 -->
       <div class="deck-row">
-        <button class="btn inactive" id="btn-e2">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="1"/></svg>
-          <span class="btn-label"></span>
+        <button class="btn" id="btn-interplay" onclick="sdClick('interplay')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="12" height="9" rx="1.5"/>
+            <rect x="9" y="10" width="12" height="10" rx="1.5"/>
+          </svg>
+          <span class="btn-label">Interplay</span>
         </button>
         <button class="btn inactive">
           <span class="btn-label"></span>
@@ -422,8 +429,12 @@
         <button class="btn inactive">
           <span class="btn-label"></span>
         </button>
-        <button class="btn inactive">
-          <span class="btn-label"></span>
+        <button class="btn" id="btn-paste" onclick="sdClick('paste')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 4h2a2 2 0 012 2v13a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/>
+            <rect x="8" y="2.5" width="8" height="4" rx="1"/>
+          </svg>
+          <span class="btn-label">Paste</span>
         </button>
       </div>
 
@@ -443,7 +454,7 @@
             <path d="M17 19.5v-15"/>
             <path d="M13.5 16L17 19.5 20.5 16"/>
           </svg>
-          <span class="btn-label">Verschieben</span>
+          <span class="btn-label">1+2 → 3+4</span>
         </button>
         <button class="btn" id="btn-rerecord" onclick="sdClick('rerecord')">
           <svg viewBox="0 0 24 24">
@@ -557,6 +568,11 @@ const sdData = {
     title: 'Import',
     text: 'Startet den automatischen Import einer Sequence aus Avid Interplay Access. Stelle sicher, dass Interplay Access geöffnet und die gewünschte Sequence ausgewählt ist. PunchBuddy erledigt den Rest.<br><br>⚠️ Falls in Pro Tools noch eine andere Session geöffnet ist, speichert PunchBuddy diese automatisch und schließt sie, bevor die neue Sequence importiert wird.'
   },
+  interplay: {
+    tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',
+    title: 'Interplay',
+    text: 'Holt Avid Interplay Access — das Fenster, in dem du deinen Beitrag findest — in den Vordergrund.'
+  },
   pegeln: {
     tag: 'main', tagLabel: 'Schritt 2 – Haupt-Workflow',
     title: 'Pegeln (Auto Gain)',
@@ -572,6 +588,16 @@ const sdData = {
     title: 'Export',
     text: 'Startet den vollautomatischen Interplay-Export. PunchBuddy trimmt alle Spuren, konsolidiert das Audio, normalisiert die Lautheit auf Sendepegel (EBU R128) und liefert das Ergebnis direkt in Avid Interplay NEXIS ab.<br><br>⚠️ Bitte während des Exports nicht das Fenster wechseln, da hier automatische Mausklicks und Tastatureingaben erfolgen. Ein manueller Fensterwechsel führt dazu, dass diese Eingaben an das falsche Programm gesendet werden. Oben rechts den Fortschrittsbalken beachten.'
   },
+  copy: {
+    tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',
+    title: 'Copy',
+    text: 'Einfache Kopier-Funktion auf macOS-Ebene. Da nicht jeder Nutzer mit macOS vertraut ist, gibt es hier eine bequeme Möglichkeit — ganz ohne Tastatur — den Beitrag in Interplay an eine andere Stelle zu kopieren.'
+  },
+  paste: {
+    tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',
+    title: 'Paste',
+    text: 'Das Gegenstück zu Copy: die Einfügen-Funktion auf macOS-Ebene. Hilft ebenfalls, den Beitrag in Interplay an einer anderen Stelle einzufügen.'
+  },
   playstop: {
     tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',
     title: 'Play / Stop',
@@ -584,8 +610,8 @@ const sdData = {
   },
   move: {
     tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',
-    title: 'Audio verschieben',
-    text: 'Ermöglicht es Atmo von den Spuren A1 und A2 auf die Spuren A3 und A4 zu verschieben.<br>Auf Spur A1, A2 dürfen nur O-Töne liegen.'
+    title: '1+2 → 3+4',
+    text: 'Verschiebt den gesamten Ton von Spur 1 und 2 auf Spur 3 und 4. Nur nötig, wenn auf Spur 1 und 2 O-Töne oder Hintergrundsprache liegen, die als Atmo behandelt werden sollen.'
   },
   rerecord: {
     tag: 'extra', tagLabel: 'Zusatztaste – bei Bedarf',

@@ -1685,10 +1685,7 @@ class PunchBuddyApp(rumps.App):
 
     def _on_help_manual(self, _):
         import subprocess as _sp
-        # Zuerst HTML-Anleitung probieren, danach MD-Fallback
         _doc = self._doc_path("PunchBuddy_Anleitung.html")
-        if not _doc:
-            _doc = self._doc_path("BEDIENUNGSANLEITUNG.md")
         if _doc:
             try:
                 _sp.Popen(["open", _doc]); return
@@ -1699,10 +1696,7 @@ class PunchBuddyApp(rumps.App):
 
     def _on_help_docs(self, _):
         import subprocess as _sp
-        # Zuerst die moderne HTML-Doku, danach MD-Fallback
         _doc = self._doc_path("PunchBuddy_Technische_Doku.html")
-        if not _doc:
-            _doc = self._doc_path("TECHNISCHE_DOKUMENTATION.md")
         if _doc:
             try:
                 _sp.Popen(["open", _doc]); return

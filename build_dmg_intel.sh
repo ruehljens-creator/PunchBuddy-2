@@ -111,8 +111,6 @@ cp -r /tmp/dist_intel/PunchBuddy_Diagnose.app  "$DMG_STAGE/"
 cp -r /tmp/dist_intel/PunchBuddy_Watchdog.app  "$DMG_STAGE/"
 cp    "$SCRIPT_DIR/PunchBuddy_Setup.command"   "$DMG_STAGE/"
 chmod +x "$DMG_STAGE/PunchBuddy_Setup.command"
-[ -f "$SCRIPT_DIR/BEDIENUNGSANLEITUNG.md" ]        && cp "$SCRIPT_DIR/BEDIENUNGSANLEITUNG.md"        "$DMG_STAGE/"
-[ -f "$SCRIPT_DIR/TECHNISCHE_DOKUMENTATION.md" ]   && cp "$SCRIPT_DIR/TECHNISCHE_DOKUMENTATION.md"   "$DMG_STAGE/"
 [ -f "$SCRIPT_DIR/PunchBuddy_Anleitung.html" ]     && cp "$SCRIPT_DIR/PunchBuddy_Anleitung.html"     "$DMG_STAGE/"
 [ -f "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" ] && cp "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" "$DMG_STAGE/"
 
