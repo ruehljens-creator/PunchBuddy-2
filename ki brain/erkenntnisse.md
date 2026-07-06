@@ -136,6 +136,28 @@ Fehlerkette:
 
 ---
 
+## 1a. Beachball-Hänger 2026-07-06 15:34 — Mechanismus BELEGT (Diagnostics4, 15:41)
+**Kein Crash** (Abschnitt 7 leer, Crashpad still) — **Hänger**: PT beim Snapshot bei
+118–127 % CPU im Zustand `R` (Main-Thread spinnt). Ablauf:
+- 15:33:56 Play Custom → Transport-**Stop**; 15:34:04 PTSL-Deadline (PunchBuddy),
+  Anti-Stau-Abbruch griff korrekt. Trigger davor menschlich getaktet (keine Salven).
+- PT-Log (PT-Uhr ~277986): `CSync … eSynchronizerState_stopping` wiederholt sich
+  endlos, `SLnk_UMEMachine::Stop … 127.0.0.1 28284` (wartet auf Video-Engine-
+  Satellite), `CProToolsMachine::Stop – display error – true` 6×; danach NUR noch
+  `SLnk_Cmd_AuthenticationChallenge_DoIt()` **exakt alle 31 s, endlos** → der
+  Satellite-Link re-authentifiziert in Dauerschleife, der Stop-Handshake wird nie
+  fertig → Main-Thread spinnt → Beachball, PTSL eingefroren.
+- Satellite lauscht WEITER auf `192.168.1.110:28282` (Abschnitt 11), „Video 1"-
+  Spur weiter in der Session; `IsAcquired-false` 15×, `waitingtrigger` 57×.
+- **Verstärker 1:** PT lief seit **Fr 10:00 durchgehend** (PT-Uhr 277986 s ≈ 77 h
+  passt exakt) — tagealte Instanz.
+- **Verstärker 2:** Defender `epsext` **32–34 %** CPU (vorher 8 %), `wdavdaemon
+  privileged` 15–22 %, E1000 15 %.
+**Maßnahmen:** (1) PT täglich/je Schicht neu starten (sofort umsetzbar);
+(2) Satellite weg von 192.168.1.110 (Setup → Peripherals) — der Stop wartet auf
+GENAU diesen Link; (3) Defender-Ausnahmen (IT-Brief liegt vor).
+PunchBuddy entlastet: Schutzmechanismen griffen wie designed.
+
 ## 1b. Systemweite Trägheit (Stream-Deck-Seitenwechsel, Interplay-Fenster) — 2026-07-01
 Symptom: nicht nur Transportbefehle, sondern **systemweit** langsam — SD-Seiten-
 wechsel + Interplay-Access-Fenster „braucht ewig". Belegt aus 00:39-Diagnose
