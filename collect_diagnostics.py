@@ -265,16 +265,32 @@ else:
 
 # ── 12. MICROSOFT DEFENDER (Status + Netzwerk-Extension) ───────────────────
 # 'Deaktiviert' im UI heißt NICHT, dass die Netzwerk-Extension entladen ist.
+# WICHTIG: mdatp liegt in /usr/local/bin – das ist in der App-Umgebung NICHT im
+# PATH (deshalb waren diese Felder in früheren Reports leer) → absoluter Pfad.
 lines.append(SEP + "12. MICROSOFT DEFENDER FOR ENDPOINT – Status & Netzwerk-Extension")
+MDATP = "/usr/local/bin/mdatp"
 lines.append("--- mdatp health (Kernfelder) ---")
-lines.append(run("mdatp health --field healthy 2>/dev/null; "
-                 "mdatp health --field real_time_protection_enabled 2>/dev/null; "
-                 "mdatp health --field network_protection_status 2>/dev/null; "
-                 "mdatp health --field behavior_monitoring 2>/dev/null; "
-                 "mdatp health --field tamper_protection 2>/dev/null; "
-                 "mdatp health --field managed_by 2>/dev/null"))
+lines.append(run(f"M={MDATP}; [ -x $M ] || M=mdatp; "
+                 "for f in healthy real_time_protection_enabled passive_mode_enabled "
+                 "network_protection_status behavior_monitoring tamper_protection managed_by; do "
+                 "printf '%s: ' $f; $M health --field $f 2>/dev/null || echo '(n/a)'; done"))
+lines.append("\n--- mdatp Versionen (Produkt/Engine/Definitionen) – für Update-Vergleiche ---")
+lines.append(run(f"M={MDATP}; [ -x $M ] || M=mdatp; "
+                 "$M version 2>/dev/null; "
+                 "for f in app_version engine_version definitions_version definitions_status "
+                 "definitions_updated definitions_updated_minutes_ago product_expiration; do "
+                 "printf '%s: ' $f; $M health --field $f 2>/dev/null || echo '(n/a)'; done"))
+lines.append("\n--- Extension-Bundle-Versionen (ändern sich bei Defender-Updates) ---")
+lines.append(run("for d in /Library/SystemExtensions/*/com.microsoft.wdav.*.systemextension; do "
+                 "echo \"$d\"; plutil -p \"$d/Contents/Info.plist\" 2>/dev/null "
+                 "| grep -E 'CFBundleShortVersionString|CFBundleVersion'; done"))
+lines.append("\n--- Defender Update-/Install-Historie (Log-Auszug mit Zeitstempeln) ---")
+lines.append(run("ls -lat /Library/Logs/Microsoft/mdatp/ 2>/dev/null | head -8; "
+                 "grep -ihE 'update|definition|upgraded|installed|version' "
+                 "/Library/Logs/Microsoft/mdatp/install.log "
+                 "/Library/Logs/Microsoft/mdatp/*core*.log 2>/dev/null | tail -25"))
 lines.append("\n--- mdatp System-Extensions (network_extension_enabled/-installed) ---")
-lines.append(run("mdatp health --details system_extensions 2>/dev/null"))
+lines.append(run(f"M={MDATP}; [ -x $M ] || M=mdatp; $M health --details system_extensions 2>/dev/null"))
 lines.append("\n--- wdav/mdatp/Defender-Prozesse (CPU!) ---")
 lines.append(run("ps aux | grep -iE 'wdav|mdatp|defender' | grep -v grep"))
 lines.append("\n--- Defender-Diagnose-/Log-Ablage vorhanden? ---")

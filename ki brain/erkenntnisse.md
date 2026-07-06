@@ -277,3 +277,26 @@ keinen Download, nur das systemeigene `nc` → Socket. **Das ist der empfohlene 
 für gesperrte Studiorechner.** (Alternative mit Dropdown-UX, falls Netz-Loopback
 ok ist: ein klassisches HTML/JS-SD-Plugin gegen `http://127.0.0.1:8899` — braucht
 ebenfalls kein Node; Defender filtert Loopback nicht.)
+
+## 1c. Record-Start-Analyse + Defender-Historie (2026-07-06, Snapshot-Vergleich)
+**Record-Start PunchBuddy-seitig NICHT verschlechtert (gemessen):** Trigger→
+„Transport aktiv" über ALLE Snapshots 30.06.–06.07. konstant **1–2 s** (Median 1 s).
+Fehlstarts des alten Builds (2–4/Log am 30.06.) im neuen Build weg.
+**ABER: Jeder Start läuft durch den Satellite-Clock-Lock:** PT-Log zeigt pro Start
+`UME_LockToNetworkClock … from IP 192.168.1.110` → `eSynchronizerState_waitingtrigger`
+→ mehrfach `DoWaitingTrigger` → erst dann `play`. 57 waitingtrigger-Einträge im
+06.07.-Log. „Transport aktiv" (PTSL) ≠ „PT rollt" — die gefühlte Start-Verzögerung
+sitzt in diesem Lock, nicht im PunchBuddy-Code.
+**Export-Stop-Check (23.06.) bleibt PFLICHT** (User-Entscheid): Kollegen starteten
+Export direkt aus Record → Loudness-Korrektur am in Benutzung befindlichen
+ST-Audiofile → Session zerstört. Kein Toggle.
+**Defender-Historie:** epsext/netext-Extension-UUIDs am 01.07. und 06.07.
+IDENTISCH → kein Extension-Update in dem Fenster. KORREKTUR zur 8→34-%-Aussage:
+%CPU ist Momentanwert — die 34 % wurden WÄHREND des Hängers gemessen (spinnendes
+PT flutet epsext mit Events); kein Beleg für Regeländerung. Alte Regel-/
+Definitions-Historie nicht rekonstruierbar. **Fix:** mdatp wurde mit absolutem
+Pfad (/usr/local/bin) in collect_diagnostics.py eingebaut (war PATH-Bug → Felder
+leer) + Sektion 12 erfasst jetzt Produkt-/Engine-/Definitions-Versionen,
+Extension-Bundle-Versionen und Update-Log-Historie → ab jetzt ist „hat sich
+Defender geändert?" pro Snapshot beantwortbar. Portal-seitige Policy-Historie
+kann nur die IT ziehen.
