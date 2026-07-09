@@ -300,3 +300,52 @@ leer) + Sektion 12 erfasst jetzt Produkt-/Engine-/Definitions-Versionen,
 Extension-Bundle-Versionen und Update-Log-Historie → ab jetzt ist „hat sich
 Defender geändert?" pro Snapshot beantwortbar. Portal-seitige Policy-Historie
 kann nur die IT ziehen.
+
+## 1d. Bestätigung + neuer Beachball-Beleg (2026-07-09, Report protools_report_16-47-49 + Abend-Sample)
+Analyse via neues Diagnose-Tool (Repo MacOS-Systemanalyse-ProTools, anonymisierter
+Report, Modus OHNE Adminrechte) + Live-Samples am Abend.
+
+**§1-Fix weiterhin NICHT umgesetzt (belegt):** `40_network/pt_automation_ports.txt`:
+`Pro Tools … TCP 192.168.1.110:28282 (LISTEN)` (Satellite auf gerouteter NIC)
+**und** `Pro Tools … TCP 10.249.243.116:29292 (LISTEN)` (Firmen-NIC!).
+PT-Log 16:49 zeigt erneut `SLnk_Cmd_AuthenticationChallenge_DoIt()` — das
+31-s-Endlos-Reauth-Muster aus §1a.
+
+**Beachball ~19:16 (sample, PT 26.4.0.175, macOS 14.7.4, Mac Pro 7,1 16-Core):**
+Main Thread 1469/1469 Samples in EINEM Pfad:
+`DFW_TimerImpl::Fire → CSynchronizer::DoIdle → CProToolsMachine::DoIdle →
+PostStopProcessing → DoRecordCleanUp(Time_Sample) → TUndoRedoManager::
+ProcessCommand → URM_Command::DoIt → TPlayListCommand::Process`.
+Keine Erholung mehr (User-bestätigt) → konsistent mit §1a (Stop-Handshake gegen
+Satellite wird nie fertig; Verarbeitung läuft im selben DoIdle-Timer-Kontext).
+
+**NEU — Fokus-Korrelation (User, mehrfach reproduziert):**
+- Stream-Deck-App **frontmost** → keinerlei Probleme, PT läuft einwandfrei.
+- PT frontmost (SD hinten) → erste 5–8 Befehle ok, dann **progressiv** system-
+  weite Trägheit (auch SD-Seitenwechsel), schließlich PT-Beachball.
+- Ausgeschlossen (getestet): App Nap (systemweit aus), Chromium-Flags
+  (QTWEBENGINE_CHROMIUM_FLAGS wirkungslos), Fenster-Sichtbarkeit ohne Fokus
+  (wirkungslos), localhost/IPv6-Resolver (Trigger gehen an 127.0.0.1),
+  Proxy/PAC (keiner), USB-Link (SD mit 480 Mb/s hinter IHSE-Strecke, keine
+  Re-Enumerationen), HUI-Geist (deaktiviert, kein Effekt; Alerts nur ohne
+  Session), Laptop ohne Defender/Enterprise: identisches Setup problemlos.
+- **Hypothese (offen, prüfbar):** Satellite-Sync + Stop-Verarbeitung laufen in
+  PTs DoIdle-Timer auf dem Main Thread (Sample). PT frontmost = volle
+  Timer-Rate → Dauer-Lock-Versuche über geroutete NIC → epsext-Event-Flut →
+  systemweite Trägheit. PT im Hintergrund = Timer gedrosselt → Ruhe.
+  Test: ps-Loop auf `wdav|epsext` — CPU muss mit PT-frontmost+Befehlen steigen.
+
+**Offene Prüfpunkte:**
+1. Terminal-Isolationstest: Befehle per Unix-Socket (`nc -U /tmp/punchbuddy.sock`)
+   bei PT-frontmost im Arbeitstakt → träge/Beachball ja/nein entscheidet, ob der
+   SD→PB-Transport überhaupt beteiligt ist. (SD-Node-Plugin am Studiorechner
+   weiterhin nicht nutzbar — kein Internet, §6; eingebaute „System → Öffnen"-
+   Aktion als Alternative strittig, User berichtet Nachlade-Problem.)
+2. User-These IPv4 vs. IPv6 (Defender): nachrangig — netext sieht Loopback
+   grundsätzlich nicht (v4 wie v6, §1); durch Test 1 mit abgedeckt.
+3. Satellite-NIC-Isolierung (§1-Fix) + zweite Default-Route via 192.168.1.254
+   entfernen — wirksamster bekannter Hebel, weiterhin offen.
+4. IT/Defender-Ausnahmen (Brief liegt vor) — epsext läuft unabhängig vom
+   Echtzeitscan (§1b).
+**Betriebs-Workaround bis dahin:** SD-App bewusst im Vordergrund lassen
+(vom User verifiziert wirksam); PT je Schicht neu starten (§1a).
