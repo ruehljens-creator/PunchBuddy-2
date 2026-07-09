@@ -335,17 +335,26 @@ Satellite wird nie fertig; Verarbeitung läuft im selben DoIdle-Timer-Kontext).
   systemweite Trägheit. PT im Hintergrund = Timer gedrosselt → Ruhe.
   Test: ps-Loop auf `wdav|epsext` — CPU muss mit PT-frontmost+Befehlen steigen.
 
+**Prüfpunkt-ERGEBNIS (2026-07-09, gleicher Abend): Transport ist RAUS.**
+User hat zwei SD-Tasten auf die .app-Launcher umgestellt (eingebaute Aktion
+„System → Öffnen" → `nc -U /tmp/punchbuddy.sock`, KEIN HTTP/IP, kein Plugin;
+Record + Play/Stop) → **Beachball nach kürzester Zeit reproduziert.**
+→ Der gesamte SD→PunchBuddy-Transport (Datagram-Plugin, HTTP, IPv4, IPv6) ist
+als Ursache experimentell ausgeschlossen — inkl. der IPv4-vs.-IPv6-Defender-
+These. Es bleibt die PT-seitige Kette (§1/§1a: Satellite-Stop-Handshake auf
+gerouteter NIC, Defender/epsext als Verstärker).
+
 **Offene Prüfpunkte:**
-1. Terminal-Isolationstest: Befehle per Unix-Socket (`nc -U /tmp/punchbuddy.sock`)
-   bei PT-frontmost im Arbeitstakt → träge/Beachball ja/nein entscheidet, ob der
-   SD→PB-Transport überhaupt beteiligt ist. (SD-Node-Plugin am Studiorechner
-   weiterhin nicht nutzbar — kein Internet, §6; eingebaute „System → Öffnen"-
-   Aktion als Alternative strittig, User berichtet Nachlade-Problem.)
-2. User-These IPv4 vs. IPv6 (Defender): nachrangig — netext sieht Loopback
-   grundsätzlich nicht (v4 wie v6, §1); durch Test 1 mit abgedeckt.
-3. Satellite-NIC-Isolierung (§1-Fix) + zweite Default-Route via 192.168.1.254
+1. **Finder-Test (NEU, entscheidet Fokus-Frage):** irgendeine andere App
+   (z. B. Finder) frontmost statt der SD-App, PT hinten, Befehle über die
+   Socket-Tasten → genauso flüssig wie mit SD-App vorne? Dann ist bewiesen,
+   dass der Schalter „PT frontmost ja/nein" ist (DoIdle-Timer-Rate) und die
+   SD-App nie kausal war.
+2. Satellite-NIC-Isolierung (§1-Fix) + zweite Default-Route via 192.168.1.254
    entfernen — wirksamster bekannter Hebel, weiterhin offen.
+3. Beim nächsten Beachball: ZWEI samples im Abstand ~1 min (identische Stacks =
+   Endlosschleifen-Beweis) → vollständiger Avid-Bug-Report (PT 26.4).
 4. IT/Defender-Ausnahmen (Brief liegt vor) — epsext läuft unabhängig vom
    Echtzeitscan (§1b).
-**Betriebs-Workaround bis dahin:** SD-App bewusst im Vordergrund lassen
-(vom User verifiziert wirksam); PT je Schicht neu starten (§1a).
+**Betriebs-Workaround bis dahin:** PT nicht frontmost lassen, wenn nicht nötig
+(SD-App vorne verifiziert wirksam); PT je Schicht neu starten (§1a).
