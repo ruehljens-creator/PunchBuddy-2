@@ -346,6 +346,138 @@ lines.append(run("ps aux | sort -nrk 3 | head -20"))
 lines.append("\n--- Sicherheits-/Netzwerk-Dritt-Software (Defender/Cisco/Umbrella/VPN/Filter) ---")
 lines.append(run("ps aux | grep -iE 'wdav|mdatp|defender|cisco|umbrella|anyconnect|crowdstrike|sentinel|netskope|zscaler|little snitch|lulu' | grep -v grep | head -20"))
 
+# ── 17. LATENZ-SELBSTTEST (Haken-/Verzögerungs-Diagnose, 2026-07-21) ───────
+# Misst die drei Etappen des Stream-Deck-Wegs getrennt:
+#   Taste → HTTP-Antwort (17a, Weg des Web-Requests-Plugins/Haken),
+#   Taste → Socket-Antwort (17b, Weg der .app-Launcher),
+#   PunchBuddy → Pro Tools (17c, PTSL – bekannt bimodal 10ms/300-1400ms).
+# Dazu Proxy-Konfig (17d), Auswertung der neuen ms-Logzeilen (17e) und
+# Web-Requests-Plugin-Status (17f).
+lines.append(SEP + "17. LATENZ-SELBSTTEST – Webtrigger / Socket / PTSL / Proxy")
+
+import time as _time
+import socket as _socket
+import urllib.request as _urlreq
+
+# 17a) HTTP-Loopback – exakt der Weg des Web-Requests-Plugins (grüner Haken)
+lines.append("--- 17a. HTTP-Webtrigger http://127.0.0.1:8899/command/ping (10x, ms) ---")
+_http_times = []
+for _i in range(10):
+    _t0 = _time.time()
+    try:
+        with _urlreq.urlopen("http://127.0.0.1:8899/command/ping", timeout=5) as _r:
+            _body = _r.read(64).decode("utf-8", "replace").strip()
+        _dt = (_time.time() - _t0) * 1000
+        _http_times.append(_dt)
+        lines.append(f"  {_i+1:2d}: {_dt:7.1f} ms  -> {_body}")
+    except Exception as _e:
+        lines.append(f"  {_i+1:2d}: FEHLER: {_e}")
+        break
+    _time.sleep(0.2)
+if _http_times:
+    _s = sorted(_http_times)
+    lines.append(f"  => min={_s[0]:.1f}  median={_s[len(_s)//2]:.1f}  max={_s[-1]:.1f} ms")
+    lines.append("  Bewertung: einstellige ms = Server ok. Braucht der HAKEN am Stream Deck")
+    lines.append("  trotzdem Sekunden, sitzt die Bremse in der Stream-Deck-App (Chromium/Plugin).")
+else:
+    lines.append("  [PunchBuddy-HTTP nicht erreichbar – läuft PunchBuddy gerade?]")
+
+# 17b) Unix-Socket – der Weg der .app-Launcher
+lines.append("\n--- 17b. Unix-Socket /tmp/punchbuddy.sock (5x ping, ms) ---")
+_sock_ok = False
+for _i in range(5):
+    _t0 = _time.time()
+    try:
+        _c = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        _c.settimeout(5.0)
+        _c.connect("/tmp/punchbuddy.sock")
+        _c.sendall(b"ping\n")
+        _resp = _c.recv(128).decode("utf-8", "replace").strip()
+        _c.close()
+        _dt = (_time.time() - _t0) * 1000
+        lines.append(f"  {_i+1:2d}: {_dt:7.1f} ms  -> {_resp}")
+        _sock_ok = True
+    except Exception as _e:
+        lines.append(f"  {_i+1:2d}: FEHLER: {_e}")
+        break
+    _time.sleep(0.2)
+if not _sock_ok:
+    lines.append("  [Socket nicht erreichbar – PunchBuddy aus oder Socket deaktiviert]")
+
+# 17c) PTSL-Direktmessung (nur wenn Pro Tools läuft) – bimodale Latenz messen
+lines.append("\n--- 17c. PTSL-Latenz direkt (transport_state, 10x, ms) ---")
+_pt_reachable = False
+try:
+    _probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    _probe.settimeout(0.3)
+    _pt_reachable = (_probe.connect_ex(("127.0.0.1", 31416)) == 0)
+    _probe.close()
+except Exception:
+    pass
+if not _pt_reachable:
+    lines.append("  [PTSL-Port 31416 nicht offen – Pro Tools läuft nicht / PTSL aus]")
+else:
+    try:
+        import ptsl as _ptsl
+        _t0 = _time.time()
+        _eng = _ptsl.engine.Engine(company_name="PunchBuddy", application_name="Diagnose")
+        lines.append(f"  Verbindungsaufbau: {(_time.time()-_t0)*1000:.0f} ms")
+        _pts = []
+        for _i in range(10):
+            _t0 = _time.time()
+            try:
+                _st = str(_eng.transport_state())
+            except Exception as _e:
+                _st = f"ERR {_e}"
+            _dt = (_time.time() - _t0) * 1000
+            _pts.append(_dt)
+            lines.append(f"  {_i+1:2d}: {_dt:7.1f} ms  -> {_st}")
+            if _dt > 5000:
+                lines.append("  [Abbruch: Einzel-Call > 5s – PT hängt vermutlich]")
+                break
+        try:
+            _eng.close()
+        except Exception:
+            pass
+        if _pts:
+            _fast = sum(1 for x in _pts if x < 50)
+            _slow = sum(1 for x in _pts if x > 300)
+            _s = sorted(_pts)
+            lines.append(f"  => min={_s[0]:.0f}  median={_s[len(_s)//2]:.0f}  max={_s[-1]:.0f} ms"
+                         f"  | schnell(<50ms): {_fast}  langsam(>300ms): {_slow}")
+            lines.append("  Bewertung: bimodal (~50/50 schnell/langsam) = bekanntes PT-Verhalten.")
+            lines.append("  Median deutlich >500ms / viele >1s = PT-Zustand schlecht (Uptime? Satellite?).")
+    except Exception as _e:
+        lines.append(f"  [PTSL-Messung nicht möglich: {_e}]")
+
+# 17d) Proxy-Konfiguration (Chromium/fetch des SD-Plugins respektiert System-Proxy)
+lines.append("\n--- 17d. System-Proxy (scutil --proxy) ---")
+lines.append(run("scutil --proxy"))
+
+# 17e) Auswertung der neuen ms-Loginstrumentierung
+lines.append("\n--- 17e. PunchBuddy-Log: langsame PTSL-Calls / Schutzfenster / Lock-Stau ---")
+_pb_log = os.path.expanduser("~/.punchbuddy/PunchBuddy.log")
+lines.append("Zähler:")
+lines.append(run(f"grep -c 'PTSL langsam' '{_pb_log}' 2>/dev/null | xargs echo '  PTSL langsam:'"))
+lines.append(run(f"grep -c 'Schutzfenster' '{_pb_log}' 2>/dev/null | xargs echo '  Schutzfenster-Verwuerfe:'"))
+lines.append(run(f"grep -c 'Lock nicht erhalten' '{_pb_log}' 2>/dev/null | xargs echo '  Lock nicht erhalten:'"))
+lines.append("Letzte relevante Zeilen (mit ms-Zeitstempeln):")
+lines.append(read_grep(_pb_log, ["PTSL langsam", "Schutzfenster", "Lock nicht erhalten",
+                                 ">>> TRIGGER"], lines=40))
+
+# 17f) Web-Requests-Plugin (Haken-Plugin) installiert?
+lines.append("\n--- 17f. Stream-Deck-Plugins (installiert) ---")
+lines.append(run("ls '" + os.path.expanduser(
+    "~/Library/Application Support/com.elgato.StreamDeck/Plugins") + "' 2>/dev/null"))
+_wr_manifest = os.path.expanduser(
+    "~/Library/Application Support/com.elgato.StreamDeck/Plugins/"
+    "gg.datagram.web-requests.sdPlugin/manifest.json")
+lines.append("Web-Requests-Plugin: " + ("installiert" if os.path.exists(_wr_manifest)
+                                        else "NICHT installiert"))
+lines.append("Hinweis Haken-Test: Taste drücken + Uhrzeit notieren, dann oben in 17e den")
+lines.append("'>>> TRIGGER'-Zeitstempel vergleichen. Lücke = Zustellweg (SD-App); keine")
+lines.append("Lücke, aber Haken spät = Antwortweg zum Plugin.")
+
 # ── Speichern ─────────────────────────────────────────────────────────────
 output = "\n".join(lines)
 with open(OUT, "w", encoding="utf-8") as f:
