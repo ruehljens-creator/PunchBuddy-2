@@ -325,6 +325,30 @@ class PunchBuddyApp(rumps.App):
         state.app_ref = self
         self.settings        = load_settings()
 
+        # ── App Nap dauerhaft verhindern ─────────────────────────────────
+        # Befund 2026-07-21 (Studio): macOS drosselt Hintergrund-Apps (App Nap)
+        # – PunchBuddy ist als Menüleisten-App fast immer „hinten" (Pro Tools
+        # vorne) und wurde dadurch bei Timer-/Netzwerkarbeit ausgebremst. Die
+        # NSProcessInfo-Activity nimmt die App selbst davon aus – ohne dass am
+        # Zielrechner `defaults write PunchBuddy NSAppSleepDisabled` nötig ist.
+        # LatencyCritical + AllowingIdleSystemSleep: kein Nap, aber der Mac
+        # darf weiterhin normal in den Ruhezustand.
+        self._no_app_nap = None
+        try:
+            from Foundation import NSProcessInfo
+            try:
+                from Foundation import (NSActivityUserInitiatedAllowingIdleSystemSleep,
+                                        NSActivityLatencyCritical)
+                _opts = (NSActivityUserInitiatedAllowingIdleSystemSleep
+                         | NSActivityLatencyCritical)
+            except ImportError:  # Fallback: numerische Apple-Konstanten
+                _opts = (0x00FFFFFF & ~(1 << 20)) | 0xFF00000000
+            self._no_app_nap = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+                _opts, "PunchBuddy Echtzeit-Steuerung (Webtrigger/PTSL)")
+            logging.info("App Nap deaktiviert (NSProcessInfo-Activity aktiv).")
+        except Exception as e:
+            logging.warning(f"App-Nap-Ausnahme konnte nicht gesetzt werden: {e}")
+
         # ── Trigger-Debounce (gegen Doppel-/Mehrfach-Trigger, z.B. Stream Deck
         #    der pro Tastendruck mehrere HTTP-Requests sendet, oder zu schnelles
         #    Hämmern). Gilt für ALLE triggerbaren Aktionen, Menü UND Webtrigger.

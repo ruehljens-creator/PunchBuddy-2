@@ -371,3 +371,23 @@ Time Machine stuendlich→taeglich. **Offen:** SD-App-Neustart + Kontrolle, dass
 neuen NodeManager-Zeilen kommen; Tastendruck vs. `>>> TRIGGER`-ms-Zeitstempel
 vergleichen; falls weiter traege → Tasten auf .app-Launcher/Unix-Socket (0,4 ms,
 umgeht SD-Netzstack komplett, kein Haken); Satellite-NIC-Entroutung weiter offen.
+
+## 10. GELÖST (2026-07-21, spät): App Nap war die Zustellbremse
+**Schlüsselbeobachtung (User):** SD-App im Vordergrund → alles „traumhaft schnell";
+Pro Tools im Vordergrund → zäh. Das ist die Signatur von **macOS App Nap +
+Chromium-Background-Throttling**: Die SD-App (und ihr QtWebEngine-Renderer mit dem
+Web-Requests-Plugin) wird als Hintergrund-App gedrosselt (Timer koalesziert,
+Netzwerk depriorisiert) – im Sendebetrieb ist PT IMMER vorne → Tastendrücke
+erreichten PunchBuddy erst Sekunden später. Erklärt Haken-Dauer, „jede Aktion
+verzögert", Lastabhängigkeit und warum curl/Terminal nie betroffen war.
+**Fix:** `defaults write com.elgato.StreamDeck NSAppSleepDisabled -bool YES`
+(+ Neustart) → Problem laut User gelöst. Zusätzlich gesetzt:
+`defaults write PunchBuddy NSAppSleepDisabled -bool YES` und
+`defaults write com.avid.ProTools NSAppSleepDisabled -bool YES` (PT wird beim
+Import-Workflow selbst „hinten" – möglicher Beitrag zur bimodalen PTSL-Latenz).
+**Code-Fix (dauerhaft):** PunchBuddy nimmt sich jetzt selbst per
+NSProcessInfo-Activity (UserInitiatedAllowingIdleSystemSleep|LatencyCritical)
+vom App Nap aus – kein defaults-Kommando am Zielrechner mehr nötig.
+Eskalationsstufe falls je wieder träge: QTWEBENGINE_CHROMIUM_FLAGS
+(--disable-background-timer-throttling …) für die SD-App bzw. Tasten auf
+.app-Launcher/Unix-Socket.
