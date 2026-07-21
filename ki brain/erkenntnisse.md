@@ -321,3 +321,31 @@ Direkte Messung mit der ROHEN ptsl-Bibliothek (ohne PunchBuddy-Code), Transport 
 - **Studio-Empfehlungen:** PT täglich/je Schicht neu starten (77-h-Uptime war Verstärker);
   Playback Engine → „Dynamic Plugin Processing" testen (senkt Idle-CPU der Plugins);
   nach dem nächsten Vorfall Log auf „PTSL langsam"-Zeilen prüfen → Beleg statt Vermutung.
+
+## 8. Stream-Deck-Haken + Toggle-Flattern — Livetest mit echter Hardware (2026-07-21)
+Teststand: MacBook mit echtem Stream Deck, Web-Requests-Plugin (gg.datagram),
+PunchBuddy aus Quellcode, PT Studio 2026.4.
+- **Quittung ist entkoppelt von PT (gemessen):** HTTP-Trigger antworten in ~1 ms
+  („200 OK", Aktion gequeued), Unix-Socket in 0,4–1,0 ms („OK … queued") — beides
+  VOR jedem PTSL-Call. Der gruene Haken des Web-Requests-Plugins erscheint erst
+  bei der fetch-Antwort (kein Timeout im Plugin!) → Haken-Dauer misst die
+  HTTP-Antwortzeit. Lokal: Haken sofort, ~1,5 s Auto-Ausblenden.
+  → 4–10 s stehender Haken im Studio = Zustellweg dort (Verdacht: Chromium-fetch
+  respektiert System-Proxy/PAC → 127.0.0.1/localhost in Proxy-Ausnahmen eintragen!).
+- **Toggle-Flattern live belegt:** 400-ms-Debounce faengt ~500-ms-Doppeldruck
+  nicht; erster Druck nach echtem Start stoppte die Wiedergabe sofort wieder;
+  Nachdruck nach mehrsekuendigem Stop startete Play erneut (exakt das
+  Studio-Bediengefuehl „Befehl kommt nicht/verzoegert").
+  → Fix Commit 6d3f5fe: Schutzfenster Start 3 s / Stop 2 s (ab bestaetigtem Stopp).
+- **Stop-Latenz-Anteile:** PunchBuddy→PT max. ~2,8 s (2 PTSL-Calls, bimodal;
+  PTSL hat KEINEN echten Stop-Befehl, nur TogglePlayState → State-Read vorher
+  unvermeidbar). Rest = PT-interner Stop-Handshake (Satellite, studioseitig ~6 s).
+
+### Studio-Checkliste (naechster Einsatz)
+1. Neues DMG installieren (Build mit ms-Logs + „PTSL langsam"-Zeilen + Schutzfenster).
+2. Satellite-NIC entrouten: en7 manuelle IP OHNE Router-Eintrag, Service Order unten.
+3. PT je Schicht neu starten.
+4. Proxy-Check: Systemeinstellungen → Netzwerk → Proxies → falls aktiv:
+   „127.0.0.1, localhost" in die Ausnahmeliste (Web-Requests-Plugin/Chromium).
+5. Optional: Playback Engine → „Dynamic Plugin Processing" testen.
+6. Nach erstem Vorfall: Log auf „PTSL langsam"/„Schutzfenster"-Zeilen pruefen.
