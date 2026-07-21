@@ -300,3 +300,24 @@ leer) + Sektion 12 erfasst jetzt Produkt-/Engine-/Definitions-Versionen,
 Extension-Bundle-Versionen und Update-Log-Historie → ab jetzt ist „hat sich
 Defender geändert?" pro Snapshot beantwortbar. Portal-seitige Policy-Historie
 kann nur die IT ziehen.
+
+## 7. PTSL-Latenz ist bimodal und PT-seitig — Messung 2026-07-21 (MacBook, PT Studio 2026.4)
+Direkte Messung mit der ROHEN ptsl-Bibliothek (ohne PunchBuddy-Code), Transport gestoppt:
+- `transport_state()` antwortet **bimodal**: ~50 % der Calls 5–15 ms, ~50 % 300–1400 ms,
+  **nichts dazwischen**. Median ~450 ms auf großer Session, ~8 ms auf leerer Session
+  (aber weiterhin ~45 % langsame Calls). Verbindungsaufbau: 17 ms (leer) vs. 200–600 ms (groß).
+- **Video-Engine ist NICHT die Ursache dieser Latenz**: komplett deaktiviert (Prozess weg)
+  → Verteilung unverändert. (Der Satellite-NIC-Stall §1 ist ein separates Transport-
+  Problem, nicht die Befehls-Latenz.) Auch nicht SoundFlow.
+- Große Session: PT ~40 % Idle-CPU (AAX-Mixer-/LL-Threads laufen permanent), leere ~22 %.
+- **Konsequenz:** Gefühlte Trigger-Trägheit = ANZAHL PTSL-Calls pro Aktion × Münzwurf-
+  Latenz. Erklärt auch die Phasen „nach Bereinigung schnell / nach Export-Abfrage träge":
+  Robustheits-Fixes senkten die Call-Anzahl (Retry-Kaskaden weg), der Export-Guard
+  (23.06., bis zu 22 Calls inkl. Auto-Stop + Poll-Loop) erhöhte sie wieder.
+- **Fixes (Commit 7b9ad98):** ms-Zeitstempel im Log; `_ptsl_call` loggt langsame Calls
+  („PTSL langsam: Call 712ms (Pro-Tools-seitig)") + Lock-Wartezeiten; Export-Guard
+  gestaffelt (max. 4 Kontroll-Reads statt 20, Schnellfall identisch 2,53 s); Import-
+  Schritt 0 über `_ptsl_call` statt roher engine-Aufrufe.
+- **Studio-Empfehlungen:** PT täglich/je Schicht neu starten (77-h-Uptime war Verstärker);
+  Playback Engine → „Dynamic Plugin Processing" testen (senkt Idle-CPU der Plugins);
+  nach dem nächsten Vorfall Log auf „PTSL langsam"-Zeilen prüfen → Beleg statt Vermutung.
