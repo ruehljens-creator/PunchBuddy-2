@@ -22,10 +22,45 @@ from punchbuddy.engine import (
 
 _stop_lock    = threading.Lock()  # verhindert gleichzeitige Stop-Aufrufe
 
+# ── Anlauf-Schutzfenster ─────────────────────────────────────────────────────
+# Nach einem echten Transport-Start (Play/Play-Custom/Record) werden Toggle-
+# Drücke für diese Zeitspanne NICHT als Stop interpretiert. Grund (Salven-Test
+# 2026-07-21): Der Anlauf dauert wegen der bimodalen PTSL-Latenz mehrere
+# Sekunden; Bediener drücken nach („kam nicht an"), und der erste Druck NACH
+# dem tatsächlichen Start stoppte die gerade angelaufene Wiedergabe/Aufnahme
+# sofort wieder (Play→Stop→Play-Flattern). Der 400-ms-Debounce fängt
+# menschliches Doppeldrücken (~500 ms Abstand) nicht ab.
+TRANSPORT_START_GRACE = 3.0
+_last_transport_start = 0.0
+
+# Spiegelbildlich für die Stop-Seite: Ein Stop braucht PT-seitig mehrere
+# Sekunden (Satellite-Handshake). Drückt der Bediener in dieser Zeit erneut
+# „Stop", landet der Druck NACH dem echten Stopp und würde als Play-START
+# interpretiert – die Wiedergabe/Aufnahme ginge ungewollt wieder los.
+# Deshalb: nach einem Stop-Befehl werden Start-Drücke 2s lang verworfen.
+# Das Fenster wird beim BESTÄTIGTEN Stopp aufgefrischt (run_stop-Ende): PT
+# braucht studioseitig bis zu ~6s zum Stoppen – die Gefahrenzone für den
+# „Nachdruck wird Play"-Effekt beginnt erst NACH dem echten Stopp.
+TRANSPORT_STOP_GRACE = 2.0
+_last_stop_request = 0.0
+
+def _mark_transport_start():
+    global _last_transport_start
+    _last_transport_start = time.time()
+
+def _mark_stop_request():
+    global _last_stop_request
+    _last_stop_request = time.time()
+
 def run_punch_in(target_tracks: list, monitor_tracks: list = None):
     # Recording-Skript: Input-Monitoring wird NICHT umgeschaltet – Pro Tools
     # übernimmt das selbst. (Die Play-Input-Logik in run_play bleibt davon
     # unberührt.) monitor_tracks bleibt nur für Aufrufer-Kompatibilität.
+    _since_stop = time.time() - _last_stop_request
+    if _since_stop < TRANSPORT_STOP_GRACE:
+        logging.info(f"Record: Start verworfen – Stop wurde vor {_since_stop:.1f}s ausgelöst "
+                     f"(Schutzfenster {TRANSPORT_STOP_GRACE:.0f}s gegen Doppeldruck).")
+        return
     with state.running_lock:
         if state.running:
             logging.warning("Läuft bereits – Trigger ignoriert.")
@@ -103,6 +138,7 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
             logging.info("Transport war bereits record-armed.")
         time.sleep(0.1)
         _ptsl_call(engine.toggle_play_state, label="RecordStart", timeout=5.0)
+        _mark_transport_start()
         logging.info("Record gestartet (PTSL: record_arm + play).")
 
         # ── Schritt 5: Warten bis Transport läuft (max 5s) ──────────────
@@ -234,11 +270,21 @@ def run_play_custom():
     if state_str in ("TS_TransportRecording", "TS_TransportPlaying",
                      "TS_TransportIsCued", "TS_TransportIsCuedForPreview",
                      "TS_TransportIsStopping"):
+        _since = time.time() - _last_transport_start
+        if _since < TRANSPORT_START_GRACE:
+            logging.info(f"Play Custom: Stop verworfen – Transport läuft erst {_since:.1f}s "
+                         f"(Schutzfenster {TRANSPORT_START_GRACE:.0f}s gegen Doppeldruck).")
+            return
         logging.info("Play Custom: Transport active – stopping (via run_stop)...")
         run_stop()
         return
 
     # ── START-Pfad ───────────────────────────────────────────────────────────
+    _since_stop = time.time() - _last_stop_request
+    if _since_stop < TRANSPORT_STOP_GRACE:
+        logging.info(f"Play Custom: Start verworfen – Stop wurde vor {_since_stop:.1f}s ausgelöst "
+                     f"(Schutzfenster {TRANSPORT_STOP_GRACE:.0f}s gegen Doppeldruck).")
+        return
     with state.running_lock:
         if state.running:
             logging.warning("Play Custom: Script running – start ignored.")
@@ -265,6 +311,7 @@ def run_play_custom():
         time.sleep(0.3)
         logging.info("Play Custom Start: starting playback...")
         _ptsl_call(engine.toggle_play_state, label="PlayCustomToggle", timeout=6.0)
+        _mark_transport_start()
 
     except Exception as e:
         logging.error(f"Error in run_play_custom: {e}", exc_info=True)
@@ -300,11 +347,21 @@ def run_play():
     if state_str in ("TS_TransportRecording", "TS_TransportPlaying",
                      "TS_TransportIsCued", "TS_TransportIsCuedForPreview",
                      "TS_TransportIsStopping"):
+        _since = time.time() - _last_transport_start
+        if _since < TRANSPORT_START_GRACE:
+            logging.info(f"Play: Stop verworfen – Transport läuft erst {_since:.1f}s "
+                         f"(Schutzfenster {TRANSPORT_START_GRACE:.0f}s gegen Doppeldruck).")
+            return
         logging.info("Play: Transport aktiv – stoppe (via run_stop)...")
         run_stop()
         return
 
     # ── START-Pfad ───────────────────────────────────────────────────────────
+    _since_stop = time.time() - _last_stop_request
+    if _since_stop < TRANSPORT_STOP_GRACE:
+        logging.info(f"Play: Start verworfen – Stop wurde vor {_since_stop:.1f}s ausgelöst "
+                     f"(Schutzfenster {TRANSPORT_STOP_GRACE:.0f}s gegen Doppeldruck).")
+        return
     with state.running_lock:
         if state.running:
             logging.warning("Play: Script läuft bereits – Play-Start ignoriert.")
@@ -380,6 +437,7 @@ def run_play():
         time.sleep(0.3)
         logging.info("Play: Starte Playback...")
         _ptsl_call(engine.toggle_play_state, label="PlayToggle", timeout=6.0)
+        _mark_transport_start()
 
     except Exception as e:
         logging.error(f"Fehler in run_play: {e}", exc_info=True)
@@ -417,6 +475,7 @@ def run_stop():
             return
 
         # toggle_play_state = Leertaste: stoppt Play UND Recording
+        _mark_stop_request()
         logging.info("Stop: Sende Stop (toggle_play_state)...")
         _ptsl_call(engine.toggle_play_state, label="StopToggle", timeout=6.0)
 
@@ -483,6 +542,9 @@ def run_stop():
                 if not ok2: logging.warning(f"Stop: Mute-Restore '{ch2}' FEHLER (Track ggf. nicht in Session)")
             state.play_custom_active = False
 
+        # Schutzfenster ab dem BESTÄTIGTEN Stopp neu starten: erst jetzt beginnt
+        # die Gefahrenzone, in der ein „Nachdruck" als Play-Start durchginge.
+        _mark_stop_request()
         logging.info("Stop: abgeschlossen.")
 
     except Exception as e:
