@@ -81,7 +81,9 @@ _trim_log(24)
 
 # Expliziter Logger-Setup (basicConfig wird ignoriert wenn grpc/rumps
 # bereits logging initialisiert haben)
-_log_formatter = logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
+# Millisekunden im Zeitstempel: Verzögerungs-Diagnosen (PTSL-Latenz, Lock-Stau)
+# brauchen Sub-Sekunden-Auflösung, sonst sind Trigger→Aktion-Zeiten unmessbar.
+_log_formatter = logging.Formatter("%(asctime)s.%(msecs)03d %(message)s", datefmt="%H:%M:%S")
 
 _file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
 _file_handler.setFormatter(_log_formatter)

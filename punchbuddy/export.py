@@ -112,10 +112,17 @@ def _ensure_transport_stopped(engine, settle=2.0):
     else:  # TS_TransportIsStopping o.ä. – PT stoppt schon selbst
         logging.info(f"  Export: Transport stoppt bereits ({s}) – warte auf Abschluss.")
 
-    # Auf bestätigten Stopp warten (max ~10s), dann Settle für den NEXIS-Write.
-    deadline = time.time() + 10.0
-    while time.time() < deadline:
-        time.sleep(0.5)
+    # Auf bestätigten Stopp warten – mit MINIMALEN PTSL-Calls: Pro Tools
+    # beantwortet PTSL bimodal (10ms ODER 300–1400ms pro Call, gemessen
+    # 2026-07-21, auch auf leerer Session). Der alte 0.5s-Poll-Loop feuerte bis
+    # zu 20 Calls und stapelte so mehrere Sekunden Wartezeit auf, die über den
+    # globalen _ptsl_lock ALLE anderen Befehle (Stream-Deck-Trigger!) blockierte.
+    # Gestaffelte Kontrollen: erste nach 0.5s (schneller Stop bleibt schnell,
+    # gemessen identisch zum alten Verhalten), danach wachsende Abstände →
+    # max. 4 Kontroll-Reads statt 20. Semantik unverändert: bestätigter
+    # Stopp + Settle. PT bestätigt den Stop im Studio gemessen nach ~2.6s.
+    for _pause in (0.5, 1.0, 1.5, 2.0):
+        time.sleep(_pause)
         ok2, ts2 = _ptsl_call(engine.transport_state, label="ExportStopWait", timeout=4.0)
         if ok2 and str(ts2) == "TS_TransportStopped":
             logging.info(f"  Export: Transport gestoppt – warte {settle:.0f}s auf Datei-Finalisierung.")
@@ -604,24 +611,31 @@ def run_interplay_import():
             try:
                 engine = _get_engine()
                 if engine is not None:
-                    try:
-                        sess_name = engine.session_name()
-                        if sess_name:
-                            prog["update"](0.08, t("prog_close_session").format(sess_name))
-                            logging.info(f"  Session '{sess_name}' ist offen – wird gespeichert und geschlossen...")
-                            engine.save_session()
+                    # Alle Calls über _ptsl_call: Lock + gRPC-Deadline +
+                    # Latenz-Instrumentierung. Rohe engine.*-Aufrufe konnten bei
+                    # totem Channel haengen und blockierten den Import-Start
+                    # unsichtbar (PTSL antwortet bimodal, bis ~1.4s pro Call).
+                    ok_n, sess_name = _ptsl_call(engine.session_name,
+                                                 label="ImportSessionCheck", timeout=5.0)
+                    if ok_n and sess_name:
+                        prog["update"](0.08, t("prog_close_session").format(sess_name))
+                        logging.info(f"  Session '{sess_name}' ist offen – wird gespeichert und geschlossen...")
+                        ok_s, _ = _ptsl_call(engine.save_session,
+                                             label="ImportSessionSave", timeout=30.0)
+                        if ok_s:
                             logging.info(f"  Session '{sess_name}' gespeichert.")
-                            engine.close_session(save_on_close=True)
-                            logging.info(f"  Session '{sess_name}' geschlossen.")
-                            # Singleton zurücksetzen: PTSL-Verbindung zur geschlossenen
-                            # Session ist ungültig – neue Session braucht neue Verbindung
-                            _close_engine()
-                            time.sleep(1.5)  # Pro Tools braucht kurz zum Schließen
                         else:
-                            logging.info("  Keine Session offen – überspringe.")
-                    except Exception as e:
-                        # session_name() wirft Exception wenn keine Session offen
-                        logging.info(f"  Keine Session offen (oder Fehler: {e}) – fahre fort.")
+                            logging.warning("  Session-Speichern nicht bestätigt – schließe trotzdem.")
+                        _ptsl_call(lambda: engine.close_session(save_on_close=True),
+                                   label="ImportSessionClose", timeout=30.0)
+                        logging.info(f"  Session '{sess_name}' geschlossen.")
+                        # Singleton zurücksetzen: PTSL-Verbindung zur geschlossenen
+                        # Session ist ungültig – neue Session braucht neue Verbindung
+                        _close_engine()
+                        time.sleep(1.5)  # Pro Tools braucht kurz zum Schließen
+                    else:
+                        # session_name() wirft/scheitert, wenn keine Session offen
+                        logging.info("  Keine Session offen – überspringe.")
                 else:
                     logging.info("  PTSL Engine nicht verfügbar – überspringe Session-Check.")
             except Exception as e:

@@ -326,13 +326,25 @@ def _ptsl_call(fn, *args, label: str = "", timeout: float = 15.0):
     Nur echte Verbindungsfehler (grpc.RpcError) verwerfen die Engine; ein
     fachlicher CommandError lässt die Verbindung bestehen.
     """
+    _t_wait = time.time()
     if not _ptsl_lock.acquire(timeout=6.0):  # 6s – NEXIS kann vorherigen Befehl verzögern
         logging.warning(f"[{label}] PTSL-Lock nicht erhalten (6s)")
         return False, None
+    _lock_wait = time.time() - _t_wait
 
     _grpc_deadline_tls.value = timeout
+    _t_call = time.time()
     try:
-        return True, fn(*args)
+        _result = fn(*args)
+        # Instrumentierung: Pro Tools beantwortet PTSL-Calls bimodal (~10ms ODER
+        # 300–1400ms, gemessen 2026-07-21 – auch auf leerer Session). Langsame
+        # Calls + Lock-Stau hier sichtbar machen, damit Diagnosen die Wartezeit
+        # pro Befehl schwarz auf weiß zeigen, statt sie PunchBuddy zuzuschreiben.
+        _dur = time.time() - _t_call
+        if _dur > 0.3 or _lock_wait > 0.25:
+            _extra = f", Lock-Wartezeit {_lock_wait*1000:.0f}ms" if _lock_wait > 0.25 else ""
+            logging.info(f"[{label}] PTSL langsam: Call {_dur*1000:.0f}ms{_extra} (Pro-Tools-seitig)")
+        return True, _result
     except Exception as e:
         is_rpc = False
         is_timeout = False
