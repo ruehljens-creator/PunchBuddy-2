@@ -349,3 +349,25 @@ PunchBuddy aus Quellcode, PT Studio 2026.4.
    „127.0.0.1, localhost" in die Ausnahmeliste (Web-Requests-Plugin/Chromium).
 5. Optional: Playback Engine → „Dynamic Plugin Processing" testen.
 6. Nach erstem Vorfall: Log auf „PTSL langsam"/„Schutzfenster"-Zeilen pruefen.
+
+## 9. Studio-Befund 2026-07-21 (Sektion-17-Diagnose, neuer Build): SD-App wuergt Befehle ab
+Diagnose 22:08 vom Studio-Mac (Intel, PT 131% CPU, Session 62 Spuren):
+- **PunchBuddy nachweislich schnell:** HTTP 1,2 ms / Socket 0,5 ms / PTSL-Median 11 ms
+  (KEINE bimodale Latenz zu diesem Zeitpunkt!). Record-Start Trigger→Recording
+  1,6–1,7 s (3x konstant), Stop 0,7–1,9 s, Schutzfenster griff („Start verworfen 0.6s").
+- **Erlebte Traegheit sitzt VOR der Trigger-Ankunft** (Taste→PunchBuddy):
+  Stream-Deck-App in endloser Netz-Fehlschleife: `NodeManager Failed to fetch
+  Node.js manifest` im Minutentakt (Ausloeser: installiertes PunchBuddy-NODE-Plugin,
+  offline sinnlos), dazu Elgato-Discovery/Sentry/Analytics-Fehler. Renderer laufen
+  mit `NetworkServiceInProcess2` → hängende Timeouts bremsen auch die lokalen
+  fetch-Aufrufe des Web-Requests-Plugins (Haken + Befehlszustellung).
+- **Systemlast:** Time Machine backupd 38% WAEHREND des Betriebs (stuendlich!),
+  WindowServer 29%, Dante dvsd+dvs_ape ~30%, E1000 15%, JamfDaemon (MDM).
+- Keine Netzwerk-Extensions mehr (nur Contour-Shuttle-Treiber) → Defender-Reste weg.
+- Kein Proxy (scutil --proxy = Defaults) → Proxy-These endgueltig verworfen.
+
+**Massnahmen (2026-07-21 umgesetzt):** Twitch- und PunchBuddy-Node-Plugin geloescht,
+Time Machine stuendlich→taeglich. **Offen:** SD-App-Neustart + Kontrolle, dass keine
+neuen NodeManager-Zeilen kommen; Tastendruck vs. `>>> TRIGGER`-ms-Zeitstempel
+vergleichen; falls weiter traege → Tasten auf .app-Launcher/Unix-Socket (0,4 ms,
+umgeht SD-Netzstack komplett, kein Haken); Satellite-NIC-Entroutung weiter offen.
