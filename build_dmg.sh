@@ -199,6 +199,8 @@ cp -r /tmp/dist_ap/PunchBuddy_Diagnose.app  "$DMG_STAGE/"
 cp -r /tmp/dist_ap/PunchBuddy_Watchdog.app  "$DMG_STAGE/"
 cp    "$SCRIPT_DIR/PunchBuddy_Setup.command" "$DMG_STAGE/"
 chmod +x "$DMG_STAGE/PunchBuddy_Setup.command"
+cp    "$SCRIPT_DIR/Anti_AppNap.command"        "$DMG_STAGE/"
+chmod +x "$DMG_STAGE/Anti_AppNap.command"
 # Dokumentation mitkopieren (falls vorhanden)
 [ -f "$SCRIPT_DIR/PunchBuddy_Anleitung.html" ]   && cp "$SCRIPT_DIR/PunchBuddy_Anleitung.html"   "$DMG_STAGE/"
 [ -f "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" ] && cp "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" "$DMG_STAGE/"
