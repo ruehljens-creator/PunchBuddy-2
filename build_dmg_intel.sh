@@ -119,6 +119,8 @@ cp    "$SCRIPT_DIR/PunchBuddy_Setup.command"   "$DMG_STAGE/"
 chmod +x "$DMG_STAGE/PunchBuddy_Setup.command"
 cp    "$SCRIPT_DIR/Anti_AppNap.command"        "$DMG_STAGE/"
 chmod +x "$DMG_STAGE/Anti_AppNap.command"
+osacompile -o "$DMG_STAGE/Anti_AppNap.app" "$SCRIPT_DIR/Anti_AppNap.applescript"
+cp "$SCRIPT_DIR/Anti_AppNap.icns" "$DMG_STAGE/Anti_AppNap.app/Contents/Resources/applet.icns"
 cp "$SCRIPT_DIR"/PunchBuddy_Anleitung*.html       "$DMG_STAGE/" 2>/dev/null || true
 cp "$SCRIPT_DIR"/PunchBuddy_Technische_Doku*.html "$DMG_STAGE/" 2>/dev/null || true
 
