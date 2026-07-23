@@ -31,6 +31,7 @@ import shutil
 import glob
 import copy
 from punchbuddy import state
+from punchbuddy.version import __version__ as PB_VERSION
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dock-Name + Prozessname SOFORT setzen (VOR import rumps / AppKit)
@@ -323,6 +324,7 @@ class PunchBuddyApp(rumps.App):
         super().__init__("PunchBuddy", icon=_ICON_PNG_PATH, template=True,
                          quit_button=None)  # Custom Quit-Handler für Watchdog-Cleanup
         state.app_ref = self
+        logging.info(f"PunchBuddy v{PB_VERSION} startet.")
         self.settings        = load_settings()
 
         # ── App Nap dauerhaft verhindern ─────────────────────────────────
@@ -348,6 +350,22 @@ class PunchBuddyApp(rumps.App):
             logging.info("App Nap deaktiviert (NSProcessInfo-Activity aktiv).")
         except Exception as e:
             logging.warning(f"App-Nap-Ausnahme konnte nicht gesetzt werden: {e}")
+
+        # Partner-Apps der Steuerkette ebenfalls vom App Nap ausnehmen (idempotent).
+        # Stream Deck (inkl. Chromium-Renderer des Web-Requests-Plugins) und Pro
+        # Tools werden sonst gedrosselt, sobald sie im Hintergrund liegen -
+        # Tastendruecke kamen dadurch erst Sekunden spaeter an (Befund 2026-07-21).
+        # Wirkt fuer die jeweilige App ab ihrem naechsten Start.
+        for _bid in ("com.elgato.StreamDeck", "com.avid.ProTools"):
+            try:
+                _cur = subprocess.run(["defaults", "read", _bid, "NSAppSleepDisabled"],
+                                      capture_output=True, text=True, timeout=5).stdout.strip()
+                if _cur != "1":
+                    subprocess.run(["defaults", "write", _bid, "NSAppSleepDisabled",
+                                    "-bool", "YES"], capture_output=True, timeout=5)
+                    logging.info(f"App-Nap-Ausnahme gesetzt fuer {_bid} (wirkt ab dessen Neustart).")
+            except Exception as e:
+                logging.warning(f"App-Nap-Ausnahme fuer {_bid} fehlgeschlagen: {e}")
 
         # ── Trigger-Debounce (gegen Doppel-/Mehrfach-Trigger, z.B. Stream Deck
         #    der pro Tastendruck mehrere HTTP-Requests sendet, oder zu schnelles
@@ -473,8 +491,8 @@ class PunchBuddyApp(rumps.App):
             if hasattr(self, '_nsapp') and self._nsapp:
                 nsstatusitem = getattr(self._nsapp, 'nsstatusitem', None)
                 if nsstatusitem:
-                    nsstatusitem.button().setToolTip_("PunchBuddy")
-                    logging.info("Menüleisten-Tooltip gesetzt: PunchBuddy")
+                    nsstatusitem.button().setToolTip_(f"PunchBuddy v{PB_VERSION}")
+                    logging.info(f"Menüleisten-Tooltip gesetzt: PunchBuddy v{PB_VERSION}")
         except Exception as e:
             logging.debug(f"Tooltip setzen fehlgeschlagen: {e}")
 
