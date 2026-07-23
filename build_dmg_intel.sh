@@ -106,6 +106,14 @@ arch -x86_64 "$PYTHON_X86_64" -m PyInstaller \
   --hidden-import=rumps \
   watchdog.py
 
+# ── Version in die App-Bundles schreiben (VOR dem Signieren!) ────────────────
+# Reihenfolge ist entscheidend: plutil nach codesign bricht das Signatur-
+# Siegel -> TCC verweigert Automation/Bedienungshilfen (Bug v2.0.0).
+for _APP in /tmp/dist_intel/PunchBuddy.app /tmp/dist_intel/PunchBuddy_Diagnose.app /tmp/dist_intel/PunchBuddy_Watchdog.app; do
+  plutil -replace CFBundleShortVersionString -string "$PB_VERSION" "$_APP/Contents/Info.plist"
+  plutil -replace CFBundleVersion            -string "$PB_VERSION" "$_APP/Contents/Info.plist"
+done
+
 # ── 2. Signieren (ad-hoc) ────────────────────────────────────────────────────
 echo "=== Ad-hoc Code-Signaturen (x86_64) ==="
 codesign --force --deep --sign - /tmp/dist_intel/PunchBuddy.app
@@ -116,9 +124,9 @@ codesign --force --deep --sign - /tmp/dist_intel/PunchBuddy_Watchdog.app
 echo "=== DMG vorbereiten ==="
 DMG_STAGE="/tmp/dist_intel/dmg_stage"
 rm -rf "$DMG_STAGE"; mkdir -p "$DMG_STAGE"
-cp -r /tmp/dist_intel/PunchBuddy.app           "$DMG_STAGE/"
-cp -r /tmp/dist_intel/PunchBuddy_Diagnose.app  "$DMG_STAGE/"
-cp -r /tmp/dist_intel/PunchBuddy_Watchdog.app  "$DMG_STAGE/"
+ditto /tmp/dist_intel/PunchBuddy.app "$DMG_STAGE/PunchBuddy.app"
+ditto /tmp/dist_intel/PunchBuddy_Diagnose.app "$DMG_STAGE/PunchBuddy_Diagnose.app"
+ditto /tmp/dist_intel/PunchBuddy_Watchdog.app "$DMG_STAGE/PunchBuddy_Watchdog.app"
 cp    "$SCRIPT_DIR/PunchBuddy_Setup.command"   "$DMG_STAGE/"
 chmod +x "$DMG_STAGE/PunchBuddy_Setup.command"
 cp    "$SCRIPT_DIR/Anti_AppNap.command"        "$DMG_STAGE/"
@@ -129,20 +137,9 @@ mkdir -p "$DMG_STAGE/Anleitungen"
 cp "$SCRIPT_DIR"/PunchBuddy_Anleitung*.html       "$DMG_STAGE/Anleitungen/" 2>/dev/null || true
 cp "$SCRIPT_DIR"/PunchBuddy_Technische_Doku*.html "$DMG_STAGE/Anleitungen/" 2>/dev/null || true
 
-# ── Version in alle App-Bundles schreiben ────────────────────────────────────
-for _APP in "$DMG_STAGE"/*.app; do
-  plutil -replace CFBundleShortVersionString -string "$PB_VERSION" "$_APP/Contents/Info.plist" 2>/dev/null || true
-  plutil -replace CFBundleVersion            -string "$PB_VERSION" "$_APP/Contents/Info.plist" 2>/dev/null || true
-done
-# WICHTIG: Nach dem Plist-Patch neu signieren! Sonst ist die Signatur
-# ungueltig und macOS verweigert der App die Automation-/Bedienungshilfen-
-# Rechte (TCC) -> Interplay-Import startet nicht (Bug v2.0.0).
-# (ohne --deep: innere Komponenten sind bereits gueltig signiert; nur das
-# aeussere Bundle-Siegel muss nach dem Plist-Patch erneuert werden. --deep
-# scheitert zudem an PIL/.dylibs im kopierten Bundle.)
-for _APP in "$DMG_STAGE"/*.app; do
-  codesign --force --sign - "$_APP"
-done
+# Anti_AppNap-Applet: Version setzen, dann signieren (frisch kompiliert)
+plutil -replace CFBundleShortVersionString -string "$PB_VERSION" "$DMG_STAGE/Anti_AppNap.app/Contents/Info.plist" 2>/dev/null || true
+codesign --force --sign - "$DMG_STAGE/Anti_AppNap.app"
 
 # ── 4. DMG erstellen ─────────────────────────────────────────────────────────
 echo "=== DMG erstellen ==="
