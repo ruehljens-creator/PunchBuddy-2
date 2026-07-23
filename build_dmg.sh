@@ -220,8 +220,11 @@ done
 # WICHTIG: Nach dem Plist-Patch neu signieren! Sonst ist die Signatur
 # ungueltig und macOS verweigert der App die Automation-/Bedienungshilfen-
 # Rechte (TCC) -> Interplay-Import startet nicht (Bug v2.0.0).
+# (ohne --deep: innere Komponenten sind bereits gueltig signiert; nur das
+# aeussere Bundle-Siegel muss nach dem Plist-Patch erneuert werden. --deep
+# scheitert zudem an PIL/.dylibs im kopierten Bundle.)
 for _APP in "$DMG_STAGE"/*.app; do
-  codesign --force --deep --sign - "$_APP"
+  codesign --force --sign - "$_APP"
 done
 
 # ── 6. DMG erstellen ──────────────────────────────────────────────────────
