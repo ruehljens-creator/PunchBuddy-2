@@ -37,11 +37,13 @@ _last_transport_start = 0.0
 # Sekunden (Satellite-Handshake). Drückt der Bediener in dieser Zeit erneut
 # „Stop", landet der Druck NACH dem echten Stopp und würde als Play-START
 # interpretiert – die Wiedergabe/Aufnahme ginge ungewollt wieder los.
-# Deshalb: nach einem Stop-Befehl werden Start-Drücke 2s lang verworfen.
+# Deshalb: nach einem Stop-Befehl werden Start-Drücke kurz verworfen.
 # Das Fenster wird beim BESTÄTIGTEN Stopp aufgefrischt (run_stop-Ende): PT
 # braucht studioseitig bis zu ~6s zum Stoppen – die Gefahrenzone für den
 # „Nachdruck wird Play"-Effekt beginnt erst NACH dem echten Stopp.
-TRANSPORT_STOP_GRACE = 2.0
+# 2026-07-21: 2s → 1s reduziert (User-Wunsch, nachdem App-Nap-Fix die
+# Zustellverzögerung beseitigt hat – Nachdrücke kommen jetzt zeitnah an).
+TRANSPORT_STOP_GRACE = 1.0
 _last_stop_request = 0.0
 
 def _mark_transport_start():
