@@ -146,3 +146,14 @@ Unterordner "Anleitungen/" im DMG.
 **Studio-Hinweis:** Nach Installation von v2.0.1 fragt macOS ggf. einmal neu
 nach Bedienungshilfen/Automation fuer PunchBuddy (Signatur hat sich geaendert)
 → Systemeinstellungen → Datenschutz & Sicherheit → erlauben.
+
+## Profilwechsel-Bug: alte Record-Arms blieben scharf (2026-07-23, behoben in v2.0.2)
+Record A → Record B mit anderer Spurauswahl: zuvor gearmte Spuren blieben
+record-enabled und landeten mit in der neuen Aufnahme. Fix in run_punch_in
+(Schritt 1b): beim ersten Record nach App-Start liest PunchBuddy den echten
+Arm-Zustand per track_list (track_attributes.is_record_enabled) aus PT,
+danach merkt es sich die eigene Auswahl (_pb_last_armed); alles Gearmte
+ausserhalb der aktuellen Auswahl wird vor dem Armen abgewaehlt
+("Record Enable AUS (Profilwechsel): [...]" im Log).
+E2E-getestet 2026-07-23 gegen PT (Session per PTSL, A1-A4, alle 4 gearmt,
+Record B auf A3/A4 → A1/A2 automatisch abgewaehlt, Aufnahme lief).

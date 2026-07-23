@@ -54,6 +54,14 @@ def _mark_stop_request():
     global _last_stop_request
     _last_stop_request = time.time()
 
+# Merkt sich, welche Spuren PunchBuddy zuletzt record-enabled hat. Beim
+# Profilwechsel (Record A → Record B mit anderer Spurauswahl) werden damit
+# die nicht mehr gewollten Spuren wieder abgewählt – vorher blieben sie
+# scharf und landeten mit in der nächsten Aufnahme (Bug, entdeckt 2026-07-23).
+# None = noch kein Record seit App-Start → echter Zustand wird einmalig per
+# track_list (is_record_enabled) aus Pro Tools gelesen.
+_pb_last_armed = None
+
 def run_punch_in(target_tracks: list, monitor_tracks: list = None):
     # Recording-Skript: Input-Monitoring wird NICHT umgeschaltet – Pro Tools
     # übernimmt das selbst. (Die Play-Input-Logik in run_play bleibt davon
@@ -102,6 +110,35 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
         ensure_preroll_on(engine)
         time.sleep(0.2)  # CHANGE: Settling nach Pre-Roll setzen
 
+        # ── Schritt 1b: Veraltete Record-Arms abwählen (Profilwechsel) ───
+        # Record A → Record B: Spuren der vorigen Auswahl blieben scharf und
+        # landeten mit in der neuen Aufnahme. Deshalb: alles, was (von uns
+        # oder laut PT) record-enabled ist, aber NICHT zur aktuellen Auswahl
+        # gehört, wird abgewählt.
+        global _pb_last_armed
+        stale = set()
+        if _pb_last_armed is None:
+            # Erster Record seit App-Start: echten Zustand aus PT lesen.
+            ok_tl, _tl = _ptsl_call(engine.track_list, label="RecArmInventory", timeout=8.0)
+            if ok_tl and _tl:
+                try:
+                    stale = {tr.name for tr in _tl
+                             if getattr(getattr(tr, "track_attributes", None),
+                                        "is_record_enabled", False)} - rec_want
+                except Exception as e:
+                    logging.warning(f"Record-Arm-Inventur nicht lesbar: {e}")
+        else:
+            stale = set(_pb_last_armed) - rec_want
+        if stale:
+            ok_dis, _ = _ptsl_call(engine.set_track_record_enable_state,
+                                   sorted(stale), False,
+                                   label="RecDisarmStale", timeout=15.0)
+            if ok_dis:
+                logging.info(f"Record Enable AUS (Profilwechsel): {sorted(stale)}")
+            else:
+                logging.warning(f"Abwählen alter Record-Spuren fehlgeschlagen: {sorted(stale)}")
+            time.sleep(0.2)
+
         # ── Schritt 2: Record Enable (3 Versuche) ───────────────────────
         # Timeout 15s: NEXIS-Schreiblast kann set_track_record_enable_state 10-11s verzögern
         rec_ok = False
@@ -118,6 +155,9 @@ def run_punch_in(target_tracks: list, monitor_tracks: list = None):
             time.sleep(0.5 * (attempt + 1))
         if not rec_ok:
             logging.warning("Record Enable fehlgeschlagen – mache trotzdem weiter.")
+        # Gemerkten Arm-Zustand aktualisieren: bei Erfolg = aktuelle Auswahl,
+        # bei Fehlschlag None → nächster Record macht wieder die PT-Inventur.
+        _pb_last_armed = set(rec_want) if rec_ok else None
 
         time.sleep(0.3)  # Settling – PT muss Rec-Enable verarbeiten
 
