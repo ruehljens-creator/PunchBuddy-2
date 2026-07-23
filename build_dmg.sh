@@ -208,13 +208,20 @@ chmod +x "$DMG_STAGE/Anti_AppNap.command"
 osacompile -o "$DMG_STAGE/Anti_AppNap.app" "$SCRIPT_DIR/Anti_AppNap.applescript"
 cp "$SCRIPT_DIR/Anti_AppNap.icns" "$DMG_STAGE/Anti_AppNap.app/Contents/Resources/applet.icns"
 # Dokumentation mitkopieren (falls vorhanden)
-[ -f "$SCRIPT_DIR/PunchBuddy_Anleitung.html" ]   && cp "$SCRIPT_DIR/PunchBuddy_Anleitung.html"   "$DMG_STAGE/"
-[ -f "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" ] && cp "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" "$DMG_STAGE/"
+mkdir -p "$DMG_STAGE/Anleitungen"
+cp "$SCRIPT_DIR"/PunchBuddy_Anleitung*.html       "$DMG_STAGE/Anleitungen/" 2>/dev/null || true
+cp "$SCRIPT_DIR"/PunchBuddy_Technische_Doku*.html "$DMG_STAGE/Anleitungen/" 2>/dev/null || true
 
 # ── Version in alle App-Bundles schreiben ────────────────────────────────────
 for _APP in "$DMG_STAGE"/*.app; do
   plutil -replace CFBundleShortVersionString -string "$PB_VERSION" "$_APP/Contents/Info.plist" 2>/dev/null || true
   plutil -replace CFBundleVersion            -string "$PB_VERSION" "$_APP/Contents/Info.plist" 2>/dev/null || true
+done
+# WICHTIG: Nach dem Plist-Patch neu signieren! Sonst ist die Signatur
+# ungueltig und macOS verweigert der App die Automation-/Bedienungshilfen-
+# Rechte (TCC) -> Interplay-Import startet nicht (Bug v2.0.0).
+for _APP in "$DMG_STAGE"/*.app; do
+  codesign --force --deep --sign - "$_APP"
 done
 
 # ── 6. DMG erstellen ──────────────────────────────────────────────────────

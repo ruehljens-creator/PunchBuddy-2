@@ -132,3 +132,17 @@ Diagnose-Script läuft.
   faulthandler + excepthooks; Consolidate-Fenster per `startswith`; tote
   SendDialogOnScreen-Marker ersetzt.
 - `19b8fe5`/`4b7306b` Doku-Links repariert, Doku gebündelt.
+
+## v2.0.0-Bug: Interplay-Import startet nicht (2026-07-23, behoben in v2.0.1)
+**Ursache (bewiesen):** Der neue Versions-Patch der Build-Skripte schrieb
+CFBundleShortVersionString per plutil NACH dem Codesigning in die Info.plist →
+`codesign --verify` = "invalid Info.plist (plist or signature have been
+modified)". macOS/TCC verweigert Apps mit ungueltiger Signatur die
+Automation-/Bedienungshilfen-Rechte – der Interplay-Import ist der einzige
+Workflow, der System Events/CGEvent braucht → er startete nicht mehr.
+**Fix:** Build-Skripte signieren nach dem Plist-Patch neu (codesign --force
+--deep --sign - je App im DMG_STAGE). Zusaetzlich Anleitungen/Doku-HTMLs in
+Unterordner "Anleitungen/" im DMG.
+**Studio-Hinweis:** Nach Installation von v2.0.1 fragt macOS ggf. einmal neu
+nach Bedienungshilfen/Automation fuer PunchBuddy (Signatur hat sich geaendert)
+→ Systemeinstellungen → Datenschutz & Sicherheit → erlauben.
