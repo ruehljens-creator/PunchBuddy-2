@@ -391,3 +391,11 @@ vom App Nap aus – kein defaults-Kommando am Zielrechner mehr nötig.
 Eskalationsstufe falls je wieder träge: QTWEBENGINE_CHROMIUM_FLAGS
 (--disable-background-timer-throttling …) für die SD-App bzw. Tasten auf
 .app-Launcher/Unix-Socket.
+
+## 11. Release v2.0.0 (2026-07-23) — Versionierung eingefuehrt
+Zentrale Version: `punchbuddy/version.py` → Log/Tooltip/Diagnose/Bundles/DMG-Name.
+Git-Tag `v2.0.0`. Inhalt: App-Nap-Fixes (Activity + Auto-defaults fuer
+SD/PT beim Start + Anti_AppNap.app/.command im DMG), Schutzfenster Start 3s /
+Stop 1s (User-Wunsch nach App-Nap-Fix), ms-Logging, PTSL-Instrumentierung,
+Diagnose Sektion 17, schlanker Export-Guard. Release-Ablauf: version.py
+erhoehen → committen → `git tag vX.Y.Z` → `./build_dmg_intel.sh`.
