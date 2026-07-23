@@ -85,6 +85,11 @@ lines.append(SEP + "1. SYSTEM-INFO")
 lines.append(f"macOS:   {platform.mac_ver()[0]}")
 lines.append(f"Python:  {sys.version}")
 lines.append(f"Rechner: {platform.node()}")
+try:
+    from punchbuddy.version import __version__ as _pbv
+    lines.append(f"PunchBuddy-Version (Diagnose-Build): v{_pbv}")
+except Exception:
+    lines.append("PunchBuddy-Version: [nicht ermittelbar]")
 lines.append(f"\nInstallierte Python-Pakete (relevant):")
 pkgs = run("pip3 list 2>/dev/null | grep -i 'ptsl\\|rumps\\|pynput\\|pyobjc\\|grpc\\|protobuf'")
 lines.append(pkgs or "[keine gefunden]")

@@ -2,12 +2,16 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Intel-only DMG-Build (x86_64) – KEIN Universal-Merge.
 # Bündelt libusb-1.0 mit, damit die Vocaster-Steuerung ohne Homebrew läuft.
-# Ergebnis: PunchBuddy_Intel_Release.dmg
+# Ergebnis: PunchBuddy_v${PB_VERSION}_Intel.dmg
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# ── Version aus zentraler Quelle (punchbuddy/version.py) ─────────────────────
+PB_VERSION=$(python3 -c "import sys;sys.path.insert(0,'$SCRIPT_DIR');from punchbuddy.version import __version__;print(__version__)")
+echo "PunchBuddy-Version: v$PB_VERSION"
 
 # ── libusb-Quelle finden (x86_64) ────────────────────────────────────────────
 LIBUSB=""
@@ -124,13 +128,19 @@ cp "$SCRIPT_DIR/Anti_AppNap.icns" "$DMG_STAGE/Anti_AppNap.app/Contents/Resources
 cp "$SCRIPT_DIR"/PunchBuddy_Anleitung*.html       "$DMG_STAGE/" 2>/dev/null || true
 cp "$SCRIPT_DIR"/PunchBuddy_Technische_Doku*.html "$DMG_STAGE/" 2>/dev/null || true
 
+# ── Version in alle App-Bundles schreiben ────────────────────────────────────
+for _APP in "$DMG_STAGE"/*.app; do
+  plutil -replace CFBundleShortVersionString -string "$PB_VERSION" "$_APP/Contents/Info.plist" 2>/dev/null || true
+  plutil -replace CFBundleVersion            -string "$PB_VERSION" "$_APP/Contents/Info.plist" 2>/dev/null || true
+done
+
 # ── 4. DMG erstellen ─────────────────────────────────────────────────────────
 echo "=== DMG erstellen ==="
 rm -f "/tmp/PunchBuddy_intel_raw.dmg"
-rm -f "$SCRIPT_DIR/PunchBuddy_Intel_Release.dmg"
+rm -f "$SCRIPT_DIR/PunchBuddy_v${PB_VERSION}_Intel.dmg"
 hdiutil makehybrid -hfs -o "/tmp/PunchBuddy_intel_raw.dmg" "$DMG_STAGE"
-hdiutil convert -format UDZO -o "$SCRIPT_DIR/PunchBuddy_Intel_Release.dmg" "/tmp/PunchBuddy_intel_raw.dmg"
+hdiutil convert -format UDZO -o "$SCRIPT_DIR/PunchBuddy_v${PB_VERSION}_Intel.dmg" "/tmp/PunchBuddy_intel_raw.dmg"
 rm -f "/tmp/PunchBuddy_intel_raw.dmg"
 
 echo ""
-echo "✅ Fertig: PunchBuddy_Intel_Release.dmg (x86_64, mit gebündelter libusb)"
+echo "✅ Fertig: PunchBuddy_v${PB_VERSION}_Intel.dmg (x86_64, mit gebündelter libusb)"

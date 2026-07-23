@@ -2,6 +2,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ── Version aus zentraler Quelle (punchbuddy/version.py) ─────────────────────
+PB_VERSION=$(python3 -c "import sys;sys.path.insert(0,'$SCRIPT_DIR');from punchbuddy.version import __version__;print(__version__)")
+echo "PunchBuddy-Version: v$PB_VERSION"
 cd "$SCRIPT_DIR"
 
 echo "=== Alte Build-Artefakte entfernen ==="
@@ -207,20 +211,26 @@ cp "$SCRIPT_DIR/Anti_AppNap.icns" "$DMG_STAGE/Anti_AppNap.app/Contents/Resources
 [ -f "$SCRIPT_DIR/PunchBuddy_Anleitung.html" ]   && cp "$SCRIPT_DIR/PunchBuddy_Anleitung.html"   "$DMG_STAGE/"
 [ -f "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" ] && cp "$SCRIPT_DIR/PunchBuddy_Technische_Doku.html" "$DMG_STAGE/"
 
+# ── Version in alle App-Bundles schreiben ────────────────────────────────────
+for _APP in "$DMG_STAGE"/*.app; do
+  plutil -replace CFBundleShortVersionString -string "$PB_VERSION" "$_APP/Contents/Info.plist" 2>/dev/null || true
+  plutil -replace CFBundleVersion            -string "$PB_VERSION" "$_APP/Contents/Info.plist" 2>/dev/null || true
+done
+
 # ── 6. DMG erstellen ──────────────────────────────────────────────────────
 echo "=== DMG erstellen ==="
 rm -f "/tmp/PunchBuddy_raw.dmg"
-rm -f "$SCRIPT_DIR/PunchBuddy_Release.dmg"
+rm -f "$SCRIPT_DIR/PunchBuddy_v${PB_VERSION}.dmg"
 
 # 1. Hybrid Image (unkomprimiert) erstellen (umgeht Error -1 auf manchen Systemen)
 hdiutil makehybrid -hfs -o "/tmp/PunchBuddy_raw.dmg" "$DMG_STAGE"
 
 # 2. In komprimiertes UDZO Format konvertieren
-hdiutil convert -format UDZO -o "$SCRIPT_DIR/PunchBuddy_Release.dmg" "/tmp/PunchBuddy_raw.dmg"
+hdiutil convert -format UDZO -o "$SCRIPT_DIR/PunchBuddy_v${PB_VERSION}.dmg" "/tmp/PunchBuddy_raw.dmg"
 
 rm -f "/tmp/PunchBuddy_raw.dmg"
 
 echo ""
-echo "✅ Fertig: PunchBuddy_Release.dmg (UNIVERSAL2)"
+echo "✅ Fertig: PunchBuddy_v${PB_VERSION}.dmg (UNIVERSAL2)"
 echo "   Enthält: PunchBuddy.app + PunchBuddy_Diagnose.app + PunchBuddy_Watchdog.app + PunchBuddy_Setup.command"
 echo "            + PunchBuddy_Anleitung.html + PunchBuddy_Technische_Doku.html"
